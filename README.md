@@ -563,7 +563,7 @@ fed session cleanup          # Clean up orphaned sessions
 
 # Developer experience
 fed completions bash         # Generate shell completions (bash/zsh/fish)
-fed tui                      # Interactive TUI (experimental)
+fed tui                      # Interactive TUI (beta)
 fed run test                 # Run script from config
 fed test                     # Shorthand for scripts (if no command collision)
 fed test -- -t "specific"   # Pass arguments to script
@@ -666,7 +666,7 @@ fed session cleanup
 - Environment file (.env) support with strict variable checking
 - Scripts with service/script dependencies and argument passthrough
 - Isolated test execution with `isolated: true` for fresh ports and scoped volumes
-- TUI with service management (start/stop/restart)
+- TUI (beta)
 - Log streaming with `--follow` flag and search/filter
 - Watch mode with `fed start -w` (auto-restart on file changes)
 - Shell completions (bash/zsh/fish)
