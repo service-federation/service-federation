@@ -2,28 +2,7 @@
 
 **Local development orchestration with session-based port stability.**
 
-`fed` orchestrates complex service dependencies for local development - mixing Docker containers, native processes, and Gradle tasks with automatic dependency resolution, smart port allocation, and session isolation that remembers your ports across restarts.
-
-## The Problem
-
-Local development with multiple services is painful:
-
-- **docker-compose**: Ports change between restarts, can't mix native processes
-- **process-compose**: No session isolation, manual port management
-- **overmind/foreman**: Simple process runners, no dependency management or health checks
-- **Manual scripts**: Brittle, hard to maintain, no health checking
-- **Gradle monorepos**: Slow startup when running multiple tasks sequentially
-
-## The Solution
-
-`fed` gives you:
-
-1. **Session-based stable ports** - Stop/start services and get the same ports
-2. **Smart port allocation** - Prefer specific ports, fall back automatically
-3. **Mixed service types** - Docker containers + native processes + docker-compose services
-4. **Automatic dependencies** - Start services in the right order, wait for health
-5. **Parameter templates** - Share configuration across services
-6. **Gradle task grouping** - Batch multiple Gradle tasks from the same directory for faster startup
+`fed` runs Docker containers, native processes, and Gradle tasks together with dependency resolution and port allocation. Sessions remember your ports across restarts.
 
 ## Quick Start
 
@@ -84,11 +63,9 @@ fed logs backend --tail 50
 fed stop
 ```
 
-## Session-Based Port Stability (Killer Feature)
+## Sessions
 
-**Problem:** Every time you restart docker-compose or process-compose, port allocation might change. Your hardcoded URLs break.
-
-**Solution:** Sessions remember port allocations.
+Sessions remember port allocations across restarts.
 
 ```bash
 # Start a session (creates .fed/session file)
@@ -103,46 +80,17 @@ fed stop postgres
 
 # Start postgres again
 fed start postgres
-# → postgres gets 5432 AGAIN ✅
+# → postgres gets 5432 again
 
 # Clean up when done
 fed session end
 ```
 
-**Auto-detection:** The session is automatically detected from the `.fed/session` file in your project directory. No need to export `FED_SESSION` manually!
-
-**No other tool does this.** Your local dev environment is now stable and reproducible.
-
-## Comparison to Alternatives
-
-| Feature                            | fed                  | docker-compose     | process-compose   | overmind          | tilt        |
-|------------------------------------|----------------------|--------------------|-------------------|-------------------|-------------|
-| **Stable ports across restarts**   | ✅ Session-based     | ❌                 | ❌                | ❌                | N/A         |
-| **Mixed containers + native**      | ✅                   | ❌ Containers only | ✅ Processes only | ✅ Processes only | ✅ K8s only |
-| **Smart port allocation**          | ✅ Prefer + fallback | ❌ Hardcoded       | ❌ Manual         | ❌ Manual         | N/A         |
-| **Health checks**                  | ✅ HTTP + command    | ✅ Limited         | ✅                | ❌                | ✅          |
-| **Dependency order**               | ✅ Auto              | ✅ Basic           | ✅                | ❌                | ✅          |
-| **Gradle task batching**           | ✅ Auto by dir       | ❌                 | ❌                | ❌                | ❌          |
-| **Use existing docker-compose**    | ✅ Reuse services    | N/A                | ❌                | ❌                | ❌          |
-| **Production-ready**               | ❌ Dev only          | ✅                 | ❌ Dev only       | ❌ Dev only       | ✅ K8s      |
-
-### When to use `fed`:
-
-- **Complex local dev** with multiple microservices (native + containers)
-- **Reproducible environments** where port stability matters
-- **Mixing docker-compose** with native processes (Node, Go, Rust, etc.)
-- **Gradle monorepos** with multiple services - THE best tool for this use case (automatic task grouping = faster startup)
-
-### When NOT to use `fed`:
-
-- **Production deployments** (use docker-compose, Kubernetes)
-- **Pure container orchestration** (docker-compose is fine)
-- **Simple single-process apps** (overmind/foreman is simpler)
-- **Kubernetes development** (use Tilt/Skaffold)
+Sessions are auto-detected from `.fed/session` in your project directory.
 
 ## Service Types
 
-### Process Service
+### Process
 Run any command:
 ```yaml
 services:
@@ -168,10 +116,10 @@ services:
     composeService: postgres
 ```
 
-### Gradle Task (with Smart Grouping)
-Auto-groups tasks by directory for faster startup:
+### Gradle Task
+Groups tasks by directory:
 ```yaml
-# All these tasks run in same working directory → batched into ONE gradle command!
+# Same cwd → batched into one gradle command
 services:
   auth-service:
     gradleTask: ':auth:bootRun'
@@ -192,13 +140,13 @@ services:
       SERVER_PORT: '{{PAYMENT_PORT}}'
 ```
 
-**Why this matters:** Running `gradle :auth:bootRun :user:bootRun :payment:bootRun` is 3-5x faster than running them separately because Gradle only initializes once.
+Gradle initializes once instead of per-task.
 
 ## Key Features
 
 ### Service Templates
 
-Reduce configuration duplication with reusable service templates:
+Define base configurations to extend:
 
 ```yaml
 templates:
@@ -253,7 +201,7 @@ services:
 
 **Clean hooks:**
 - Run custom cleanup commands (remove build artifacts, caches, etc.)
-- Automatically remove Docker volumes with `fed-` prefix (safe cleanup)
+- Removes Docker volumes with `fed-` prefix
 - Bind mounts (e.g., `./data:/data`) are NOT removed (only named volumes)
 - Only `fed-*` prefixed Docker volumes are removed to prevent accidental data loss
 
@@ -357,7 +305,7 @@ fed start
 fed test:integration
 ```
 
-This enables running integration tests without stopping your development environment.
+Run tests without stopping your dev stack.
 
 ### Environment Files (.env)
 
@@ -388,7 +336,7 @@ services:
 - `.env` files set **parameter values**, not service environment directly
 - All variables in `.env` files **must be declared** as parameters in your config
 - Undeclared variables cause an error (prevents typos and hidden configuration)
-- The `service-federation.yaml` is the single source of truth for your service mesh
+- All configuration lives in `service-federation.yaml`
 
 **Priority (highest to lowest):**
 1. Explicit parameter `value:` field
@@ -399,7 +347,7 @@ services:
 - Supports standard `.env` format (KEY=VALUE, comments with #, quoting)
 - Multiple files loaded in order (later overrides earlier)
 - Fail-fast on missing files and undeclared variables
-- Great for secrets that shouldn't be in version control
+- Useful for secrets that shouldn't be in version control
 
 See [`examples/env-file/`](./examples/env-file) for a complete example.
 
@@ -430,7 +378,7 @@ services:
 
 ### Resource Limits
 
-Prevent runaway services from crashing your development machine with configurable resource limits:
+Limit memory, CPU, and processes:
 
 ```yaml
 services:
@@ -487,7 +435,7 @@ services:
 - Process-based services can fork indefinitely
 - Docker containers can consume all machine resources
 
-**With limits (Recommended):**
+**With limits:**
 - Services fail cleanly when hitting limits
 - Other services remain stable
 - Laptop won't freeze from runaway processes
@@ -526,7 +474,7 @@ fed start --profile development  # Starts api + debug-tools
 
 ### Circuit Breaker
 
-Prevent crash loops with automatic restart limiting:
+Limit restarts to prevent crash loops:
 
 ```yaml
 services:
@@ -553,7 +501,7 @@ services:
 
 ### Service Tags
 
-Tag services for flexible grouping and selection:
+Tag services for grouping:
 
 ```yaml
 services:
@@ -627,14 +575,14 @@ fed --config dev.yaml start  # Use specific config file
 See the [`examples/`](./examples) directory for complete configurations:
 
 - [`simple.yaml`](./examples/simple.yaml) - Basic multi-service setup
-- [`scripts-example.yaml`](./examples/scripts-example.yaml) - **Scripts with dependencies, argument passthrough, and isolated test execution**
-- [`env-file/`](./examples/env-file) - **Environment file (.env) support** for secrets management
-- [`templates-example.yaml`](./examples/templates-example.yaml) - **Reusable service templates** (recommended for microservices!)
-- [`resource-limits-example.yaml`](./examples/resource-limits-example.yaml) - **Resource limits to prevent runaway services** (recommended for production dev environments!)
+- [`scripts-example.yaml`](./examples/scripts-example.yaml) - Scripts with dependencies and argument passthrough
+- [`env-file/`](./examples/env-file) - Environment file (.env) support
+- [`templates-example.yaml`](./examples/templates-example.yaml) - Reusable service templates
+- [`resource-limits-example.yaml`](./examples/resource-limits-example.yaml) - Resource limits
 - [`docker-compose-example/`](./examples/docker-compose-example) - Integrating with existing docker-compose
-- [`gradle-grouping.yaml`](./examples/gradle-grouping.yaml) - **Gradle monorepo with automatic task batching** (recommended!)
+- [`gradle-grouping.yaml`](./examples/gradle-grouping.yaml) - Gradle task batching
 - [`complex-dependencies/`](./examples/complex-dependencies) - Multi-level dependency graph
-- [`profiles-example.yaml`](./examples/profiles-example.yaml) - Environment-specific configs with profiles
+- [`profiles-example.yaml`](./examples/profiles-example.yaml) - Environment-specific configs
 
 ## Tips & Best Practices
 
@@ -657,7 +605,7 @@ echo ".fed/" >> .gitignore
 export FED_SESSION=my-project
 ```
 
-### Health Checks Speed Up Startup
+### Health Checks
 
 ```yaml
 services:
@@ -678,7 +626,7 @@ services:
     composeFile: docker-compose.yml
     composeService: postgres
 
-  # Run your app natively for faster iteration
+  # Run your app natively
   backend:
     process: cargo run --bin api
     depends_on: [postgres]
@@ -711,7 +659,7 @@ fed session cleanup
 - Process, Docker, Docker Compose, Gradle services
 - Dependency resolution and health checks
 - Session-based port allocation with TOCTOU race prevention
-- Parameter templating with smart port fallback
+- Parameter templating with port fallback
 - Service templates for reusable configurations
 - Install and clean lifecycle hooks
 - Resource limits (memory, CPU, PIDs, file descriptors)
