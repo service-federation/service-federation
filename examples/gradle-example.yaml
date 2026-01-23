@@ -1,0 +1,37 @@
+parameters:
+  AUTH_SERVICE_PORT:
+    type: port
+    default: 8080
+
+  USER_SERVICE_PORT:
+    type: port
+    default: 8081
+
+  LOG_LEVEL:
+    default: INFO
+    either: ["DEBUG", "INFO", "WARN", "ERROR"]
+
+services:
+  auth-service:
+    gradleTask: ':auth-service:bootRun'
+    environment:
+      SERVER_PORT: '{{AUTH_SERVICE_PORT}}'
+      LOG_LEVEL: '{{LOG_LEVEL}}'
+      SERVICE_NAME: 'auth-service'
+    healthcheck:
+      httpGet: 'http://localhost:{{AUTH_SERVICE_PORT}}/health'
+
+  user-service:
+    gradleTask: ':user-service:bootRun'
+    cwd: 'services/user'
+    environment:
+      SERVER_PORT: '{{USER_SERVICE_PORT}}'
+      AUTH_SERVICE_URL: 'http://localhost:{{AUTH_SERVICE_PORT}}'
+      LOG_LEVEL: '{{LOG_LEVEL}}'
+      SERVICE_NAME: 'user-service'
+    healthcheck:
+      httpGet: 'http://localhost:{{USER_SERVICE_PORT}}/health'
+    depends_on:
+      - auth-service
+
+entrypoint: user-service

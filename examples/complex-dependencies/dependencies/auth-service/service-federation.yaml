@@ -1,0 +1,62 @@
+parameters:
+  PORT:
+    type: port
+
+  LOGGER_PORT:
+    type: port
+
+services:
+  auth:
+    process: |
+      echo "Auth service starting on port {{PORT}}"
+      echo "Will use logger at localhost:{{LOGGER_PORT}}"
+      echo "Starting HTTP server..."
+      export PORT="{{PORT}}"
+      export LOGGER_PORT="{{LOGGER_PORT}}"
+      python3 -c "
+      import http.server
+      import socketserver
+      import os
+
+      PORT = int(os.environ.get('PORT', '3002'))
+      LOGGER_PORT = os.environ.get('LOGGER_PORT', '3003')
+
+      class Handler(http.server.SimpleHTTPRequestHandler):
+          def do_GET(self):
+              if self.path == '/health':
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  self.wfile.write(b'OK')
+              else:
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  response = f'Auth Service - Using logger at localhost:{LOGGER_PORT}'
+                  self.wfile.write(response.encode())
+
+      with socketserver.TCPServer(('', PORT), Handler) as httpd:
+          print(f'Auth service serving on port {PORT}')
+          httpd.serve_forever()
+      "
+    environment:
+      PORT: '{{PORT}}'
+      LOGGER_PORT: '{{LOGGER_PORT}}'
+    depends_on:
+      - logger-external
+    healthcheck:
+      httpGet: 'http://localhost:{{PORT}}/health'
+
+  # Logger from external dependency
+  logger-external:
+    dependency: logger-service
+    service: logger
+    parameters:
+      PORT: '{{LOGGER_PORT}}'
+
+dependencies:
+  logger-service:
+    repo: file://../logger
+    branch: main
+
+entrypoint: auth

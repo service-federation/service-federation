@@ -1,0 +1,52 @@
+parameters:
+  PORT:
+    type: port
+
+services:
+  logger:
+    process: |
+      echo "Logger service starting on port {{PORT}}"
+      echo "Starting HTTP server..."
+      export PORT="{{PORT}}"
+      python3 -c "
+      import http.server
+      import socketserver
+      import os
+      import json
+      from datetime import datetime
+
+      PORT = int(os.environ.get('PORT', '3003'))
+
+      class Handler(http.server.SimpleHTTPRequestHandler):
+          def do_GET(self):
+              if self.path == '/health':
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  self.wfile.write(b'OK')
+              elif self.path == '/logs':
+                  self.send_response(200)
+                  self.send_header('Content-type', 'application/json')
+                  self.end_headers()
+                  logs = {
+                      'timestamp': datetime.now().isoformat(),
+                      'message': 'Logger service active',
+                      'level': 'INFO'
+                  }
+                  self.wfile.write(json.dumps(logs).encode())
+              else:
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  self.wfile.write(b'Logger Service - Ready to collect logs')
+
+      with socketserver.TCPServer(('', PORT), Handler) as httpd:
+          print(f'Logger service serving on port {PORT}')
+          httpd.serve_forever()
+      "
+    environment:
+      PORT: '{{PORT}}'
+    healthcheck:
+      httpGet: 'http://localhost:{{PORT}}/health'
+
+entrypoint: logger

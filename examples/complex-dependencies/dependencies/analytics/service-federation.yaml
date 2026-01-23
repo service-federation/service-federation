@@ -1,0 +1,19 @@
+parameters:
+  PORT:
+    type: port
+    default: "3004"
+
+services:
+  analytics:
+    process: |
+      echo "Analytics service starting on port {{PORT}}"
+      echo "THIS SERVICE SHOULD NOT START when main-app is started!"
+      while true; do
+        echo "Analytics service processing data..."
+        sleep 3
+      done
+    environment:
+      PORT: '{{PORT}}'
+    healthcheck: echo "Analytics service healthy"
+
+entrypoint: analytics

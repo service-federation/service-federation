@@ -1,0 +1,74 @@
+parameters:
+  BACKEND_PORT:
+    type: port
+    default: 8080  # Prefers 8080, falls back to random if unavailable
+
+  DB_PORT:
+    type: port  # Always allocates random available port
+
+  DB_NAME:
+    default: testdb
+  DB_USER:
+    default: postgres
+  DB_PASSWORD:
+    default: password
+
+services:
+  backend:
+    process: |
+      echo "Backend starting on port {{BACKEND_PORT}}"
+      echo "Connecting to database {{DB_NAME}}"
+      while true; do
+        echo "Backend running..."
+        sleep 2
+      done
+    environment:
+      PORT: '{{BACKEND_PORT}}'
+      DB_NAME: '{{DB_NAME}}'
+      DB_USER: '{{DB_USER}}'
+      DB_PASSWORD: '{{DB_PASSWORD}}'
+    healthcheck:
+      command: echo "Backend is healthy"
+    depends_on:
+      - database
+
+  database:
+    process: |
+      echo "Database starting..."
+      echo "Database: {{DB_NAME}}"
+      echo "User: {{DB_USER}}"
+      while true; do
+        echo "Database running..."
+        sleep 3
+      done
+    environment:
+      POSTGRES_DB: '{{DB_NAME}}'
+      POSTGRES_USER: '{{DB_USER}}'
+      POSTGRES_PASSWORD: '{{DB_PASSWORD}}'
+
+  frontend:
+    process: |
+      echo "Frontend starting..."
+      echo "Backend URL: http://localhost:{{BACKEND_PORT}}"
+      while true; do
+        echo "Frontend running..."
+        sleep 2
+      done
+    environment:
+      BACKEND_URL: 'http://localhost:{{BACKEND_PORT}}'
+    depends_on:
+      - backend
+
+entrypoint: frontend
+
+scripts:
+  test:
+    depends_on:
+      - backend
+    environment:
+      BACKEND_PORT: '{{BACKEND_PORT}}'
+    script: |
+      echo "Running tests against backend on port $BACKEND_PORT"
+      echo "Test 1: OK"
+      echo "Test 2: OK"
+      echo "All tests passed!"

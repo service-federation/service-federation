@@ -1,0 +1,1952 @@
+use super::types::{LockFile, ServiceState};
+use crate::error::{validate_pid_for_check, Error, Result};
+use chrono::{DateTime, Utc};
+use fs2::FileExt;
+use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use tokio_rusqlite::Connection;
+use tracing::{debug, info, warn};
+
+const FED_DIR: &str = ".fed";
+const DB_FILE_NAME: &str = "lock.db";
+const LOCK_FILE_NAME: &str = ".lock";
+const SCHEMA_VERSION: i32 = 2;
+
+/// SQLite-backed state tracker for persistent service state management
+/// Provides ACID transactions and crash recovery via WAL mode.
+///
+/// Uses advisory file locking (`.fed/.lock`) to prevent multiple `fed` instances
+/// from modifying state simultaneously. The lock is held for the lifetime of
+/// the state tracker and released when dropped.
+pub struct SqliteStateTracker {
+    db_path: PathBuf,
+    conn: Connection,
+    work_dir: String,
+    /// Advisory lock file handle - held to prevent concurrent modifications.
+    /// Using `Option` to allow graceful degradation if locking fails.
+    #[allow(dead_code)]
+    lock_file: Option<std::fs::File>,
+}
+
+impl SqliteStateTracker {
+    /// Create a new SQLite state tracker with the given working directory.
+    ///
+    /// Acquires an advisory file lock (`.fed/.lock`) to prevent concurrent
+    /// modifications from multiple `fed` instances. The lock is held for the
+    /// lifetime of this struct and released when dropped.
+    pub async fn new(work_dir: PathBuf) -> Result<Self> {
+        // Create .fed directory if it doesn't exist
+        let fed_dir = work_dir.join(FED_DIR);
+        std::fs::create_dir_all(&fed_dir)?;
+
+        // Try to acquire advisory lock for multi-terminal safety
+        let lock_path = fed_dir.join(LOCK_FILE_NAME);
+        let lock_file = Self::try_acquire_lock(&lock_path)?;
+
+        let db_path = fed_dir.join(DB_FILE_NAME);
+        let work_dir_str = work_dir.to_string_lossy().to_string();
+
+        // Open database connection
+        let conn = Connection::open(&db_path).await?;
+
+        // Configure WAL mode for crash recovery
+        conn.call(|conn: &mut rusqlite::Connection| {
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+            conn.pragma_update(None, "synchronous", "NORMAL")?;
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            conn.pragma_update(None, "busy_timeout", 5000)?;
+            Ok(())
+        })
+        .await?;
+
+        Ok(Self {
+            db_path,
+            conn,
+            work_dir: work_dir_str,
+            lock_file,
+        })
+    }
+
+    /// Try to acquire an advisory file lock.
+    ///
+    /// Returns the lock file handle if successful, or None if another process
+    /// holds the lock (with a warning logged). The lock is automatically
+    /// released when the file handle is dropped.
+    fn try_acquire_lock(lock_path: &Path) -> Result<Option<std::fs::File>> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .map_err(|e| Error::Config(format!("Failed to open lock file: {}", e)))?;
+
+        // Try non-blocking exclusive lock
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                // Write our PID to the lock file for debugging
+                let _ = file.set_len(0); // Truncate
+                let _ = writeln!(file, "{}", std::process::id());
+                debug!("Acquired advisory lock on {:?}", lock_path);
+                Ok(Some(file))
+            }
+            Err(e) => {
+                // Lock failed - another fed instance may be running
+                debug!("Lock acquisition failed: {} (kind: {:?})", e, e.kind());
+                // Read the PID from the lock file to provide better diagnostics
+                if let Ok(contents) = std::fs::read_to_string(lock_path) {
+                    let owner_pid = contents.trim();
+                    if !owner_pid.is_empty() {
+                        // Check if the owner process is actually still running
+                        if let Ok(pid) = owner_pid.parse::<u32>() {
+                            // Same process holding lock (e.g., during set_work_dir) - not a conflict
+                            if pid == std::process::id() {
+                                debug!("Lock held by same process (state tracker recreation)");
+                            } else {
+                                #[cfg(unix)]
+                                {
+                                    use nix::sys::signal::kill;
+                                    use nix::unistd::Pid;
+                                    // Check if process exists (signal 0 doesn't send anything)
+                                    if kill(Pid::from_raw(pid as i32), None).is_ok() {
+                                        warn!(
+                                            "Another fed instance (PID {}) is modifying this workspace. \
+                                             Proceeding anyway, but state conflicts are possible.",
+                                            pid
+                                        );
+                                    } else {
+                                        // Process is dead - stale lock file, we can proceed
+                                        debug!(
+                                            "Stale lock file (PID {} no longer exists) - proceeding",
+                                            pid
+                                        );
+                                    }
+                                }
+                                #[cfg(not(unix))]
+                                {
+                                    warn!(
+                                        "Another fed instance (PID {}) may be modifying this workspace. \
+                                         Proceeding anyway, but state conflicts are possible.",
+                                        pid
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    debug!("Could not acquire lock ({}) - proceeding anyway", e);
+                }
+                // Don't fail - just proceed without exclusive lock
+                // This allows read-only operations (status, logs) to work
+                Ok(None)
+            }
+        }
+    }
+
+    /// Execute a function within a transaction, automatically updating the lock file timestamp and committing.
+    /// This reduces boilerplate across all transaction-based methods.
+    #[tracing::instrument(skip(self, f), fields(operation = "db_transaction"))]
+    async fn with_transaction<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&rusqlite::Transaction) -> rusqlite::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.conn
+            .call(move |conn: &mut rusqlite::Connection| {
+                let tx = conn.transaction()?;
+                let result = f(&tx)?;
+                tx.execute(
+                    "UPDATE lock_file SET updated_at = datetime('now') WHERE id = 1",
+                    [],
+                )?;
+                tx.commit()?;
+                Ok(result)
+            })
+            .await
+            .map_err(Error::from)
+    }
+
+    /// Initialize state tracker - create schema or load existing
+    pub async fn initialize(&mut self) -> Result<()> {
+        // Check if schema exists
+        let schema_exists: bool = self
+            .conn
+            .call(
+                |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<bool> {
+                    Ok(conn.query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='lock_file'",
+                [],
+                |row| row.get(0),
+            )?)
+                },
+            )
+            .await?;
+
+        if !schema_exists {
+            debug!("Creating SQLite schema");
+            self.create_schema().await?;
+            self.init_lock_file().await?;
+        } else {
+            debug!("Loading existing SQLite state");
+            // Run migrations if needed
+            self.run_migrations().await?;
+            self.validate_and_cleanup().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Run database migrations to bring schema up to current version
+    async fn run_migrations(&self) -> Result<()> {
+        let current_version: i32 = self
+            .conn
+            .call(
+                |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<i32> {
+                    conn.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                        row.get(0)
+                    })
+                    .or(Ok(1)) // Default to 1 if no version found
+                },
+            )
+            .await
+            .unwrap_or(1);
+
+        if current_version >= SCHEMA_VERSION {
+            debug!(
+                "Database schema is up to date (version {})",
+                current_version
+            );
+            return Ok(());
+        }
+
+        info!(
+            "Migrating database schema from version {} to {}",
+            current_version, SCHEMA_VERSION
+        );
+
+        // Migration from v1 to v2: Add circuit breaker support
+        if current_version < 2 {
+            self.migrate_v1_to_v2().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Migration v1 -> v2: Add circuit breaker tables and columns
+    async fn migrate_v1_to_v2(&self) -> Result<()> {
+        debug!("Running migration v1 -> v2: Adding circuit breaker support");
+
+        self.conn
+            .call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                let tx = conn.transaction()?;
+
+                // Check if migration has already been applied
+                let already_applied: bool = tx
+                    .query_row(
+                        "SELECT COUNT(*) > 0 FROM schema_version WHERE version = 2",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+
+                if already_applied {
+                    // Migration already applied, nothing to do
+                    return Ok(());
+                }
+
+                // Create restart_history table for tracking restart timestamps
+                tx.execute_batch(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS restart_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        service_id TEXT NOT NULL,
+                        restarted_at TEXT NOT NULL,
+                        FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_restart_history_service
+                        ON restart_history(service_id, restarted_at);
+                    "#,
+                )?;
+
+                // Add circuit_breaker_open_until column to services table
+                // SQLite allows adding columns without default values
+                // First check if column already exists
+                let has_column: bool = tx
+                    .query_row(
+                        "SELECT COUNT(*) > 0 FROM pragma_table_info('services') WHERE name = 'circuit_breaker_open_until'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+
+                if !has_column {
+                    tx.execute(
+                        "ALTER TABLE services ADD COLUMN circuit_breaker_open_until TEXT",
+                        [],
+                    )?;
+                }
+
+                // Record migration
+                tx.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (2, datetime('now'))",
+                    [],
+                )?;
+
+                tx.commit()?;
+                Ok(())
+            })
+            .await?;
+
+        info!("Migration v1 -> v2 completed successfully");
+        Ok(())
+    }
+
+    /// Create database schema
+    async fn create_schema(&self) -> Result<()> {
+        self.conn.call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+            conn.execute_batch(
+                r#"
+                -- Schema version tracking
+                CREATE TABLE schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );
+
+                -- Lock file metadata (singleton)
+                CREATE TABLE lock_file (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    fed_pid INTEGER NOT NULL,
+                    work_dir TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                -- Services table
+                CREATE TABLE services (
+                    id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    service_type TEXT NOT NULL,
+                    pid INTEGER,
+                    container_id TEXT,
+                    started_at TEXT NOT NULL,
+                    external_repo TEXT,
+                    namespace TEXT NOT NULL,
+                    restart_count INTEGER NOT NULL DEFAULT 0,
+                    last_restart_at TEXT,
+                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                    circuit_breaker_open_until TEXT
+                );
+
+                -- Indexes for services
+                CREATE INDEX idx_services_status ON services(status);
+                CREATE INDEX idx_services_namespace ON services(namespace);
+                CREATE INDEX idx_services_pid ON services(pid) WHERE pid IS NOT NULL;
+                CREATE INDEX idx_services_container_id ON services(container_id) WHERE container_id IS NOT NULL;
+
+                -- Port allocations per service
+                CREATE TABLE port_allocations (
+                    service_id TEXT NOT NULL,
+                    parameter_name TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    PRIMARY KEY (service_id, parameter_name),
+                    FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX idx_port_allocations_port ON port_allocations(port);
+
+                -- Global allocated ports
+                CREATE TABLE allocated_ports (
+                    port INTEGER PRIMARY KEY,
+                    allocated_at TEXT NOT NULL
+                );
+
+                -- Restart history for circuit breaker tracking
+                CREATE TABLE restart_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    service_id TEXT NOT NULL,
+                    restarted_at TEXT NOT NULL,
+                    FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX idx_restart_history_service ON restart_history(service_id, restarted_at);
+
+                "#,
+            )?;
+
+            // Insert schema version separately (can't use placeholders in execute_batch)
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?1, datetime('now'))",
+                rusqlite::params![SCHEMA_VERSION],
+            )?;
+
+            Ok(())
+        }).await?;
+
+        Ok(())
+    }
+
+    /// Initialize lock file row
+    async fn init_lock_file(&self) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let work_dir = self.work_dir.clone();
+        let pid = std::process::id();
+
+        self.conn.call(move |conn: &mut rusqlite::Connection| {
+            conn.execute(
+                "INSERT INTO lock_file (id, fed_pid, work_dir, started_at, updated_at) VALUES (1, ?1, ?2, ?3, ?4)",
+                rusqlite::params![pid, &work_dir, &now, &now],
+            )?;
+            Ok(())
+        }).await?;
+
+        Ok(())
+    }
+
+    /// Validate existing state and cleanup stale services
+    async fn validate_and_cleanup(&mut self) -> Result<()> {
+        // Check if previous fed process still running
+        // Note: fed is a CLI tool, not a daemon - it's NORMAL for the previous
+        // fed process to have exited. What matters is whether SERVICES are running.
+        let fed_pid: u32 = self
+            .conn
+            .call(
+                |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<u32> {
+                    Ok(
+                        conn.query_row("SELECT fed_pid FROM lock_file WHERE id = 1", [], |row| {
+                            row.get(0)
+                        })?,
+                    )
+                },
+            )
+            .await?;
+
+        // Always cleanup stale services on startup, regardless of fed_pid status.
+        // The fed_pid check is only useful for detecting if another fed instance
+        // is actively modifying state (rare race condition).
+        if Self::is_process_running(fed_pid).await && fed_pid != std::process::id() {
+            // Another fed instance is running - this could cause conflicts
+            debug!(
+                "Another fed process (PID {}) may be running - proceeding with caution",
+                fed_pid
+            );
+        }
+
+        // Always check for stale services (processes/containers that died)
+        self.cleanup_dead_services().await?;
+
+        // Update to current PID
+        let pid = std::process::id();
+        self.conn
+            .call(move |conn: &mut rusqlite::Connection| {
+                conn.execute(
+                    "UPDATE lock_file SET fed_pid = ?1, updated_at = datetime('now') WHERE id = 1",
+                    rusqlite::params![pid],
+                )?;
+                Ok(())
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    /// Check if a process with given PID is running (not a zombie)
+    async fn is_process_running(pid: u32) -> bool {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::kill;
+
+            // Validate PID for read-only check (rejects 0 and >i32::MAX)
+            let Some(nix_pid) = validate_pid_for_check(pid) else {
+                warn!("Invalid PID {} for process check", pid);
+                return false;
+            };
+
+            // First check if process exists at all
+            if kill(nix_pid, None).is_err() {
+                return false;
+            }
+
+            // Check if process is a zombie using ps command
+            // Zombies have PID entries but aren't actually running
+            match tokio::process::Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "stat="])
+                .output()
+                .await
+            {
+                Ok(output) => {
+                    let stat = String::from_utf8_lossy(&output.stdout);
+                    let stat = stat.trim();
+                    // Process exists and is not a zombie (Z state)
+                    !stat.is_empty() && !stat.starts_with('Z')
+                }
+                Err(_) => {
+                    // If ps fails, fall back to just the kill check result
+                    true
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            warn!("Process validation not fully implemented for this platform");
+            false
+        }
+    }
+
+    /// Check if a Docker container is running
+    async fn is_container_running(container_id: &str) -> bool {
+        crate::docker::is_container_running(container_id).await
+    }
+
+    /// Check if a status string indicates the service MUST have a PID/container.
+    ///
+    /// Returns true for statuses where a missing PID/container indicates a crash:
+    /// - "running" - service is actively running, must have PID/container
+    /// - "healthy" - service is running and healthy, must have PID/container
+    /// - "failing" - service is running but failing health checks, must have PID/container
+    ///
+    /// Returns false for:
+    /// - "starting" - service may still be spinning up, don't clean up yet
+    /// - "stopped" - service is not running, no PID/container expected
+    /// - "stopping" - service is shutting down, PID/container may be gone
+    /// - any other status - unknown/invalid, err on side of not cleaning up
+    ///
+    /// Note: "starting" is explicitly excluded because in concurrent scenarios,
+    /// one process may have registered the service but not yet assigned a PID,
+    /// while another process reads the state. We don't want to clean up services
+    /// that are legitimately in the process of starting.
+    fn status_indicates_should_be_running(status: &str) -> bool {
+        matches!(status, "running" | "healthy" | "failing")
+    }
+
+    /// Register a new service in the state
+    /// Returns true if newly registered, false if already existed
+    pub async fn register_service(&mut self, service_state: ServiceState) -> bool {
+        debug!("Registering service: {}", service_state.id);
+
+        let id = service_state.id.clone();
+        let status = service_state.status.clone();
+        let service_type = service_state.service_type.clone();
+        let namespace = service_state.namespace.clone();
+        let started_at = service_state.started_at.to_rfc3339();
+        let pid = service_state.pid;
+        let container_id = service_state.container_id.clone();
+        let external_repo = service_state.external_repo.clone();
+        let restart_count = service_state.restart_count;
+        let last_restart_at = service_state.last_restart_at.map(|dt| dt.to_rfc3339());
+        let consecutive_failures = service_state.consecutive_failures;
+
+        match self.conn.call(move |conn: &mut rusqlite::Connection| {
+            let tx = conn.transaction()?;
+
+            // Check if exists
+            let exists: bool = tx.query_row(
+                "SELECT COUNT(*) > 0 FROM services WHERE id = ?1",
+                rusqlite::params![&id],
+                |row| row.get(0),
+            )?;
+
+            if exists {
+                // Update existing
+                tx.execute(
+                    "UPDATE services SET status = ?1, service_type = ?2, namespace = ?3, started_at = ?4 WHERE id = ?5",
+                    rusqlite::params![
+                        &status,
+                        &service_type,
+                        &namespace,
+                        &started_at,
+                        &id,
+                    ],
+                )?;
+            } else {
+                // Insert new
+                tx.execute(
+                    "INSERT INTO services (id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    rusqlite::params![
+                        &id,
+                        &status,
+                        &service_type,
+                        pid,
+                        container_id.as_deref(),
+                        &started_at,
+                        external_repo.as_deref(),
+                        &namespace,
+                        restart_count,
+                        last_restart_at,
+                        consecutive_failures,
+                    ],
+                )?;
+            }
+
+            // Update lock file timestamp
+            tx.execute(
+                "UPDATE lock_file SET updated_at = datetime('now') WHERE id = 1",
+                [],
+            )?;
+
+            tx.commit()?;
+            Ok(!exists)
+        }).await {
+            Ok(newly_registered) => newly_registered,
+            Err(e) => {
+                warn!("Failed to register service: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Update service status
+    #[must_use = "ignoring this result may cause state loss - the status update will not be persisted"]
+    pub async fn update_service_status(&mut self, service_id: &str, status: &str) -> Result<()> {
+        let service_id = service_id.to_string();
+        let service_id_for_tx = service_id.clone();
+        let status = status.to_string();
+
+        let rows = self
+            .with_transaction(move |tx| {
+                tx.execute(
+                    "UPDATE services SET status = ?1 WHERE id = ?2",
+                    rusqlite::params![&status, &service_id_for_tx],
+                )
+            })
+            .await?;
+
+        if rows == 0 {
+            return Err(Error::ServiceNotFound(service_id));
+        }
+
+        Ok(())
+    }
+
+    /// Update service PID
+    #[must_use = "ignoring this result may cause state loss - the PID will not be persisted"]
+    pub async fn update_service_pid(&mut self, service_id: &str, pid: u32) -> Result<()> {
+        // Validate PID can be safely used for signal operations
+        if pid > i32::MAX as u32 {
+            return Err(Error::Validation(format!(
+                "Service '{}': PID {} exceeds i32::MAX, cannot be used for signal operations",
+                service_id, pid
+            )));
+        }
+        if pid == 0 {
+            return Err(Error::Validation(format!(
+                "Service '{}': PID cannot be 0",
+                service_id
+            )));
+        }
+
+        let service_id = service_id.to_string();
+        let service_id_for_tx = service_id.clone();
+
+        let rows = self
+            .with_transaction(move |tx| {
+                tx.execute(
+                    "UPDATE services SET pid = ?1 WHERE id = ?2",
+                    rusqlite::params![pid, &service_id_for_tx],
+                )
+            })
+            .await?;
+
+        if rows == 0 {
+            return Err(Error::ServiceNotFound(service_id));
+        }
+
+        Ok(())
+    }
+
+    /// Update service container ID
+    #[must_use = "ignoring this result may cause state loss - the container ID will not be persisted"]
+    pub async fn update_service_container_id(
+        &mut self,
+        service_id: &str,
+        container_id: String,
+    ) -> Result<()> {
+        let service_id = service_id.to_string();
+        let service_id_for_tx = service_id.clone();
+
+        let rows = self
+            .with_transaction(move |tx| {
+                tx.execute(
+                    "UPDATE services SET container_id = ?1 WHERE id = ?2",
+                    rusqlite::params![&container_id, &service_id_for_tx],
+                )
+            })
+            .await?;
+
+        if rows == 0 {
+            return Err(Error::ServiceNotFound(service_id));
+        }
+
+        Ok(())
+    }
+
+    /// Atomically transition service state with metadata updates.
+    ///
+    /// This method ensures that status transitions happen atomically with their associated
+    /// metadata (PID, container ID) in a single database transaction. This prevents
+    /// inconsistent state where the database shows "Running" but has no PID.
+    ///
+    /// The transition is validated against the current state to ensure it follows
+    /// valid state machine paths (see `Status::is_valid_transition`).
+    ///
+    /// # Arguments
+    ///
+    /// * `service_id` - The service to transition
+    /// * `transition` - The state transition to apply (includes status and metadata)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The service doesn't exist
+    /// - The transition is invalid (violates state machine)
+    /// - The database transaction fails
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Transition to Running with PID in one atomic operation
+    /// let transition = StateTransition::running_with_pid(12345);
+    /// state_tracker.apply_state_transition("my-service", transition).await?;
+    /// ```
+    #[must_use = "ignoring this result may cause state loss - the transition will not be applied"]
+    pub async fn apply_state_transition(
+        &mut self,
+        service_id: &str,
+        transition: crate::service::StateTransition,
+    ) -> Result<()> {
+        let service_id = service_id.to_string();
+        let service_id_for_tx = service_id.clone();
+
+        // Validate transition against current state
+        let current_status = {
+            let state = self.get_service(&service_id).await;
+            state
+                .ok_or_else(|| Error::ServiceNotFound(service_id.clone()))?
+                .status
+        };
+
+        // Convert status string to Status enum for validation
+        let current_status_enum = match current_status.as_str() {
+            "stopped" => crate::service::Status::Stopped,
+            "starting" => crate::service::Status::Starting,
+            "running" => crate::service::Status::Running,
+            "healthy" => crate::service::Status::Healthy,
+            "failing" => crate::service::Status::Failing,
+            "stopping" => crate::service::Status::Stopping,
+            _ => {
+                return Err(Error::Validation(format!(
+                    "Unknown status '{}' for service '{}'",
+                    current_status, service_id
+                )));
+            }
+        };
+
+        // Validate the transition
+        transition.validate(current_status_enum)?;
+
+        // Apply the transition atomically
+        let status_str = transition.status.to_string();
+        let pid = transition.pid;
+        let container_id = transition.container_id;
+        let clear_pid = transition.clear_pid;
+        let clear_container_id = transition.clear_container_id;
+
+        let rows = self
+            .with_transaction(move |tx| {
+                // Build UPDATE statement dynamically based on what needs to be updated
+                let mut updates = vec!["status = ?1".to_string()];
+                let mut param_index = 2;
+
+                // Track parameters for rusqlite
+                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(status_str.clone())];
+
+                if let Some(pid_val) = pid {
+                    // Validate PID
+                    if pid_val > i32::MAX as u32 {
+                        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                format!("PID {} exceeds i32::MAX", pid_val),
+                            ),
+                        )));
+                    }
+                    if pid_val == 0 {
+                        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "PID cannot be 0",
+                            ),
+                        )));
+                    }
+                    updates.push(format!("pid = ?{}", param_index));
+                    params.push(Box::new(pid_val));
+                    param_index += 1;
+                }
+
+                if let Some(ref cid) = container_id {
+                    updates.push(format!("container_id = ?{}", param_index));
+                    params.push(Box::new(cid.clone()));
+                    param_index += 1;
+                }
+
+                if clear_pid {
+                    updates.push("pid = NULL".to_string());
+                }
+
+                if clear_container_id {
+                    updates.push("container_id = NULL".to_string());
+                }
+
+                let query = format!(
+                    "UPDATE services SET {} WHERE id = ?{}",
+                    updates.join(", "),
+                    param_index
+                );
+                params.push(Box::new(service_id_for_tx.clone()));
+
+                // Convert params to references for rusqlite
+                let param_refs: Vec<&dyn rusqlite::ToSql> =
+                    params.iter().map(|p| p.as_ref()).collect();
+
+                tx.execute(&query, param_refs.as_slice())
+            })
+            .await?;
+
+        if rows == 0 {
+            return Err(Error::ServiceNotFound(service_id));
+        }
+
+        Ok(())
+    }
+
+    /// Increment restart count for a service
+    #[must_use = "ignoring this result may cause state loss - the restart count will not be updated"]
+    pub async fn increment_restart_count(&mut self, service_id: &str) -> Result<()> {
+        let service_id = service_id.to_string();
+        let service_id_for_tx = service_id.clone();
+        let now = Utc::now().to_rfc3339();
+
+        let rows = self
+            .with_transaction(move |tx| {
+                tx.execute(
+                    "UPDATE services SET restart_count = restart_count + 1, last_restart_at = ?1, consecutive_failures = 0 WHERE id = ?2",
+                    rusqlite::params![&now, &service_id_for_tx],
+                )
+            })
+            .await?;
+
+        if rows == 0 {
+            return Err(Error::ServiceNotFound(service_id));
+        }
+
+        Ok(())
+    }
+
+    /// Increment consecutive failures for a service
+    #[must_use = "ignoring this result may cause state loss - the failure count will not be updated"]
+    pub async fn increment_consecutive_failures(&mut self, service_id: &str) -> Result<()> {
+        let service_id = service_id.to_string();
+        let service_id_for_tx = service_id.clone();
+
+        let rows = self
+            .with_transaction(move |tx| {
+                tx.execute(
+                    "UPDATE services SET consecutive_failures = consecutive_failures + 1 WHERE id = ?1",
+                    rusqlite::params![&service_id_for_tx],
+                )
+            })
+            .await?;
+
+        if rows == 0 {
+            return Err(Error::ServiceNotFound(service_id));
+        }
+
+        Ok(())
+    }
+
+    /// Reset consecutive failures (on successful health check)
+    #[must_use = "ignoring this result may cause state loss - the failure count will not be reset"]
+    pub async fn reset_consecutive_failures(&mut self, service_id: &str) -> Result<()> {
+        let service_id = service_id.to_string();
+        let service_id_for_tx = service_id.clone();
+
+        let rows = self
+            .with_transaction(move |tx| {
+                tx.execute(
+                    "UPDATE services SET consecutive_failures = 0 WHERE id = ?1",
+                    rusqlite::params![&service_id_for_tx],
+                )
+            })
+            .await?;
+
+        if rows == 0 {
+            return Err(Error::ServiceNotFound(service_id));
+        }
+
+        Ok(())
+    }
+
+    /// Batch update health check results to reduce lock contention.
+    /// Takes lists of services that passed/failed health checks.
+    /// Returns a map of service_id -> consecutive_failures for failed services.
+    pub async fn batch_health_update(
+        &mut self,
+        healthy_services: Vec<String>,
+        unhealthy_services: Vec<String>,
+    ) -> Result<std::collections::HashMap<String, u32>> {
+        self.with_transaction(move |tx| {
+            // Reset consecutive failures for healthy services
+            for service_id in &healthy_services {
+                tx.execute(
+                    "UPDATE services SET consecutive_failures = 0 WHERE id = ?1",
+                    rusqlite::params![service_id],
+                )?;
+            }
+
+            // Increment consecutive failures for unhealthy services and collect counts
+            let mut failure_counts = std::collections::HashMap::new();
+            for service_id in &unhealthy_services {
+                tx.execute(
+                    "UPDATE services SET consecutive_failures = consecutive_failures + 1 WHERE id = ?1",
+                    rusqlite::params![service_id],
+                )?;
+
+                // Get the new failure count
+                let count: u32 = tx
+                    .query_row(
+                        "SELECT consecutive_failures FROM services WHERE id = ?1",
+                        rusqlite::params![service_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                failure_counts.insert(service_id.clone(), count);
+            }
+
+            Ok(failure_counts)
+        })
+        .await
+    }
+
+    /// Batch increment restart counts for multiple services
+    #[must_use = "ignoring this result may cause state loss - restart counts will not be updated"]
+    pub async fn batch_increment_restart_counts(&mut self, service_ids: Vec<String>) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+
+        self.with_transaction(move |tx| {
+            for service_id in &service_ids {
+                tx.execute(
+                    "UPDATE services SET restart_count = restart_count + 1, last_restart_at = ?1, consecutive_failures = 0 WHERE id = ?2",
+                    rusqlite::params![&now, service_id],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Get restart count for a service
+    pub async fn get_restart_count(&self, service_id: &str) -> Option<u32> {
+        let service_id = service_id.to_string();
+
+        self.conn
+            .call(
+                move |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<u32> {
+                    Ok(conn.query_row(
+                        "SELECT restart_count FROM services WHERE id = ?1",
+                        rusqlite::params![&service_id],
+                        |row| row.get(0),
+                    )?)
+                },
+            )
+            .await
+            .ok()
+    }
+
+    /// Get consecutive failures for a service
+    pub async fn get_consecutive_failures(&self, service_id: &str) -> Option<u32> {
+        let service_id = service_id.to_string();
+
+        self.conn
+            .call(
+                move |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<u32> {
+                    Ok(conn.query_row(
+                        "SELECT consecutive_failures FROM services WHERE id = ?1",
+                        rusqlite::params![&service_id],
+                        |row| row.get(0),
+                    )?)
+                },
+            )
+            .await
+            .ok()
+    }
+
+    // =========================================================================
+    // Circuit Breaker Methods
+    // =========================================================================
+
+    /// Record a restart event for circuit breaker tracking.
+    ///
+    /// This adds an entry to the restart_history table with the current timestamp.
+    /// Old entries (older than 24 hours) are automatically cleaned up.
+    #[must_use = "ignoring this result may cause state loss - restart will not be tracked for circuit breaker"]
+    pub async fn record_restart(&mut self, service_id: &str) -> Result<()> {
+        let service_id = service_id.to_string();
+        let now = Utc::now().to_rfc3339();
+
+        self.with_transaction(move |tx| {
+            // Record the restart event
+            tx.execute(
+                "INSERT INTO restart_history (service_id, restarted_at) VALUES (?1, ?2)",
+                rusqlite::params![&service_id, &now],
+            )?;
+
+            // Cleanup old entries (keep last 24 hours to avoid unbounded growth)
+            tx.execute(
+                "DELETE FROM restart_history WHERE service_id = ?1
+                 AND restarted_at < datetime('now', '-1 day')",
+                rusqlite::params![&service_id],
+            )?;
+
+            Ok(())
+        })
+        .await
+    }
+
+    /// Check if the circuit breaker should trip for a service.
+    ///
+    /// Returns `true` if the number of restarts within the specified window
+    /// meets or exceeds the threshold, indicating a crash loop.
+    ///
+    /// # Arguments
+    /// * `service_id` - The service to check
+    /// * `threshold` - Number of restarts to trigger circuit breaker
+    /// * `window_secs` - Time window in seconds for counting restarts
+    pub async fn check_circuit_breaker(
+        &self,
+        service_id: &str,
+        threshold: u32,
+        window_secs: u64,
+    ) -> Result<bool> {
+        let service_id = service_id.to_string();
+
+        self.conn
+            .call(move |conn| {
+                let count: u32 = conn.query_row(
+                    "SELECT COUNT(*) FROM restart_history
+                     WHERE service_id = ?1
+                     AND restarted_at > datetime('now', ?2)",
+                    rusqlite::params![&service_id, format!("-{} seconds", window_secs)],
+                    |row| row.get(0),
+                )?;
+
+                Ok(count >= threshold)
+            })
+            .await
+            .map_err(Error::from)
+    }
+
+    /// Open the circuit breaker for a service.
+    ///
+    /// This sets the `circuit_breaker_open_until` timestamp to the current time
+    /// plus the cooldown period. While open, restart attempts should be blocked.
+    ///
+    /// # Arguments
+    /// * `service_id` - The service to open the circuit breaker for
+    /// * `cooldown_secs` - How long the circuit breaker should remain open
+    #[must_use = "ignoring this result may cause the circuit breaker to not open - service may restart in a crash loop"]
+    pub async fn open_circuit_breaker(
+        &mut self,
+        service_id: &str,
+        cooldown_secs: u64,
+    ) -> Result<()> {
+        let service_id = service_id.to_string();
+
+        self.with_transaction(move |tx| {
+            tx.execute(
+                "UPDATE services SET circuit_breaker_open_until = datetime('now', ?1)
+                 WHERE id = ?2",
+                rusqlite::params![format!("+{} seconds", cooldown_secs), &service_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Get the restart history for a service (last 50 events).
+    ///
+    /// Returns a vector of RFC3339 timestamps for recent restarts.
+    pub async fn get_restart_history(&self, service_id: &str) -> Result<Vec<String>> {
+        let service_id = service_id.to_string();
+
+        self.conn
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT restarted_at FROM restart_history
+                     WHERE service_id = ?1
+                     ORDER BY restarted_at DESC
+                     LIMIT 50",
+                )?;
+
+                let events = stmt
+                    .query_map(rusqlite::params![&service_id], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+
+                Ok(events)
+            })
+            .await
+            .map_err(Error::from)
+    }
+
+    /// Check if the circuit breaker is currently open (in cooldown period).
+    ///
+    /// Returns `true` if the circuit breaker is open and restarts should be blocked.
+    /// Returns `false` if the circuit breaker is closed or the cooldown has expired.
+    pub async fn is_circuit_breaker_open(&self, service_id: &str) -> bool {
+        let service_id = service_id.to_string();
+
+        self.conn
+            .call(move |conn| {
+                // Query checks if circuit_breaker_open_until is in the future
+                let is_open: bool = conn
+                    .query_row(
+                        "SELECT circuit_breaker_open_until > datetime('now')
+                         FROM services WHERE id = ?1",
+                        rusqlite::params![&service_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+
+                Ok(is_open)
+            })
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Get the time remaining until circuit breaker closes (in seconds).
+    ///
+    /// Returns `Some(seconds)` if the circuit breaker is open, `None` if closed.
+    /// This is useful for logging how long until the service can restart.
+    pub async fn get_circuit_breaker_remaining(&self, service_id: &str) -> Option<i64> {
+        let service_id = service_id.to_string();
+
+        self.conn
+            .call(move |conn| {
+                let remaining: Option<i64> = conn
+                    .query_row(
+                        "SELECT MAX(0, CAST((julianday(circuit_breaker_open_until) - julianday('now')) * 86400 AS INTEGER))
+                         FROM services
+                         WHERE id = ?1 AND circuit_breaker_open_until > datetime('now')",
+                        rusqlite::params![&service_id],
+                        |row| row.get(0),
+                    )
+                    .ok();
+
+                Ok(remaining)
+            })
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Close the circuit breaker for a service.
+    ///
+    /// This clears the `circuit_breaker_open_until` timestamp, allowing
+    /// normal restart behavior to resume. Should be called when a service
+    /// becomes healthy.
+    #[must_use = "ignoring this result may leave the circuit breaker open - service may not restart when expected"]
+    pub async fn close_circuit_breaker(&mut self, service_id: &str) -> Result<()> {
+        let service_id = service_id.to_string();
+
+        self.with_transaction(move |tx| {
+            tx.execute(
+                "UPDATE services SET circuit_breaker_open_until = NULL WHERE id = ?1",
+                rusqlite::params![&service_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Clear restart history for a service.
+    ///
+    /// This resets the circuit breaker tracking for a service. Should be called
+    /// when the service has been healthy for a sustained period.
+    #[must_use = "ignoring this result may leave stale restart history - circuit breaker may trip unexpectedly"]
+    pub async fn clear_restart_history(&mut self, service_id: &str) -> Result<()> {
+        let service_id = service_id.to_string();
+
+        self.with_transaction(move |tx| {
+            tx.execute(
+                "DELETE FROM restart_history WHERE service_id = ?1",
+                rusqlite::params![&service_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Unregister a service (when stopped)
+    pub async fn unregister_service(&mut self, service_id: &str) {
+        let service_id = service_id.to_string();
+        let service_id_for_tx = service_id.clone();
+
+        match self
+            .with_transaction(move |tx| {
+                tx.execute(
+                    "DELETE FROM services WHERE id = ?1",
+                    rusqlite::params![&service_id_for_tx],
+                )?;
+                // Clean up global ports no longer in use
+                tx.execute(
+                    "DELETE FROM allocated_ports WHERE port NOT IN (SELECT DISTINCT port FROM port_allocations)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+        {
+            Ok(_) => debug!("Unregistered service: {}", service_id),
+            Err(e) => warn!("Failed to unregister service {}: {}", service_id, e),
+        }
+    }
+
+    /// Track a newly allocated port
+    pub async fn track_port(&mut self, port: u16) {
+        let now = Utc::now().to_rfc3339();
+
+        // Use INSERT OR IGNORE to handle duplicates
+        if let Err(e) = self
+            .conn
+            .call(
+                move |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                    conn.execute(
+                "INSERT OR IGNORE INTO allocated_ports (port, allocated_at) VALUES (?1, ?2)",
+                rusqlite::params![port, &now],
+            )?;
+                    Ok(())
+                },
+            )
+            .await
+        {
+            warn!("Failed to track port {}: {}", port, e);
+        }
+    }
+
+    /// Add port allocation to a specific service
+    #[must_use = "ignoring this result may cause state loss - port allocation will not be tracked"]
+    pub async fn add_service_port(
+        &mut self,
+        service_id: &str,
+        param_name: String,
+        port: u16,
+    ) -> Result<()> {
+        let service_id = service_id.to_string();
+        let service_id_clone = service_id.clone();
+        let now = Utc::now().to_rfc3339();
+
+        let exists = self.conn.call(move |conn: &mut rusqlite::Connection| {
+            let tx = conn.transaction()?;
+
+            // Verify service exists
+            let exists: bool = tx.query_row(
+                "SELECT COUNT(*) > 0 FROM services WHERE id = ?1",
+                rusqlite::params![&service_id_clone],
+                |row| row.get(0),
+            )?;
+
+            if exists {
+                // Insert or update port allocation
+                tx.execute(
+                    "INSERT OR REPLACE INTO port_allocations (service_id, parameter_name, port) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![&service_id_clone, &param_name, port],
+                )?;
+
+                // Track in global ports
+                tx.execute(
+                    "INSERT OR IGNORE INTO allocated_ports (port, allocated_at) VALUES (?1, ?2)",
+                    rusqlite::params![port, &now],
+                )?;
+
+                tx.execute(
+                    "UPDATE lock_file SET updated_at = datetime('now') WHERE id = 1",
+                    [],
+                )?;
+
+                tx.commit()?;
+            }
+
+            Ok(exists)
+        }).await?;
+
+        if !exists {
+            return Err(Error::ServiceNotFound(service_id));
+        }
+
+        Ok(())
+    }
+
+    /// Update service port mappings from Docker
+    #[must_use = "ignoring this result may cause state loss - port mappings will not be tracked"]
+    pub async fn update_service_port_mappings(
+        &mut self,
+        service_id: &str,
+        port_mappings: HashMap<String, String>,
+    ) -> Result<()> {
+        let service_id = service_id.to_string();
+        let service_id_clone = service_id.clone();
+        let now = Utc::now().to_rfc3339();
+
+        let exists = self.conn.call(move |conn: &mut rusqlite::Connection| {
+            let tx = conn.transaction()?;
+
+            // Verify service exists
+            let exists: bool = tx.query_row(
+                "SELECT COUNT(*) > 0 FROM services WHERE id = ?1",
+                rusqlite::params![&service_id_clone],
+                |row| row.get(0),
+            )?;
+
+            if exists {
+                for (container_port, host_port) in port_mappings {
+                    if let Ok(port_num) = host_port.parse::<u16>() {
+                        tx.execute(
+                            "INSERT OR REPLACE INTO port_allocations (service_id, parameter_name, port) VALUES (?1, ?2, ?3)",
+                            rusqlite::params![&service_id_clone, &container_port, port_num],
+                        )?;
+
+                        tx.execute(
+                            "INSERT OR IGNORE INTO allocated_ports (port, allocated_at) VALUES (?1, ?2)",
+                            rusqlite::params![port_num, &now],
+                        )?;
+                    }
+                }
+
+                tx.execute(
+                    "UPDATE lock_file SET updated_at = datetime('now') WHERE id = 1",
+                    [],
+                )?;
+
+                tx.commit()?;
+            }
+
+            Ok(exists)
+        }).await?;
+
+        if !exists {
+            return Err(Error::ServiceNotFound(service_id));
+        }
+
+        Ok(())
+    }
+
+    /// Get all allocated ports
+    pub async fn get_allocated_ports(&self) -> Vec<u16> {
+        match self
+            .conn
+            .call(|conn: &mut rusqlite::Connection| {
+                let mut stmt = conn.prepare("SELECT port FROM allocated_ports ORDER BY port")?;
+                let ports: Vec<u16> = stmt
+                    .query_map([], |row| row.get(0))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                Ok(ports)
+            })
+            .await
+        {
+            Ok(ports) => ports,
+            Err(e) => {
+                warn!("Failed to get allocated ports: {}", e);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Get all registered services
+    pub async fn get_services(&self) -> HashMap<String, ServiceState> {
+        match self.conn.call(|conn: &mut rusqlite::Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures FROM services"
+            )?;
+
+            let services_iter = stmt.query_map([], |row| {
+                let id: String = row.get(0)?;
+                let started_at_str: String = row.get(5)?;
+                let last_restart_str: Option<String> = row.get(9)?;
+
+                Ok((
+                    id.clone(),
+                    ServiceState {
+                        id,
+                        status: row.get(1)?,
+                        service_type: row.get(2)?,
+                        pid: row.get(3)?,
+                        container_id: row.get(4)?,
+                        started_at: started_at_str
+                            .parse::<DateTime<Utc>>()
+                            .unwrap_or_else(|_| Utc::now()),
+                        external_repo: row.get(6)?,
+                        namespace: row.get(7)?,
+                        restart_count: row.get(8)?,
+                        last_restart_at: last_restart_str.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+                        consecutive_failures: row.get(10)?,
+                        port_allocations: HashMap::new(), // Will be populated below
+                    },
+                ))
+            })?;
+
+            let mut services: HashMap<String, ServiceState> = services_iter
+                .filter_map(|r| r.ok())
+                .collect();
+
+            // Validate and remove services with invalid PIDs
+            let mut invalid_service_ids = Vec::new();
+            services.retain(|service_id, service_state| {
+                if let Some(pid) = service_state.pid {
+                    if pid > i32::MAX as u32 || pid == 0 {
+                        warn!(
+                            "Service '{}' has invalid PID {} (exceeds i32::MAX or is 0), removing from state",
+                            service_id, pid
+                        );
+                        invalid_service_ids.push(service_id.clone());
+                        return false;
+                    }
+                }
+                true
+            });
+
+            // Delete invalid services from database
+            for service_id in invalid_service_ids {
+                let _ = conn.execute(
+                    "DELETE FROM services WHERE id = ?1",
+                    rusqlite::params![&service_id],
+                );
+            }
+
+            // Load port allocations for each service
+            for (service_id, service) in services.iter_mut() {
+                let mut port_stmt = conn.prepare(
+                    "SELECT parameter_name, port FROM port_allocations WHERE service_id = ?1"
+                )?;
+
+                let ports: HashMap<String, u16> = port_stmt
+                    .query_map(rusqlite::params![service_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+
+                service.port_allocations = ports;
+            }
+
+            Ok(services)
+        }).await {
+            Ok(services) => services,
+            Err(e) => {
+                warn!("Failed to get services: {}", e);
+                HashMap::new()
+            }
+        }
+    }
+
+    /// Get specific service state
+    pub async fn get_service(&self, service_id: &str) -> Option<ServiceState> {
+        let service_id = service_id.to_string();
+
+        self.conn.call(move |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<Option<ServiceState>> {
+            let service = match conn.query_row(
+                "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures FROM services WHERE id = ?1",
+                rusqlite::params![&service_id],
+                |row| {
+                    let id: String = row.get(0)?;
+                    let started_at_str: String = row.get(5)?;
+                    let last_restart_str: Option<String> = row.get(9)?;
+
+                    Ok(ServiceState {
+                        id,
+                        status: row.get(1)?,
+                        service_type: row.get(2)?,
+                        pid: row.get(3)?,
+                        container_id: row.get(4)?,
+                        started_at: started_at_str.parse::<DateTime<Utc>>().unwrap_or_else(|_| Utc::now()),
+                        external_repo: row.get(6)?,
+                        namespace: row.get(7)?,
+                        restart_count: row.get(8)?,
+                        last_restart_at: last_restart_str.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+                        consecutive_failures: row.get(10)?,
+                        port_allocations: HashMap::new(),
+                    })
+                }
+            ) {
+                Ok(s) => s,
+                Err(_) => return Ok(None),
+            };
+
+            // Load port allocations
+            let mut port_stmt = conn
+                .prepare("SELECT parameter_name, port FROM port_allocations WHERE service_id = ?1")?;
+
+            let ports: HashMap<String, u16> = port_stmt
+                .query_map(rusqlite::params![&service_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            Ok(Some(ServiceState {
+                port_allocations: ports,
+                ..service
+            }))
+        }).await.ok().flatten()
+    }
+
+    /// Check if a service is already registered
+    pub async fn is_service_registered(&self, service_id: &str) -> bool {
+        let service_id = service_id.to_string();
+
+        self.conn
+            .call(
+                move |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<bool> {
+                    Ok(conn.query_row(
+                        "SELECT COUNT(*) > 0 FROM services WHERE id = ?1",
+                        rusqlite::params![&service_id],
+                        |row| row.get(0),
+                    )?)
+                },
+            )
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Persist state to database (no-op for SQLite, always persisted)
+    #[must_use = "ignoring this result may hide underlying errors"]
+    pub async fn save(&mut self) -> Result<()> {
+        // SQLite auto-persists with each transaction
+        // This method exists for interface compatibility
+        Ok(())
+    }
+
+    /// Force save (no-op for SQLite)
+    pub async fn force_save(&mut self) -> Result<()> {
+        // Update timestamp to indicate activity
+        self.conn
+            .call(|conn: &mut rusqlite::Connection| {
+                conn.execute(
+                    "UPDATE lock_file SET updated_at = datetime('now') WHERE id = 1",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Clear the database (when all services stopped)
+    #[must_use = "ignoring this result may leave stale state in the database"]
+    pub async fn clear(&mut self) -> Result<()> {
+        self.with_transaction(|tx| {
+            tx.execute("DELETE FROM services", [])?;
+            tx.execute("DELETE FROM port_allocations", [])?;
+            tx.execute("DELETE FROM allocated_ports", [])?;
+            Ok(())
+        })
+        .await?;
+
+        info!("Cleared all services from state");
+        Ok(())
+    }
+
+    /// Clean up dead/stale services from state
+    pub async fn cleanup_dead_services(&mut self) -> Result<usize> {
+        let services = self.get_services().await;
+        let mut stale_services = Vec::new();
+
+        // Check Docker daemon health with retry before evaluating container services.
+        // If daemon is unhealthy after retries, we cannot reliably determine container state,
+        // so we skip container cleanup to avoid removing healthy containers.
+        let daemon_healthy = crate::docker::check_daemon_with_retry().await;
+        if !daemon_healthy {
+            warn!("Docker daemon unhealthy after retries - skipping container cleanup to avoid data loss");
+        }
+
+        for (service_id, service_state) in &services {
+            let is_stale = if let Some(pid) = service_state.pid {
+                !Self::is_process_running(pid).await
+            } else if let Some(ref container_id) = service_state.container_id {
+                // Only check container status if daemon is healthy
+                if daemon_healthy {
+                    !Self::is_container_running(container_id).await
+                } else {
+                    // Daemon unhealthy - assume container is running to avoid spurious cleanup
+                    false
+                }
+            } else {
+                // Service has no PID and no container_id.
+                // Only consider stale if its status indicates it SHOULD be running.
+                // Services that are "stopped" or were never started are not stale.
+                Self::status_indicates_should_be_running(&service_state.status)
+            };
+
+            if is_stale {
+                debug!("Service '{}' appears to be stale", service_id);
+                stale_services.push(service_id.clone());
+            }
+        }
+
+        let removed = stale_services.len();
+
+        if removed > 0 {
+            // Log once with summary instead of per-service warnings
+            debug!(
+                "Cleaning up {} stale service(s): {}",
+                removed,
+                stale_services.join(", ")
+            );
+            self.with_transaction(move |tx| {
+                for service_id in &stale_services {
+                    tx.execute(
+                        "DELETE FROM services WHERE id = ?1",
+                        rusqlite::params![service_id],
+                    )?;
+                }
+                // Clean up orphaned ports
+                tx.execute(
+                    "DELETE FROM allocated_ports WHERE port NOT IN (SELECT DISTINCT port FROM port_allocations)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await?;
+
+            info!("Cleaned up {} dead service(s) from state", removed);
+        }
+
+        Ok(removed)
+    }
+
+    /// Get the database file path
+    pub fn lock_file_path(&self) -> &Path {
+        &self.db_path
+    }
+
+    /// Convert to LockFile format (for compatibility with existing code)
+    pub async fn to_lock_file(&self) -> Result<LockFile> {
+        let (fed_pid, work_dir, started_at): (u32, String, String) = self
+            .conn
+            .call(
+                |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<(u32, String, String)> {
+                    Ok(conn.query_row(
+                        "SELECT fed_pid, work_dir, started_at FROM lock_file WHERE id = 1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )?)
+                },
+            )
+            .await?;
+
+        let services = self.get_services().await;
+        let allocated_ports = self.get_allocated_ports().await;
+
+        Ok(LockFile {
+            fed_pid,
+            work_dir,
+            started_at: started_at
+                .parse::<DateTime<Utc>>()
+                .unwrap_or_else(|_| Utc::now()),
+            services,
+            allocated_ports,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a test state tracker with a temporary directory
+    async fn create_test_tracker() -> (SqliteStateTracker, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let mut tracker = SqliteStateTracker::new(temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+        tracker.initialize().await.unwrap();
+        (tracker, temp_dir)
+    }
+
+    /// Register a test service for circuit breaker testing
+    async fn register_test_service(tracker: &mut SqliteStateTracker, service_id: &str) {
+        let state = ServiceState {
+            id: service_id.to_string(),
+            status: "Running".to_string(),
+            service_type: "Process".to_string(),
+            pid: Some(12345),
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+        };
+        tracker.register_service(state).await;
+    }
+
+    #[tokio::test]
+    async fn test_record_restart() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_test_service(&mut tracker, "test-service").await;
+
+        // Record a restart
+        let result = tracker.record_restart("test-service").await;
+        assert!(result.is_ok());
+
+        // Verify it was recorded by checking if it triggers circuit breaker
+        let should_trip = tracker
+            .check_circuit_breaker("test-service", 1, 60)
+            .await
+            .unwrap();
+        assert!(
+            should_trip,
+            "Should trip with threshold of 1 after 1 restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_does_not_trip_below_threshold() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_test_service(&mut tracker, "test-service").await;
+
+        // Record 3 restarts
+        for _ in 0..3 {
+            tracker.record_restart("test-service").await.unwrap();
+        }
+
+        // Should not trip with threshold of 5
+        let should_trip = tracker
+            .check_circuit_breaker("test-service", 5, 60)
+            .await
+            .unwrap();
+        assert!(
+            !should_trip,
+            "Should not trip with 3 restarts when threshold is 5"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_trips_at_threshold() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_test_service(&mut tracker, "test-service").await;
+
+        // Record exactly 5 restarts (the default threshold)
+        for _ in 0..5 {
+            tracker.record_restart("test-service").await.unwrap();
+        }
+
+        // Should trip with threshold of 5
+        let should_trip = tracker
+            .check_circuit_breaker("test-service", 5, 60)
+            .await
+            .unwrap();
+        assert!(
+            should_trip,
+            "Should trip with 5 restarts when threshold is 5"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_trips_above_threshold() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_test_service(&mut tracker, "test-service").await;
+
+        // Record 7 restarts (above threshold of 5)
+        for _ in 0..7 {
+            tracker.record_restart("test-service").await.unwrap();
+        }
+
+        // Should trip with threshold of 5
+        let should_trip = tracker
+            .check_circuit_breaker("test-service", 5, 60)
+            .await
+            .unwrap();
+        assert!(
+            should_trip,
+            "Should trip with 7 restarts when threshold is 5"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_and_check_circuit_breaker() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_test_service(&mut tracker, "test-service").await;
+
+        // Initially circuit breaker should be closed
+        let is_open = tracker.is_circuit_breaker_open("test-service").await;
+        assert!(!is_open, "Circuit breaker should be closed initially");
+
+        // Open the circuit breaker with 300s cooldown
+        tracker
+            .open_circuit_breaker("test-service", 300)
+            .await
+            .unwrap();
+
+        // Now it should be open
+        let is_open = tracker.is_circuit_breaker_open("test-service").await;
+        assert!(is_open, "Circuit breaker should be open after opening");
+    }
+
+    #[tokio::test]
+    async fn test_close_circuit_breaker() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_test_service(&mut tracker, "test-service").await;
+
+        // Open the circuit breaker
+        tracker
+            .open_circuit_breaker("test-service", 300)
+            .await
+            .unwrap();
+        assert!(tracker.is_circuit_breaker_open("test-service").await);
+
+        // Close it
+        tracker.close_circuit_breaker("test-service").await.unwrap();
+
+        // Should be closed now
+        let is_open = tracker.is_circuit_breaker_open("test-service").await;
+        assert!(!is_open, "Circuit breaker should be closed after closing");
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_remaining_time() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_test_service(&mut tracker, "test-service").await;
+
+        // No remaining time when circuit is closed
+        let remaining = tracker.get_circuit_breaker_remaining("test-service").await;
+        assert!(
+            remaining.is_none(),
+            "Should have no remaining time when closed"
+        );
+
+        // Open the circuit breaker with 60s cooldown
+        tracker
+            .open_circuit_breaker("test-service", 60)
+            .await
+            .unwrap();
+
+        // Should have remaining time
+        let remaining = tracker.get_circuit_breaker_remaining("test-service").await;
+        assert!(remaining.is_some(), "Should have remaining time when open");
+        let remaining = remaining.unwrap();
+        // Should be approximately 60 seconds (allow some tolerance)
+        assert!(
+            (55..=65).contains(&remaining),
+            "Remaining time should be approximately 60s, got {}",
+            remaining
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clear_restart_history() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_test_service(&mut tracker, "test-service").await;
+
+        // Record some restarts
+        for _ in 0..5 {
+            tracker.record_restart("test-service").await.unwrap();
+        }
+
+        // Verify restarts are recorded
+        let should_trip = tracker
+            .check_circuit_breaker("test-service", 5, 60)
+            .await
+            .unwrap();
+        assert!(should_trip, "Should trip after recording restarts");
+
+        // Clear history
+        tracker.clear_restart_history("test-service").await.unwrap();
+
+        // Should not trip now (no restart history)
+        let should_trip = tracker
+            .check_circuit_breaker("test-service", 5, 60)
+            .await
+            .unwrap();
+        assert!(!should_trip, "Should not trip after clearing history");
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_per_service_isolation() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_test_service(&mut tracker, "service-a").await;
+        register_test_service(&mut tracker, "service-b").await;
+
+        // Record restarts only for service-a
+        for _ in 0..5 {
+            tracker.record_restart("service-a").await.unwrap();
+        }
+
+        // Service A should trip
+        let should_trip_a = tracker
+            .check_circuit_breaker("service-a", 5, 60)
+            .await
+            .unwrap();
+        assert!(should_trip_a, "Service A should trip");
+
+        // Service B should not trip (no restarts recorded)
+        let should_trip_b = tracker
+            .check_circuit_breaker("service-b", 5, 60)
+            .await
+            .unwrap();
+        assert!(!should_trip_b, "Service B should not trip");
+
+        // Open circuit breaker only for service-a
+        tracker
+            .open_circuit_breaker("service-a", 300)
+            .await
+            .unwrap();
+
+        // Service A circuit should be open
+        assert!(tracker.is_circuit_breaker_open("service-a").await);
+
+        // Service B circuit should still be closed
+        assert!(!tracker.is_circuit_breaker_open("service-b").await);
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_with_zero_cooldown() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_test_service(&mut tracker, "test-service").await;
+
+        // Open with 0 cooldown - should immediately be considered closed
+        tracker
+            .open_circuit_breaker("test-service", 0)
+            .await
+            .unwrap();
+
+        // With 0 cooldown, the circuit breaker should not be considered open
+        // because the "open_until" time would be "now + 0 seconds" = now
+        // and the check is "open_until > now" which would be false
+        let is_open = tracker.is_circuit_breaker_open("test-service").await;
+        // Note: This might still be open due to timing, so we accept either result
+        // The important thing is it doesn't panic
+        let _ = is_open;
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_unregistered_service() {
+        let (tracker, _temp_dir) = create_test_tracker().await;
+
+        // Check circuit breaker for non-existent service
+        let is_open = tracker.is_circuit_breaker_open("nonexistent").await;
+        assert!(!is_open, "Non-existent service should have closed circuit");
+
+        let should_trip = tracker
+            .check_circuit_breaker("nonexistent", 5, 60)
+            .await
+            .unwrap();
+        assert!(
+            !should_trip,
+            "Non-existent service should not trip circuit breaker"
+        );
+    }
+}

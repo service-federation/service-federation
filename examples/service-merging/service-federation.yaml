@@ -1,0 +1,51 @@
+# Main application configuration that extends package services
+
+packages:
+  - source: "./packages/database"
+    as: "db-package"
+  - source: "./packages/redis"
+    as: "cache-package"
+
+services:
+  # Database service extending the base postgres configuration
+  database:
+    extends: "db-package.postgres"
+    # Override the database name for this application
+    environment:
+      POSTGRES_DB: "myapp"
+      APP_NAME: "MyApplication"
+    # Add custom volume for backups
+    volumes:
+      - "./backups:/backups"
+    # Use a different port mapping
+    ports:
+      - "5433:5432"
+
+  # Cache service extending the base redis configuration
+  cache:
+    extends: "cache-package.redis"
+    # Override port for local development
+    ports:
+      - "6380:6379"
+    # Add custom config
+    volumes:
+      - "./redis.conf:/usr/local/etc/redis/redis.conf"
+
+  # Application service that depends on the extended services
+  web:
+    image: node:18
+    cwd: ./app
+    install: npm install
+    process: npm start
+    environment:
+      DATABASE_URL: "postgres://admin:secret@database:5432/myapp"
+      REDIS_URL: "redis://cache:6379"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - database
+      - cache
+    healthcheck:
+      httpGet: "http://localhost:3000/health"
+
+entrypoint: web

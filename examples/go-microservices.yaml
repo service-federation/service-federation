@@ -1,0 +1,187 @@
+# Real-World Example: Go Microservices
+#
+# This demonstrates a realistic Go microservices setup with:
+# - PostgreSQL database
+# - Redis for caching
+# - gRPC services
+# - HTTP gateway
+# - Background workers
+
+parameters:
+  # Service ports
+  AUTH_PORT:
+    type: port
+    default: 8001
+
+  USER_PORT:
+    type: port
+    default: 8002
+
+  GATEWAY_PORT:
+    type: port
+    default: 8080
+
+  # gRPC ports
+  AUTH_GRPC_PORT:
+    type: port
+    default: 9001
+
+  USER_GRPC_PORT:
+    type: port
+    default: 9002
+
+  # Database
+  DB_NAME:
+    default: goapp_dev
+
+  DB_USER:
+    default: postgres
+
+  DB_PASSWORD:
+    default: devpassword
+
+  REDIS_PORT:
+    type: port
+    default: 6379
+
+services:
+  # Infrastructure
+  postgres:
+    image: postgres:15-alpine
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: '{{DB_NAME}}'
+      POSTGRES_USER: '{{DB_USER}}'
+      POSTGRES_PASSWORD: '{{DB_PASSWORD}}'
+    healthcheck:
+      command: 'pg_isready -U {{DB_USER}}'
+
+  redis:
+    image: redis:7-alpine
+    ports: ["{{REDIS_PORT}}:6379"]
+    healthcheck:
+      command: 'redis-cli ping'
+
+  # Auth Service (gRPC + HTTP)
+  auth-service:
+    process: go run ./cmd/auth
+    cwd: ./services/auth
+    depends_on: [postgres, redis]
+    environment:
+      HTTP_PORT: '{{AUTH_PORT}}'
+      GRPC_PORT: '{{AUTH_GRPC_PORT}}'
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}?sslmode=disable'
+      REDIS_ADDR: 'localhost:{{REDIS_PORT}}'
+      JWT_SECRET: 'dev-secret-change-in-production'
+      ENV: 'development'
+    healthcheck:
+      httpGet: 'http://localhost:{{AUTH_PORT}}/health'
+    install: |
+      go mod download
+      go mod tidy
+
+  # User Service (gRPC + HTTP)
+  user-service:
+    process: go run ./cmd/user
+    cwd: ./services/user
+    depends_on: [postgres, redis, auth-service]
+    environment:
+      HTTP_PORT: '{{USER_PORT}}'
+      GRPC_PORT: '{{USER_GRPC_PORT}}'
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}?sslmode=disable'
+      REDIS_ADDR: 'localhost:{{REDIS_PORT}}'
+      AUTH_SERVICE_ADDR: 'localhost:{{AUTH_GRPC_PORT}}'
+      ENV: 'development'
+    healthcheck:
+      httpGet: 'http://localhost:{{USER_PORT}}/health'
+    install: |
+      go mod download
+      go mod tidy
+
+  # API Gateway
+  gateway:
+    process: go run ./cmd/gateway
+    cwd: ./services/gateway
+    depends_on: [auth-service, user-service]
+    environment:
+      PORT: '{{GATEWAY_PORT}}'
+      AUTH_SERVICE_ADDR: 'localhost:{{AUTH_GRPC_PORT}}'
+      USER_SERVICE_ADDR: 'localhost:{{USER_GRPC_PORT}}'
+      ENV: 'development'
+    healthcheck:
+      httpGet: 'http://localhost:{{GATEWAY_PORT}}/health'
+    install: |
+      go mod download
+      go mod tidy
+
+  # Background Worker
+  worker:
+    process: go run ./cmd/worker
+    cwd: ./services/worker
+    depends_on: [postgres, redis]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}?sslmode=disable'
+      REDIS_ADDR: 'localhost:{{REDIS_PORT}}'
+      ENV: 'development'
+    install: |
+      go mod download
+      go mod tidy
+
+entrypoint: gateway
+
+scripts:
+  # Run database migrations
+  migrate-up:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}?sslmode=disable'
+    script: |
+      cd services/auth
+      go run migrations/*.go up
+
+  # Rollback migrations
+  migrate-down:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}?sslmode=disable'
+    script: |
+      cd services/auth
+      go run migrations/*.go down
+
+  # Generate protobuf code
+  protoc:
+    script: |
+      protoc --go_out=. --go_opt=paths=source_relative \
+        --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+        proto/*.proto
+
+  # Run all tests
+  test:
+    depends_on: [postgres, redis]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}_test?sslmode=disable'
+      REDIS_ADDR: 'localhost:{{REDIS_PORT}}'
+      ENV: 'test'
+    script: |
+      go test ./... -v -race -coverprofile=coverage.out
+
+  # Run integration tests
+  test-integration:
+    depends_on: [gateway, auth-service, user-service]
+    environment:
+      GATEWAY_URL: 'http://localhost:{{GATEWAY_PORT}}'
+    script: |
+      go test ./tests/integration/... -v
+
+  # Build all services
+  build:
+    script: |
+      cd services/auth && go build -o ../../bin/auth ./cmd/auth
+      cd services/user && go build -o ../../bin/user ./cmd/user
+      cd services/gateway && go build -o ../../bin/gateway ./cmd/gateway
+      cd services/worker && go build -o ../../bin/worker ./cmd/worker
+
+  # Lint code
+  lint:
+    script: |
+      golangci-lint run ./...

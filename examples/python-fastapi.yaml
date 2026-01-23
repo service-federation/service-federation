@@ -1,0 +1,152 @@
+# Real-World Example: Python FastAPI with Celery
+#
+# This demonstrates a realistic Python FastAPI setup with:
+# - PostgreSQL database
+# - Redis for caching and Celery broker
+# - FastAPI backend
+# - Celery workers for async tasks
+# - Flower for monitoring Celery
+
+parameters:
+  API_PORT:
+    type: port
+    default: 8000
+
+  FLOWER_PORT:
+    type: port
+    default: 5555
+
+  DB_NAME:
+    default: fastapi_dev
+
+  DB_USER:
+    default: postgres
+
+  DB_PASSWORD:
+    default: devpassword
+
+  REDIS_PORT:
+    type: port
+    default: 6379
+
+services:
+  # Infrastructure
+  postgres:
+    image: postgres:15-alpine
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: '{{DB_NAME}}'
+      POSTGRES_USER: '{{DB_USER}}'
+      POSTGRES_PASSWORD: '{{DB_PASSWORD}}'
+    healthcheck:
+      command: 'pg_isready -U {{DB_USER}}'
+
+  redis:
+    image: redis:7-alpine
+    ports: ["{{REDIS_PORT}}:6379"]
+    healthcheck:
+      command: 'redis-cli ping'
+
+  # FastAPI Backend
+  api:
+    process: uvicorn app.main:app --reload --host 0.0.0.0 --port {{API_PORT}}
+    cwd: ./backend
+    depends_on: [postgres, redis]
+    environment:
+      PORT: '{{API_PORT}}'
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      REDIS_URL: 'redis://localhost:{{REDIS_PORT}}'
+      CELERY_BROKER_URL: 'redis://localhost:{{REDIS_PORT}}/0'
+      CELERY_RESULT_BACKEND: 'redis://localhost:{{REDIS_PORT}}/0'
+      PYTHONUNBUFFERED: '1'
+    healthcheck:
+      httpGet: 'http://localhost:{{API_PORT}}/health'
+    install: |
+      python -m venv venv
+      source venv/bin/activate
+      pip install -r requirements.txt
+
+  # Celery Worker
+  celery-worker:
+    process: celery -A app.celery worker --loglevel=info
+    cwd: ./backend
+    depends_on: [redis, postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      REDIS_URL: 'redis://localhost:{{REDIS_PORT}}'
+      CELERY_BROKER_URL: 'redis://localhost:{{REDIS_PORT}}/0'
+      CELERY_RESULT_BACKEND: 'redis://localhost:{{REDIS_PORT}}/0'
+      PYTHONUNBUFFERED: '1'
+    install: |
+      source venv/bin/activate
+      pip install -r requirements.txt
+
+  # Celery Beat (for scheduled tasks)
+  celery-beat:
+    process: celery -A app.celery beat --loglevel=info
+    cwd: ./backend
+    depends_on: [redis]
+    environment:
+      CELERY_BROKER_URL: 'redis://localhost:{{REDIS_PORT}}/0'
+      PYTHONUNBUFFERED: '1'
+    install: |
+      source venv/bin/activate
+      pip install -r requirements.txt
+
+  # Flower (Celery monitoring)
+  flower:
+    process: celery -A app.celery flower --port={{FLOWER_PORT}}
+    cwd: ./backend
+    depends_on: [redis, celery-worker]
+    environment:
+      CELERY_BROKER_URL: 'redis://localhost:{{REDIS_PORT}}/0'
+      PYTHONUNBUFFERED: '1'
+    healthcheck:
+      httpGet: 'http://localhost:{{FLOWER_PORT}}'
+    install: |
+      source venv/bin/activate
+      pip install flower
+
+entrypoint: api
+
+scripts:
+  # Run database migrations
+  migrate:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+    script: |
+      cd backend
+      source venv/bin/activate
+      alembic upgrade head
+
+  # Create migration
+  makemigration:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+    script: |
+      cd backend
+      source venv/bin/activate
+      alembic revision --autogenerate -m "${MIGRATION_MESSAGE:-auto migration}"
+
+  # Run tests
+  test:
+    depends_on: [postgres, redis]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}_test'
+      REDIS_URL: 'redis://localhost:{{REDIS_PORT}}/1'
+    script: |
+      cd backend
+      source venv/bin/activate
+      pytest tests/ -v
+
+  # Seed database
+  seed:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+    script: |
+      cd backend
+      source venv/bin/activate
+      python -m app.seed

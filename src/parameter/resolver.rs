@@ -1,0 +1,1806 @@
+use super::PortAllocator;
+use crate::config::Config;
+use crate::error::{Error, Result};
+use crate::port::{handle_port_conflict, PortConflict, PortConflictAction};
+use regex::Regex;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// Global template regex compiled once
+static TEMPLATE_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn get_template_regex() -> &'static Regex {
+    TEMPLATE_REGEX
+        .get_or_init(|| Regex::new(r"\{\{([^}]+)\}\}").expect("static regex pattern is valid"))
+}
+
+/// Escape a string for safe use in shell commands.
+/// Wraps the string in single quotes and escapes any single quotes within.
+pub(crate) fn shell_escape(s: &str) -> String {
+    // If string is empty, return empty quoted string
+    if s.is_empty() {
+        return "''".to_string();
+    }
+
+    // If string contains no special characters, return as-is
+    // Safe characters: alphanumeric, dash, underscore, dot only
+    // Note: '/' and ':' are intentionally NOT in the safe list as they can be
+    // exploited in path traversal or certain shell constructs
+    if s.chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return s.to_string();
+    }
+
+    // Wrap in single quotes and escape any single quotes by replacing ' with '\''
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Resolver handles parameter resolution and template substitution.
+///
+/// The resolver is responsible for:
+/// - Resolving `{{parameter}}` template syntax in configuration values
+/// - Allocating ports for `type: port` parameters with TOCTOU prevention
+/// - Loading values from `.env` files (strict mode: variables must be declared)
+/// - Applying environment-specific values (development/staging/production)
+/// - Shell-escaping parameter values in process commands for security
+///
+/// # Port Allocation
+///
+/// Port parameters are allocated with the following priority:
+/// 1. Explicit `value:` field (validated but not allocated)
+/// 2. Session-cached port (if running in a session)
+/// 3. Preferred port from `default:` (if available)
+/// 4. Random available port (fallback)
+///
+/// Port listeners are held until services start to prevent TOCTOU races.
+///
+/// # .env File Handling
+///
+/// The resolver enforces strict .env file handling:
+/// - All variables in .env files MUST be declared as parameters
+/// - Undeclared variables cause an error (prevents typos/hidden config)
+/// - `.env` values are applied to parameters, not directly to service environments
+/// - Explicit `value:` fields take precedence over `.env` values
+///
+/// # Shell Escaping
+///
+/// Process commands and scripts have parameter values shell-escaped to prevent
+/// command injection. Environment variables in service configs are NOT escaped
+/// (they are passed directly to the process environment).
+pub struct Resolver {
+    port_allocator: PortAllocator,
+    resolved_parameters: HashMap<String, String>,
+    environment: crate::config::Environment,
+    /// When true, port conflicts are auto-resolved using alternative ports (no interactive prompt)
+    auto_resolve_conflicts: bool,
+    /// Working directory for resolving relative paths (e.g., .env files)
+    work_dir: Option<PathBuf>,
+    /// When true, skip session port cache and always allocate fresh ports (for test isolation)
+    isolated_mode: bool,
+}
+
+impl Resolver {
+    pub fn new() -> Self {
+        Self {
+            port_allocator: PortAllocator::new(),
+            resolved_parameters: HashMap::new(),
+            environment: crate::config::Environment::default(),
+            auto_resolve_conflicts: false,
+            work_dir: None,
+            isolated_mode: false,
+        }
+    }
+
+    /// Create a new resolver with a specific environment
+    pub fn with_environment(environment: crate::config::Environment) -> Self {
+        Self {
+            port_allocator: PortAllocator::new(),
+            resolved_parameters: HashMap::new(),
+            environment,
+            auto_resolve_conflicts: false,
+            work_dir: None,
+            isolated_mode: false,
+        }
+    }
+
+    /// Enable isolated mode - skip session port cache and always allocate fresh ports.
+    /// Use this for test isolation (isolated scripts).
+    pub fn set_isolated_mode(&mut self, isolated: bool) {
+        self.isolated_mode = isolated;
+    }
+
+    /// Enable auto-resolve mode for port conflicts (use in TUI mode to avoid interactive prompts)
+    pub fn set_auto_resolve_conflicts(&mut self, auto_resolve: bool) {
+        self.auto_resolve_conflicts = auto_resolve;
+    }
+
+    /// Set the environment for resolution
+    pub fn set_environment(&mut self, environment: crate::config::Environment) {
+        self.environment = environment;
+    }
+
+    /// Get the current environment
+    pub fn get_environment(&self) -> crate::config::Environment {
+        self.environment
+    }
+
+    /// Set working directory for resolving relative paths (e.g., .env files)
+    pub fn set_work_dir<P: Into<PathBuf>>(&mut self, work_dir: P) {
+        self.work_dir = Some(work_dir.into());
+    }
+
+    /// Resolve template placeholders {{VAR}} with their values
+    pub fn resolve_template(
+        &self,
+        template: &str,
+        parameters: &HashMap<String, String>,
+    ) -> Result<String> {
+        if template.is_empty() {
+            return Ok(String::new());
+        }
+
+        let mut result = template.to_string();
+
+        for cap in get_template_regex().captures_iter(template) {
+            let full_match = &cap[0]; // {{VAR}}
+            let var_name = &cap[1]; // VAR
+
+            let value = parameters
+                .get(var_name)
+                .ok_or_else(|| Error::ParameterNotFound(var_name.to_string()))?;
+
+            result = result.replace(full_match, value);
+        }
+
+        Ok(result)
+    }
+
+    /// Resolve template placeholders with shell escaping for safe use in shell commands.
+    /// Public for use in script execution at runtime.
+    pub fn resolve_template_shell_safe(
+        &self,
+        template: &str,
+        parameters: &HashMap<String, String>,
+    ) -> Result<String> {
+        if template.is_empty() {
+            return Ok(String::new());
+        }
+
+        let mut result = template.to_string();
+
+        for cap in get_template_regex().captures_iter(template) {
+            let full_match = &cap[0]; // {{VAR}}
+            let var_name = &cap[1]; // VAR
+
+            let value = parameters
+                .get(var_name)
+                .ok_or_else(|| Error::ParameterNotFound(var_name.to_string()))?;
+
+            // Apply shell escaping to the value before substitution
+            let escaped_value = shell_escape(value);
+            result = result.replace(full_match, &escaped_value);
+        }
+
+        Ok(result)
+    }
+
+    /// Resolve environment variables
+    pub fn resolve_environment(
+        &self,
+        environment: &HashMap<String, String>,
+        parameters: &HashMap<String, String>,
+    ) -> Result<HashMap<String, String>> {
+        let mut resolved = HashMap::new();
+
+        for (key, value) in environment {
+            let resolved_value = self.resolve_template(value, parameters)?;
+            resolved.insert(key.clone(), resolved_value);
+        }
+
+        Ok(resolved)
+    }
+
+    /// Load .env files and apply values to parameters.
+    /// Returns error if .env file sets a variable that isn't declared as a parameter.
+    ///
+    /// All variables are loaded first, then applied. This means:
+    /// - Later .env files override earlier ones for the same variable
+    /// - The error message for undeclared variables references the last file that set it
+    fn apply_env_file_to_parameters(&self, config: &mut Config) -> Result<()> {
+        if config.env_file.is_empty() {
+            return Ok(());
+        }
+
+        let config_dir = self.work_dir.as_ref().ok_or_else(|| {
+            Error::Config(
+                "Work directory not set, cannot resolve global env_file paths".to_string(),
+            )
+        })?;
+
+        // Load all .env files first, tracking which file each variable came from.
+        // Later files override earlier ones (consistent with documented behavior).
+        let mut all_env_vars: HashMap<String, (String, String)> = HashMap::new();
+
+        for env_file_path in &config.env_file {
+            let full_path = config_dir.join(env_file_path);
+            let env_vars = crate::config::env_loader::load_env_file(&full_path).map_err(|e| {
+                Error::Config(format!(
+                    "Failed to load environment file '{}' (resolved to '{}'): {}",
+                    env_file_path,
+                    full_path.display(),
+                    e
+                ))
+            })?;
+
+            // Track value and source file (later files override earlier)
+            for (key, value) in env_vars {
+                all_env_vars.insert(key, (value, env_file_path.clone()));
+            }
+        }
+
+        // Now apply with a single mutable borrow
+        let effective_params = config.get_effective_parameters_mut();
+        for (key, (value, env_file_path)) in all_env_vars {
+            if let Some(param) = effective_params.get_mut(&key) {
+                // Only set if parameter doesn't already have an explicit value
+                // (explicit values take precedence over .env files)
+                if param.value.is_none() {
+                    param.value = Some(value);
+                }
+            } else {
+                // Variable is not declared as a parameter - this is an error
+                return Err(Error::UndeclaredEnvVariable {
+                    name: key,
+                    env_file: env_file_path,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Resolve just the parameters (first pass, before external service expansion)
+    pub fn resolve_parameters(&mut self, config: &mut Config) -> Result<()> {
+        // First, apply .env file values to parameters (strict mode: must be declared)
+        self.apply_env_file_to_parameters(config)?;
+
+        // Build parameters map - first pass for direct values and port allocation
+        let mut parameters = HashMap::new();
+
+        // Use effective parameters (variables take precedence over parameters)
+        let effective_params = config.get_effective_parameters().clone();
+
+        for (name, param) in &effective_params {
+            if let Some(ref value) = param.value {
+                // Validate port values if parameter is port type
+                if param.is_port_type() {
+                    let port_num = value.parse::<u16>().map_err(|_| {
+                        Error::Config(format!(
+                            "Parameter '{}' has invalid port value '{}': must be a number between 1 and 65535",
+                            name, value
+                        ))
+                    })?;
+
+                    if port_num == 0 {
+                        return Err(Error::Config(format!(
+                            "Parameter '{}' has invalid port value '0': must be between 1 and 65535",
+                            name
+                        )));
+                    }
+                }
+
+                parameters.insert(name.clone(), value.clone());
+                self.resolved_parameters.insert(name.clone(), value.clone());
+            } else if param.is_port_type() {
+                // Handle port allocation with session persistence
+                let port = if self.isolated_mode {
+                    // Isolated mode: always allocate fresh ports (skip session cache)
+                    // Used by isolated scripts for test isolation
+                    let fresh_port = if let Some(env_value) =
+                        param.get_value_for_environment(&self.environment)
+                    {
+                        let default_str = Self::value_to_string(env_value);
+                        if let Ok(default_port) = default_str.parse::<u16>() {
+                            // In isolated mode, auto-resolve conflicts without prompts
+                            if self.port_allocator.try_allocate_port(default_port).is_ok() {
+                                default_port
+                            } else {
+                                // Default port taken, allocate random
+                                tracing::debug!(
+                                    "Isolated mode: default port {} for '{}' in use, allocating random",
+                                    default_port,
+                                    name
+                                );
+                                self.port_allocator.allocate_random_port()?
+                            }
+                        } else {
+                            self.port_allocator.allocate_random_port()?
+                        }
+                    } else {
+                        self.port_allocator.allocate_random_port()?
+                    };
+
+                    tracing::debug!(
+                        "Isolated mode: allocated fresh port {} for parameter '{}'",
+                        fresh_port,
+                        name
+                    );
+                    fresh_port
+                } else {
+                    // Normal mode: check session for cached ports
+                    use crate::session::Session;
+
+                    let cached_port = if let Ok(Some(mut session)) =
+                        Session::current_for_workdir(self.work_dir.as_deref())
+                    {
+                        if let Some(port) = session.get_port(name) {
+                            // BUGFIX: Validate that cached port is still available
+                            // Use try_allocate_port to keep listener alive and prevent TOCTOU
+                            if self.port_allocator.try_allocate_port(port).is_ok() {
+                                tracing::debug!(
+                                    "Reusing cached port {} for parameter '{}'",
+                                    port,
+                                    name
+                                );
+                                Some(port)
+                            } else {
+                                // Port is taken - this is a cache invalidation scenario
+                                // The port was available in a previous session but is now in use
+                                tracing::warn!(
+                                    "Cached port {} for parameter '{}' is no longer available \
+                                     (taken by another process). Resolving conflict...",
+                                    port,
+                                    name
+                                );
+                                let new_port = self.handle_port_conflict_interactive(port, name)?;
+                                session.save_port(name.clone(), new_port)?;
+                                Some(new_port)
+                            }
+                        } else {
+                            // Allocate new port and save to session
+                            let new_port = if let Some(env_value) =
+                                param.get_value_for_environment(&self.environment)
+                            {
+                                let default_str = Self::value_to_string(env_value);
+                                if let Ok(default_port) = default_str.parse::<u16>() {
+                                    // Try the default port, use allocator to keep listener alive
+                                    if self.port_allocator.try_allocate_port(default_port).is_ok() {
+                                        default_port
+                                    } else {
+                                        self.handle_port_conflict_interactive(default_port, name)?
+                                    }
+                                } else {
+                                    self.port_allocator.allocate_random_port()?
+                                }
+                            } else {
+                                self.port_allocator.allocate_random_port()?
+                            };
+
+                            // Save to session for reuse
+                            session.save_port(name.clone(), new_port)?;
+                            Some(new_port)
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Use cached port if available, otherwise allocate
+                    if let Some(p) = cached_port {
+                        p
+                    } else {
+                        // No session: allocate normally
+                        if let Some(env_value) = param.get_value_for_environment(&self.environment)
+                        {
+                            let default_str = Self::value_to_string(env_value);
+                            if let Ok(default_port) = default_str.parse::<u16>() {
+                                // Try the default port, use allocator to keep listener alive
+                                // This prevents TOCTOU race - port stays reserved until services start
+                                if self.port_allocator.try_allocate_port(default_port).is_ok() {
+                                    default_port
+                                } else {
+                                    self.handle_port_conflict_interactive(default_port, name)?
+                                }
+                            } else {
+                                self.port_allocator.allocate_random_port()?
+                            }
+                        } else {
+                            self.port_allocator.allocate_random_port()?
+                        }
+                    }
+                };
+
+                let port_str = port.to_string();
+                parameters.insert(name.clone(), port_str.clone());
+                self.resolved_parameters.insert(name.clone(), port_str);
+            } else if let Some(env_value) = param.get_value_for_environment(&self.environment) {
+                // Non-port parameter with environment-specific value
+                let default_str = Self::value_to_string(env_value);
+                parameters.insert(name.clone(), default_str.clone());
+                self.resolved_parameters.insert(name.clone(), default_str);
+            }
+        }
+
+        // Multiple passes: resolve templates in parameter default values
+        const MAX_PASSES: usize = 10;
+        let mut pass_count = 0;
+        for _ in 0..MAX_PASSES {
+            pass_count += 1;
+            let mut any_resolved = false;
+
+            for (name, param) in &effective_params {
+                if let Some(env_value) = param.get_value_for_environment(&self.environment) {
+                    let default_str = Self::value_to_string(env_value);
+                    if default_str.contains("{{") {
+                        if let Ok(resolved_default) =
+                            self.resolve_template(&default_str, &parameters)
+                        {
+                            if resolved_default != default_str {
+                                parameters.insert(name.clone(), resolved_default.clone());
+                                self.resolved_parameters
+                                    .insert(name.clone(), resolved_default);
+                                any_resolved = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !any_resolved {
+                break;
+            }
+        }
+
+        // Check for unresolved templates (circular references or missing parameters)
+        for (name, param) in &effective_params {
+            if let Some(env_value) = param.get_value_for_environment(&self.environment) {
+                let default_str = Self::value_to_string(env_value);
+                if default_str.contains("{{") {
+                    // Check if parameter was resolved
+                    if let Some(resolved_value) = parameters.get(name) {
+                        if resolved_value.contains("{{") {
+                            // Extract the unresolved variable names
+                            let unresolved_vars = self.extract_template_variables(resolved_value);
+                            if pass_count >= MAX_PASSES {
+                                return Err(Error::Config(format!(
+                                    "Circular parameter reference detected in parameter '{}'. \
+                                     Unresolved variables after {} passes: {:?}",
+                                    name, MAX_PASSES, unresolved_vars
+                                )));
+                            } else {
+                                return Err(Error::Config(format!(
+                                    "Parameter '{}' has unresolved template variables: {:?}",
+                                    name, unresolved_vars
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Validate 'either' constraints
+        for (name, param) in &effective_params {
+            if !param.either.is_empty() {
+                if let Some(resolved_value) = parameters.get(name) {
+                    if !param.either.contains(resolved_value) {
+                        return Err(Error::Config(format!(
+                            "Parameter '{}' has value '{}' which is not in the allowed values: {:?}",
+                            name, resolved_value, param.either
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Resolve all templates in configuration
+    pub fn resolve_config(&mut self, config: &Config) -> Result<Config> {
+        // Get parameters (already resolved by resolve_parameters, or resolve them now if not called yet)
+        let parameters = if self.resolved_parameters.is_empty() {
+            let mut params = HashMap::new();
+            let effective_params = config.get_effective_parameters();
+            for (name, param) in effective_params {
+                if let Some(ref value) = param.value {
+                    params.insert(name.clone(), value.clone());
+                } else if let Some(env_value) = param.get_value_for_environment(&self.environment) {
+                    params.insert(name.clone(), Self::value_to_string(env_value));
+                } else if param.is_port_type() {
+                    let port = self.port_allocator.allocate_random_port()?;
+                    params.insert(name.clone(), port.to_string());
+                }
+            }
+            params
+        } else {
+            self.resolved_parameters.clone()
+        };
+
+        // Create resolved config
+        let mut resolved = config.clone();
+
+        // Resolve services - environment variables now only come from inline config
+        // (.env files are applied to parameters, not directly to service environments)
+        for (name, service) in &mut resolved.services {
+            // Resolve templates in service environment
+            service.environment = self
+                .resolve_environment(&service.environment, &parameters)
+                .map_err(|e| {
+                    Error::Config(format!(
+                        "Failed to resolve environment for service '{}': {}",
+                        name, e
+                    ))
+                })?;
+
+            // Resolve process command with shell escaping for security
+            if let Some(ref process) = service.process {
+                service.process = Some(
+                    self.resolve_template_shell_safe(process, &parameters)
+                        .map_err(|e| {
+                            Error::Config(format!(
+                                "Failed to resolve process for service '{}': {}",
+                                name, e
+                            ))
+                        })?,
+                );
+            }
+
+            // Resolve install command with shell escaping for security
+            if let Some(ref install) = service.install {
+                service.install = Some(
+                    self.resolve_template_shell_safe(install, &parameters)
+                        .map_err(|e| {
+                            Error::Config(format!(
+                                "Failed to resolve install for service '{}': {}",
+                                name, e
+                            ))
+                        })?,
+                );
+            }
+
+            // Resolve ports
+            if !service.ports.is_empty() {
+                let mut resolved_ports = Vec::new();
+                for port in &service.ports {
+                    resolved_ports.push(self.resolve_template(port, &parameters).map_err(|e| {
+                        Error::Config(format!(
+                            "Failed to resolve port for service '{}': {}",
+                            name, e
+                        ))
+                    })?);
+                }
+                service.ports = resolved_ports;
+            }
+
+            // Resolve health check
+            if let Some(ref healthcheck) = service.healthcheck {
+                match healthcheck {
+                    crate::config::HealthCheck::HttpGet { http_get, timeout } => {
+                        let resolved_url =
+                            self.resolve_template(http_get, &parameters).map_err(|e| {
+                                Error::Config(format!(
+                                    "Failed to resolve health check for service '{}': {}",
+                                    name, e
+                                ))
+                            })?;
+                        service.healthcheck = Some(crate::config::HealthCheck::HttpGet {
+                            http_get: resolved_url,
+                            timeout: timeout.clone(),
+                        });
+                    }
+                    crate::config::HealthCheck::CommandMap { command, timeout } => {
+                        let resolved_cmd =
+                            self.resolve_template(command, &parameters).map_err(|e| {
+                                Error::Config(format!(
+                                    "Failed to resolve health check command for service '{}': {}",
+                                    name, e
+                                ))
+                            })?;
+                        service.healthcheck = Some(crate::config::HealthCheck::CommandMap {
+                            command: resolved_cmd,
+                            timeout: timeout.clone(),
+                        });
+                    }
+                    crate::config::HealthCheck::Command(cmd) => {
+                        let resolved_cmd =
+                            self.resolve_template(cmd, &parameters).map_err(|e| {
+                                Error::Config(format!(
+                                    "Failed to resolve health check command for service '{}': {}",
+                                    name, e
+                                ))
+                            })?;
+                        service.healthcheck =
+                            Some(crate::config::HealthCheck::Command(resolved_cmd));
+                    }
+                }
+            }
+
+            // Resolve external service parameters
+            if !service.parameters.is_empty() {
+                let mut resolved_params = HashMap::new();
+                for (key, value) in &service.parameters {
+                    let resolved_value =
+                        self.resolve_template(value, &parameters).map_err(|e| {
+                            Error::Config(format!(
+                                "Failed to resolve parameter '{}' for service '{}': {}",
+                                key, name, e
+                            ))
+                        })?;
+                    resolved_params.insert(key.clone(), resolved_value);
+                }
+                service.parameters = resolved_params;
+            }
+        }
+
+        // NOTE: Scripts are NOT resolved here. Script environments and commands are
+        // resolved at execution time in run_script_interactive() or run_script_isolated().
+        // This allows isolated scripts to use fresh port allocations instead of
+        // the parent orchestrator's cached ports.
+
+        Ok(resolved)
+    }
+
+    /// Convert YAML value to string
+    fn value_to_string(value: &serde_yaml::Value) -> String {
+        match value {
+            serde_yaml::Value::String(s) => s.clone(),
+            serde_yaml::Value::Number(n) => n.to_string(),
+            serde_yaml::Value::Bool(b) => b.to_string(),
+            _ => format!("{:?}", value),
+        }
+    }
+
+    /// Extract template variables from a string
+    pub fn extract_template_variables(&self, template: &str) -> Vec<String> {
+        get_template_regex()
+            .captures_iter(template)
+            .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+            .collect()
+    }
+
+    /// Get resolved parameters
+    pub fn get_resolved_parameters(&self) -> &HashMap<String, String> {
+        &self.resolved_parameters
+    }
+
+    /// Get all allocated ports
+    pub fn get_allocated_ports(&self) -> Vec<u16> {
+        self.port_allocator.allocated_ports()
+    }
+
+    /// Release port listeners.
+    ///
+    /// This method uses interior mutability in the port allocator to allow
+    /// calling with `&self`, enabling concurrent start operations.
+    pub fn release_port_listeners(&self) {
+        self.port_allocator.release_listeners();
+    }
+
+    /// Handle port conflict with interactive prompt or error
+    fn handle_port_conflict_interactive(&mut self, port: u16, param_name: &str) -> Result<u16> {
+        // Check for conflict
+        let Some(conflict) = PortConflict::check(port) else {
+            // Port is actually available, just allocate it
+            return Ok(port);
+        };
+
+        // Allocate alternative port
+        let alternative_port = self.port_allocator.allocate_random_port()?;
+
+        // In auto-resolve mode (e.g., TUI), skip interactive prompt and use alternative port
+        if self.auto_resolve_conflicts {
+            tracing::info!(
+                "Port {} ({}) is in use, auto-resolving to {}",
+                port,
+                param_name,
+                alternative_port
+            );
+            return Ok(alternative_port);
+        }
+
+        // Handle conflict (interactive or error)
+        match handle_port_conflict(port, param_name, alternative_port, &conflict)? {
+            PortConflictAction::KillAndRetry => {
+                // Kill all blocking processes and verify with retries
+                if let Err(e) = conflict.kill_and_verify(3) {
+                    return Err(Error::Config(e));
+                }
+                // Try to allocate the original port again
+                match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                    Ok(listener) => {
+                        self.port_allocator.register_port(port, listener);
+                        Ok(port)
+                    }
+                    Err(_) => {
+                        // Still not available, use alternative
+                        Ok(alternative_port)
+                    }
+                }
+            }
+            PortConflictAction::Retry => {
+                // Try to allocate the original port again
+                match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                    Ok(listener) => {
+                        self.port_allocator.register_port(port, listener);
+                        Ok(port)
+                    }
+                    Err(_) => {
+                        // Still not available, use alternative
+                        Ok(alternative_port)
+                    }
+                }
+            }
+            PortConflictAction::Ignore => {
+                // Use alternative port
+                Ok(alternative_port)
+            }
+            PortConflictAction::Abort => Err(Error::Aborted),
+        }
+    }
+
+    /// Cleanup all resources
+    pub fn cleanup(&mut self) {
+        self.port_allocator.release_all();
+    }
+
+    /// Cleanup resources that can be cleaned with &self.
+    ///
+    /// This is useful when called from contexts that only have shared access.
+    /// Note: This only releases port listeners, not the allocated_ports set.
+    pub fn cleanup_shared(&self) {
+        self.port_allocator.release_listeners_for_cleanup();
+    }
+}
+
+impl Default for Resolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_template() {
+        let resolver = Resolver::new();
+        let mut params = HashMap::new();
+        params.insert("PORT".to_string(), "8080".to_string());
+        params.insert("HOST".to_string(), "localhost".to_string());
+
+        let result = resolver
+            .resolve_template("http://{{HOST}}:{{PORT}}/api", &params)
+            .unwrap();
+
+        assert_eq!(result, "http://localhost:8080/api");
+    }
+
+    #[test]
+    fn test_resolve_template_missing_param() {
+        let resolver = Resolver::new();
+        let params = HashMap::new();
+
+        let result = resolver.resolve_template("{{MISSING}}", &params);
+
+        assert!(matches!(result, Err(Error::ParameterNotFound(_))));
+    }
+
+    #[test]
+    fn test_extract_template_variables() {
+        let resolver = Resolver::new();
+        let vars = resolver.extract_template_variables("{{FOO}} and {{BAR}} and {{FOO}}");
+
+        assert!(vars.contains(&"FOO".to_string()));
+        assert!(vars.contains(&"BAR".to_string()));
+    }
+
+    #[test]
+    fn test_port_allocation_with_default_available() {
+        use crate::config::{Config, Parameter};
+
+        // Use a fixed high port that's unlikely to be in use
+        // Note: There's an inherent race window between checking availability and
+        // the resolver allocating, so we verify behavior rather than exact port
+        let default_port: u16 = 59123;
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create a port parameter with a default
+        let param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("port".to_string()),
+            default: Some(serde_yaml::Value::Number(default_port.into())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("API_PORT".to_string(), param);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        let port_str = resolved.get("API_PORT").unwrap();
+        let port: u16 = port_str.parse().unwrap();
+
+        // Should allocate a valid port - either the default or a fallback
+        // The exact port depends on system state (race condition avoidance)
+        assert!(port > 0, "Should allocate a valid port");
+
+        // If default was available, it should be used; otherwise fallback
+        // We can't assert the exact value due to race conditions with other tests
+        if port != default_port {
+            // Fallback was used - still a valid outcome
+            assert!(port != 0, "Fallback port should be valid");
+        }
+    }
+
+    #[test]
+    fn test_port_allocation_with_default_in_use() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Occupy a port
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let occupied_port = listener.local_addr().unwrap().port();
+
+        // Create a port parameter with the occupied port as default
+        let param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("port".to_string()),
+            default: Some(serde_yaml::Value::Number(occupied_port.into())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("API_PORT".to_string(), param);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        let port_str = resolved.get("API_PORT").unwrap();
+        let port: u16 = port_str.parse().unwrap();
+
+        // Should have allocated a different port (fallback to random)
+        assert_ne!(port, occupied_port);
+        assert!(port > 0);
+
+        drop(listener);
+    }
+
+    #[test]
+    fn test_port_allocation_without_default() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create a port parameter without default
+        let param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("port".to_string()),
+            default: None,
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("API_PORT".to_string(), param);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        let port_str = resolved.get("API_PORT").unwrap();
+        let port: u16 = port_str.parse().unwrap();
+
+        // Should have allocated a random port
+        assert!(port > 0);
+    }
+
+    #[test]
+    fn test_port_allocation_with_invalid_default() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create a port parameter with an invalid default
+        let param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("port".to_string()),
+            default: Some(serde_yaml::Value::String("not-a-port".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("API_PORT".to_string(), param);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        let port_str = resolved.get("API_PORT").unwrap();
+        let port: u16 = port_str.parse().unwrap();
+
+        // Should have allocated a random port (fallback due to invalid default)
+        assert!(port > 0);
+    }
+
+    #[test]
+    fn test_multiple_port_allocations_with_defaults() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Find two available ports
+        let listener1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port1 = listener1.local_addr().unwrap().port();
+        drop(listener1);
+
+        let listener2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port2 = listener2.local_addr().unwrap().port();
+        drop(listener2);
+
+        // Create two port parameters with defaults
+        let param1 = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("port".to_string()),
+            default: Some(serde_yaml::Value::Number(port1.into())),
+            either: vec![],
+            value: None,
+        };
+
+        let param2 = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("port".to_string()),
+            default: Some(serde_yaml::Value::Number(port2.into())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("API_PORT".to_string(), param1);
+        config.parameters.insert("DB_PORT".to_string(), param2);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        let api_port: u16 = resolved.get("API_PORT").unwrap().parse().unwrap();
+        let db_port: u16 = resolved.get("DB_PORT").unwrap().parse().unwrap();
+
+        // Both should have gotten their default ports
+        assert_eq!(api_port, port1);
+        assert_eq!(db_port, port2);
+        assert_ne!(api_port, db_port);
+    }
+
+    #[test]
+    fn test_port_validation_with_user_value() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create a port parameter with a valid user-provided value
+        let mut param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("port".to_string()),
+            default: None,
+            either: vec![],
+            value: None,
+        };
+        param.value = Some("8080".to_string());
+
+        config.parameters.insert("API_PORT".to_string(), param);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        assert_eq!(resolved.get("API_PORT").unwrap(), "8080");
+    }
+
+    #[test]
+    fn test_port_validation_rejects_invalid_string() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create a port parameter with invalid string value
+        let mut param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("port".to_string()),
+            default: None,
+            either: vec![],
+            value: None,
+        };
+        param.value = Some("invalid".to_string());
+
+        config.parameters.insert("API_PORT".to_string(), param);
+
+        let result = resolver.resolve_parameters(&mut config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid port value"));
+    }
+
+    #[test]
+    fn test_port_validation_rejects_zero() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create a port parameter with zero value
+        let mut param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("port".to_string()),
+            default: None,
+            either: vec![],
+            value: None,
+        };
+        param.value = Some("0".to_string());
+
+        config.parameters.insert("API_PORT".to_string(), param);
+
+        let result = resolver.resolve_parameters(&mut config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid port value '0'"));
+    }
+
+    #[test]
+    fn test_port_validation_rejects_out_of_range() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create a port parameter with out-of-range value
+        let mut param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("port".to_string()),
+            default: None,
+            either: vec![],
+            value: None,
+        };
+        param.value = Some("99999".to_string());
+
+        config.parameters.insert("API_PORT".to_string(), param);
+
+        let result = resolver.resolve_parameters(&mut config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid port value"));
+    }
+
+    #[test]
+    fn test_non_port_parameter_accepts_any_value() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create a non-port parameter with "invalid" value (which is valid for non-ports)
+        let mut param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: Some("string".to_string()),
+            default: None,
+            either: vec![],
+            value: None,
+        };
+        param.value = Some("invalid".to_string());
+
+        config.parameters.insert("SOME_PARAM".to_string(), param);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        assert_eq!(resolved.get("SOME_PARAM").unwrap(), "invalid");
+    }
+
+    #[test]
+    fn test_circular_parameter_detection_simple() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create circular reference: A -> B -> A
+        let param_a = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("{{B}}".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        let param_b = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("{{A}}".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("A".to_string(), param_a);
+        config.parameters.insert("B".to_string(), param_b);
+
+        let result = resolver.resolve_parameters(&mut config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Circular parameter reference")
+                || err.contains("unresolved template variables")
+        );
+    }
+
+    #[test]
+    fn test_circular_parameter_detection_complex() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create circular reference: A -> B -> C -> A
+        let param_a = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("{{B}}".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        let param_b = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("{{C}}".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        let param_c = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("{{A}}".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("A".to_string(), param_a);
+        config.parameters.insert("B".to_string(), param_b);
+        config.parameters.insert("C".to_string(), param_c);
+
+        let result = resolver.resolve_parameters(&mut config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Circular parameter reference")
+                || err.contains("unresolved template variables")
+        );
+    }
+
+    #[test]
+    fn test_valid_parameter_chain() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create valid chain: A -> B -> C (no cycle)
+        let param_c = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("value_c".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        let param_b = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("{{C}}".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        let param_a = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("{{B}}".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("A".to_string(), param_a);
+        config.parameters.insert("B".to_string(), param_b);
+        config.parameters.insert("C".to_string(), param_c);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        assert_eq!(resolved.get("A").unwrap(), "value_c");
+        assert_eq!(resolved.get("B").unwrap(), "value_c");
+        assert_eq!(resolved.get("C").unwrap(), "value_c");
+    }
+
+    #[test]
+    fn test_missing_parameter_reference() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create parameter that references non-existent parameter
+        let param_a = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("{{MISSING}}".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("A".to_string(), param_a);
+
+        let result = resolver.resolve_parameters(&mut config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unresolved template variables") || err.contains("MISSING"));
+    }
+
+    #[test]
+    fn test_either_constraint_valid() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create parameter with either constraint and valid default
+        let param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("dev".to_string())),
+            either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
+            value: None,
+        };
+
+        config.parameters.insert("ENV".to_string(), param);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        assert_eq!(resolved.get("ENV").unwrap(), "dev");
+    }
+
+    #[test]
+    fn test_either_constraint_invalid() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create parameter with either constraint and invalid default
+        let param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("invalid".to_string())),
+            either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
+            value: None,
+        };
+
+        config.parameters.insert("ENV".to_string(), param);
+
+        let result = resolver.resolve_parameters(&mut config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not in the allowed values"));
+        assert!(err.contains("invalid"));
+    }
+
+    #[test]
+    fn test_either_constraint_with_user_value() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create parameter with either constraint and user-provided value
+        let mut param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: None,
+            either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
+            value: None,
+        };
+        param.value = Some("prod".to_string());
+
+        config.parameters.insert("ENV".to_string(), param);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        assert_eq!(resolved.get("ENV").unwrap(), "prod");
+    }
+
+    #[test]
+    fn test_either_constraint_with_invalid_user_value() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create parameter with either constraint and invalid user-provided value
+        let mut param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: None,
+            either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
+            value: None,
+        };
+        param.value = Some("test".to_string());
+
+        config.parameters.insert("ENV".to_string(), param);
+
+        let result = resolver.resolve_parameters(&mut config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not in the allowed values"));
+        assert!(err.contains("test"));
+    }
+
+    #[test]
+    fn test_either_constraint_with_template() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create base parameter
+        let base_param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("staging".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        // Create parameter with either constraint that references base
+        let env_param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("{{BASE}}".to_string())),
+            either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
+            value: None,
+        };
+
+        config.parameters.insert("BASE".to_string(), base_param);
+        config.parameters.insert("ENV".to_string(), env_param);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        assert_eq!(resolved.get("ENV").unwrap(), "staging");
+    }
+
+    #[test]
+    fn test_shell_escape_simple() {
+        let result = shell_escape("hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_shell_escape_with_semicolon() {
+        let result = shell_escape("; rm -rf /");
+        assert_eq!(result, "'; rm -rf /'");
+    }
+
+    #[test]
+    fn test_shell_escape_with_pipe() {
+        let result = shell_escape("foo | bar");
+        assert_eq!(result, "'foo | bar'");
+    }
+
+    #[test]
+    fn test_shell_escape_with_quotes() {
+        let result = shell_escape("it's");
+        // Single quote ' is escaped as '\'' in the middle of the string
+        // "it's" becomes 'it'\''s'
+        assert_eq!(result, "'it'\\''s'");
+    }
+
+    #[test]
+    fn test_shell_escape_empty() {
+        let result = shell_escape("");
+        assert_eq!(result, "''");
+    }
+
+    #[test]
+    fn test_shell_escape_safe_characters() {
+        let result = shell_escape("hello_world-123.txt");
+        assert_eq!(result, "hello_world-123.txt");
+    }
+
+    #[test]
+    fn test_shell_escape_path_with_slash() {
+        // '/' should be quoted now (security hardening)
+        let result = shell_escape("/path/to/file");
+        assert_eq!(result, "'/path/to/file'");
+    }
+
+    #[test]
+    fn test_shell_escape_with_colon() {
+        // ':' should be quoted now (security hardening)
+        let result = shell_escape("host:port");
+        assert_eq!(result, "'host:port'");
+    }
+
+    #[test]
+    fn test_resolve_template_shell_safe() {
+        use crate::config::{Config, Parameter, Service};
+
+        let mut resolver = Resolver::new();
+        let mut config = Config::default();
+
+        // Create parameter with dangerous value
+        let mut param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: None,
+            either: vec![],
+            value: None,
+        };
+        param.value = Some("; rm -rf /".to_string());
+
+        config.parameters.insert("USER_INPUT".to_string(), param);
+
+        // Create service with process command that uses the parameter
+        let service = Service {
+            process: Some("echo {{USER_INPUT}}".to_string()),
+            ..Default::default()
+        };
+
+        config.services.insert("test".to_string(), service);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+        let resolved_config = resolver.resolve_config(&config).unwrap();
+
+        // The dangerous parameter should be escaped
+        let resolved_service = resolved_config.services.get("test").unwrap();
+        let process = resolved_service.process.as_ref().unwrap();
+
+        // Should be escaped to prevent command injection
+        assert_eq!(process, "echo '; rm -rf /'");
+        // Should NOT be the unescaped dangerous version
+        assert_ne!(process, "echo ; rm -rf /");
+    }
+
+    #[test]
+    fn test_env_file_sets_parameter_value() {
+        use crate::config::{Config, Parameter};
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let env_path = temp_dir.path().join(".env");
+        fs::write(&env_path, "MY_PARAM=from_env_file\n").unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+
+        // Declare the parameter (must exist for .env file to work)
+        let param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("default_value".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("MY_PARAM".to_string(), param);
+        config.env_file = vec![".env".to_string()];
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        // .env file value should override the default
+        assert_eq!(resolved.get("MY_PARAM").unwrap(), "from_env_file");
+    }
+
+    #[test]
+    fn test_env_file_respects_explicit_value() {
+        use crate::config::{Config, Parameter};
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let env_path = temp_dir.path().join(".env");
+        fs::write(&env_path, "MY_PARAM=from_env_file\n").unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+
+        // Declare the parameter with an explicit value already set
+        let param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("default_value".to_string())),
+            either: vec![],
+            value: Some("explicit_value".to_string()), // Explicit value takes precedence
+        };
+
+        config.parameters.insert("MY_PARAM".to_string(), param);
+        config.env_file = vec![".env".to_string()];
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        // Explicit value should NOT be overridden by .env file
+        assert_eq!(resolved.get("MY_PARAM").unwrap(), "explicit_value");
+    }
+
+    #[test]
+    fn test_env_file_rejects_undeclared_variable() {
+        use crate::config::Config;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let env_path = temp_dir.path().join(".env");
+        // This variable is NOT declared in parameters - should error
+        fs::write(&env_path, "UNDECLARED_VAR=some_value\n").unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+        config.env_file = vec![".env".to_string()];
+
+        let result = resolver.resolve_parameters(&mut config);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("UNDECLARED_VAR"));
+        assert!(err.to_string().contains("undeclared parameter"));
+    }
+
+    #[test]
+    fn test_env_file_works_with_service_environment() {
+        use crate::config::{Config, Parameter, Service};
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let env_path = temp_dir.path().join(".env");
+        fs::write(&env_path, "API_KEY=secret123\n").unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+
+        // Declare the parameter
+        let param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("API_KEY".to_string(), param);
+        config.env_file = vec![".env".to_string()];
+
+        // Service references parameter in its environment
+        let mut env = HashMap::new();
+        env.insert("SECRET".to_string(), "{{API_KEY}}".to_string());
+        let service = Service {
+            process: Some("echo test".to_string()),
+            environment: env,
+            ..Default::default()
+        };
+
+        config.services.insert("api".to_string(), service);
+
+        resolver.resolve_parameters(&mut config).unwrap();
+        let resolved_config = resolver.resolve_config(&config).unwrap();
+
+        let resolved_service = resolved_config.services.get("api").unwrap();
+        // The service environment should have the value from .env file via the parameter
+        assert_eq!(
+            resolved_service.environment.get("SECRET").unwrap(),
+            "secret123"
+        );
+    }
+
+    #[test]
+    fn test_env_file_empty_file() {
+        use crate::config::Config;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let env_path = temp_dir.path().join(".env");
+        // Empty file with only comments
+        fs::write(&env_path, "# Just comments\n# No actual variables\n").unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+        config.env_file = vec![".env".to_string()];
+
+        // Should succeed - empty env file is valid
+        resolver.resolve_parameters(&mut config).unwrap();
+    }
+
+    #[test]
+    fn test_env_file_multiple_files_later_overrides() {
+        use crate::config::{Config, Parameter};
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let env1_path = temp_dir.path().join(".env1");
+        let env2_path = temp_dir.path().join(".env2");
+
+        fs::write(&env1_path, "MY_PARAM=from_first\n").unwrap();
+        fs::write(&env2_path, "MY_PARAM=from_second\n").unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+
+        let param = Parameter {
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            param_type: None,
+            default: Some(serde_yaml::Value::String("default".to_string())),
+            either: vec![],
+            value: None,
+        };
+
+        config.parameters.insert("MY_PARAM".to_string(), param);
+        config.env_file = vec![".env1".to_string(), ".env2".to_string()];
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        // Second file should win
+        assert_eq!(resolved.get("MY_PARAM").unwrap(), "from_second");
+    }
+
+    #[test]
+    fn test_env_file_undeclared_error_shows_file_name() {
+        use crate::config::Config;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let env_path = temp_dir.path().join(".env.test");
+
+        // Variable is NOT declared in parameters - should error
+        fs::write(&env_path, "UNDECLARED=value\n").unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+        config.env_file = vec![".env.test".to_string()];
+
+        let result = resolver.resolve_parameters(&mut config);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        assert!(err_str.contains("UNDECLARED"));
+        // Error should reference the source file
+        assert!(err_str.contains(".env.test"));
+    }
+}

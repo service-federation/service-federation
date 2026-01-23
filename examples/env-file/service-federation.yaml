@@ -1,0 +1,100 @@
+# Example: Environment File Support
+#
+# This example demonstrates how to use .env files with Service Federation.
+#
+# Key features:
+# - env_file values MUST be declared as parameters
+# - .env files provide values for parameters (not direct environment injection)
+# - service-federation.yaml is the single source of truth
+# - Priority: explicit value > env_file > default
+
+# Load .env files to set parameter values
+env_file:
+  - .env.shared
+  - .env.secrets  # Typically gitignored - for API keys, passwords, etc.
+
+# All variables in .env files must be declared as parameters
+parameters:
+  # Port parameters
+  API_PORT:
+    type: port
+    default: 8080
+  DB_PORT:
+    type: port
+    default: 5432
+
+  # Shared environment settings (from .env.shared)
+  LOG_LEVEL:
+    default: info
+  NODE_ENV:
+    default: development
+  TZ:
+    default: UTC
+
+  # API configuration (from .env.secrets)
+  API_KEY:
+    default: ""
+  JWT_SECRET:
+    default: ""
+  CACHE_TTL:
+    default: "300"
+  DEBUG:
+    default: "false"
+
+  # Database configuration (from .env.secrets)
+  POSTGRES_USER:
+    default: postgres
+  POSTGRES_PASSWORD:
+    default: ""
+
+services:
+  # Database service
+  database:
+    image: postgres:15
+    ports:
+      - "{{DB_PORT}}:5432"
+    environment:
+      # Reference parameters (values may come from .env files)
+      POSTGRES_USER: "{{POSTGRES_USER}}"
+      POSTGRES_PASSWORD: "{{POSTGRES_PASSWORD}}"
+      POSTGRES_DB: myapp
+
+  # API service
+  api:
+    cwd: ./api
+    process: npm start
+    depends_on:
+      - database
+    environment:
+      # Port and database config
+      PORT: "{{API_PORT}}"
+      DATABASE_URL: "postgres://{{POSTGRES_USER}}:{{POSTGRES_PASSWORD}}@localhost:{{DB_PORT}}/myapp"
+      # Shared settings
+      LOG_LEVEL: "{{LOG_LEVEL}}"
+      NODE_ENV: "{{NODE_ENV}}"
+      TZ: "{{TZ}}"
+      # API-specific secrets
+      API_KEY: "{{API_KEY}}"
+      JWT_SECRET: "{{JWT_SECRET}}"
+      CACHE_TTL: "{{CACHE_TTL}}"
+      DEBUG: "{{DEBUG}}"
+
+  # Worker inherits same parameters
+  worker:
+    cwd: ./worker
+    process: npm run worker
+    depends_on:
+      - database
+    environment:
+      DATABASE_URL: "postgres://{{POSTGRES_USER}}:{{POSTGRES_PASSWORD}}@localhost:{{DB_PORT}}/myapp"
+      LOG_LEVEL: "{{LOG_LEVEL}}"
+      NODE_ENV: "{{NODE_ENV}}"
+
+scripts:
+  migrate:
+    cwd: ./api
+    depends_on:
+      - database
+    environment:
+      DATABASE_URL: "postgres://{{POSTGRES_USER}}:{{POSTGRES_PASSWORD}}@localhost:{{DB_PORT}}/myapp"
+    script: npm run db:migrate

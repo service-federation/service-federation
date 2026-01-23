@@ -1,0 +1,56 @@
+parameters:
+  DB_PASSWORD:
+    default: mysecretpassword
+
+  DB_NAME:
+    default: myapp
+
+  API_PORT:
+    type: port
+    default: 8080
+
+services:
+  # Reference individual services from docker-compose.yml
+  postgres:
+    composeFile: ./docker-compose.yml
+    composeService: postgres
+    environment:
+      POSTGRES_PASSWORD: '{{DB_PASSWORD}}'
+      POSTGRES_DB: '{{DB_NAME}}'
+    healthcheck:
+      command: pg_isready -U postgres
+
+  redis:
+    composeFile: ./docker-compose.yml
+    composeService: redis
+    depends_on:
+      - postgres
+
+  # Mix compose services with native fed services
+  api:
+    process: |
+      echo "API starting on port {{API_PORT}}"
+      echo "Database: {{DB_NAME}}"
+      echo "Connecting to postgres and redis..."
+      while true; do
+        echo "API running on port {{API_PORT}}"
+        sleep 3
+      done
+    environment:
+      PORT: '{{API_PORT}}'
+      DATABASE_URL: 'postgresql://postgres:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      REDIS_URL: 'redis://localhost:6379'
+    depends_on:
+      - postgres
+      - redis
+    healthcheck:
+      command: echo "API is healthy"
+
+  # Another compose service depending on the API
+  elasticsearch:
+    composeFile: ./docker-compose.yml
+    composeService: elasticsearch
+    depends_on:
+      - api
+
+entrypoint: api

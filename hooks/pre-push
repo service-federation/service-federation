@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+
+# Run all tests except ignored tests (which are slow fuzz/chaos tests)
+cargo test

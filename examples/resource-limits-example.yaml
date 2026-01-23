@@ -1,0 +1,116 @@
+parameters:
+  API_PORT:
+    type: port
+    default: 8080
+
+  DB_PORT:
+    type: port
+    default: 5432
+
+services:
+  # Database service with resource limits
+  # Prevents database from consuming all machine RAM
+  database:
+    image: postgres:15
+    ports: ["{{DB_PORT}}:5432"]
+    environment:
+      POSTGRES_PASSWORD: secure-password
+      POSTGRES_USER: developer
+      POSTGRES_DB: myapp
+    resources:
+      # Hard memory limit - container will be killed if exceeded
+      memory: 512m
+      # Soft memory limit - container gets swapped if limit exceeded
+      memory_reservation: 256m
+      # CPU limit - prevents CPU hogging
+      cpus: "2.0"
+      # Process limit - prevent fork bombs
+      pids: 100
+      # File descriptor limit
+      nofile: 1024
+
+  # Cache service with minimal resources
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    resources:
+      memory: 256m
+      cpus: "1.0"
+
+  # Node.js backend with moderate limits
+  backend:
+    process: |
+      node server.js
+    cwd: ./backend
+    ports: ["{{API_PORT}}:{{API_PORT}}"]
+    depends_on: [database, redis]
+    environment:
+      PORT: "{{API_PORT}}"
+      DATABASE_URL: "postgres://developer:secure-password@localhost:{{DB_PORT}}/myapp"
+      REDIS_URL: "redis://localhost:6379"
+      NODE_ENV: development
+    resources:
+      # Memory limit for Node process
+      memory: 1g
+      # CPU limit - prevent blocking other services
+      cpus: "2.0"
+      # Process limit - limit spawned processes
+      pids: 50
+      # File descriptor limit
+      nofile: 4096
+    healthcheck:
+      httpGet: "http://localhost:{{API_PORT}}/health"
+
+  # Worker process with tighter limits
+  # Workers typically do background tasks, so they get fewer resources
+  worker:
+    process: |
+      python -m celery -A tasks worker -l info
+    cwd: ./worker
+    depends_on: [database, redis]
+    environment:
+      DATABASE_URL: "postgres://developer:secure-password@localhost:{{DB_PORT}}/myapp"
+      REDIS_URL: "redis://localhost:6379"
+    resources:
+      # Smaller memory limit for background worker
+      memory: 512m
+      # Limited CPU - don't starve main app
+      cpus: "1.0"
+      # Limit spawned worker threads
+      pids: 25
+      nofile: 2048
+    restart: always
+
+  # Frontend with development server
+  frontend:
+    process: |
+      npm run dev
+    cwd: ./frontend
+    ports: ["3000:3000"]
+    depends_on: [backend]
+    environment:
+      REACT_APP_API_URL: "http://localhost:{{API_PORT}}"
+    resources:
+      memory: 512m
+      cpus: "1.0"
+
+entrypoint: frontend
+
+scripts:
+  test:
+    depends_on: [backend]
+    script: |
+      echo "Running tests with resource-limited services..."
+      # Tests run against services with limits
+      echo "All tests passed!"
+
+  # Local development - no limits
+  dev:
+    depends_on: [backend]
+    environment:
+      NODE_ENV: development
+    script: |
+      echo "Starting development environment..."
+      echo "Backend: http://localhost:{{API_PORT}}"
+      echo "Redis: localhost:6379"
+      echo "Database: localhost:{{DB_PORT}}"

@@ -1,0 +1,7 @@
+target/
+.fed-lock.json
+.fed/
+
+# Internal development files
+CLAUDE.md
+ISSUE_TRACKER.md

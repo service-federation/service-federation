@@ -1,0 +1,29 @@
+services:
+  # Simple web service for testing
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "0:80"  # Random port to avoid conflicts
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 2s
+      timeout: 3s
+      retries: 3
+
+  # Redis for testing
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "0:6379"  # Random port to avoid conflicts
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 3
+
+  # Service with environment variables
+  busybox:
+    image: busybox:latest
+    command: sh -c "echo TEST_VAR=$${TEST_VAR:-default_value} && sleep 3600"
+    environment:
+      TEST_VAR: ${TEST_VAR:-default_value}

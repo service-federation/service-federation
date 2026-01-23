@@ -1,0 +1,102 @@
+# Example: Service Templates
+# Demonstrates using local templates to reduce configuration duplication
+
+variables:
+  AUTH_PORT:
+    type: port
+    default: 8080
+  USER_PORT:
+    type: port
+    default: 8081
+  PAYMENT_PORT:
+    type: port
+    default: 8082
+
+# Define reusable service templates
+templates:
+  # Template for Java-based microservices
+  java-microservice:
+    image: openjdk:17-slim
+    environment:
+      JAVA_OPTS: '-Xmx512m -Xms256m'
+      SPRING_PROFILES_ACTIVE: 'dev'
+    healthcheck:
+      httpGet: 'http://localhost:{{PORT}}/actuator/health'
+    restart: always
+    volumes:
+      - './logs:/app/logs'
+
+  # Template for Node.js services
+  node-service:
+    image: node:18-alpine
+    environment:
+      NODE_ENV: 'development'
+    healthcheck:
+      httpGet: 'http://localhost:{{PORT}}/health'
+    restart: always
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:15
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: myapp
+    healthcheck:
+      command: 'pg_isready -U postgres'
+
+  # Auth service extends java-microservice template
+  auth-service:
+    extends: java-microservice
+    ports: ["{{AUTH_PORT}}:{{AUTH_PORT}}"]
+    depends_on: [postgres]
+    environment:
+      PORT: '{{AUTH_PORT}}'
+      DATABASE_URL: 'postgres://postgres:password@localhost:5432/myapp'
+      SERVICE_NAME: 'auth-service'
+    # Inherits: image, JAVA_OPTS, healthcheck, restart, volumes
+
+  # User service also extends java-microservice template
+  user-service:
+    extends: java-microservice
+    ports: ["{{USER_PORT}}:{{USER_PORT}}"]
+    depends_on: [postgres, auth-service]
+    environment:
+      PORT: '{{USER_PORT}}'
+      DATABASE_URL: 'postgres://postgres:password@localhost:5432/myapp'
+      AUTH_SERVICE_URL: 'http://localhost:{{AUTH_PORT}}'
+      SERVICE_NAME: 'user-service'
+    # Inherits: image, JAVA_OPTS, healthcheck, restart, volumes
+
+  # Payment service extends java-microservice template
+  payment-service:
+    extends: java-microservice
+    ports: ["{{PAYMENT_PORT}}:{{PAYMENT_PORT}}"]
+    depends_on: [postgres, auth-service]
+    environment:
+      PORT: '{{PAYMENT_PORT}}'
+      DATABASE_URL: 'postgres://postgres:password@localhost:5432/myapp'
+      AUTH_SERVICE_URL: 'http://localhost:{{AUTH_PORT}}'
+      SERVICE_NAME: 'payment-service'
+    # Inherits: image, JAVA_OPTS, healthcheck, restart, volumes
+
+  # Frontend extends node-service template
+  frontend:
+    extends: node-service
+    ports: ["3000:3000"]
+    depends_on: [auth-service, user-service]
+    environment:
+      PORT: '3000'
+      API_BASE_URL: 'http://localhost:{{AUTH_PORT}}'
+      USER_SERVICE_URL: 'http://localhost:{{USER_PORT}}'
+    # Inherits: image, NODE_ENV, healthcheck, restart
+
+entrypoint: frontend
+
+metadata:
+  team: Platform Team
+  contact: platform@example.com
+  provides:
+    - Microservices architecture example
+    - Template-based configuration

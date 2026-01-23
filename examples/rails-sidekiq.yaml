@@ -1,0 +1,155 @@
+# Real-World Example: Rails with Sidekiq
+#
+# This demonstrates a realistic Ruby on Rails setup with:
+# - PostgreSQL database
+# - Redis for caching and Sidekiq
+# - Rails web server
+# - Sidekiq background jobs
+# - Webpacker dev server (for modern Rails with JavaScript)
+
+parameters:
+  RAILS_PORT:
+    type: port
+    default: 3000
+
+  WEBPACKER_PORT:
+    type: port
+    default: 3035
+
+  DB_NAME:
+    default: myapp_development
+
+  DB_USER:
+    default: postgres
+
+  DB_PASSWORD:
+    default: devpassword
+
+  REDIS_PORT:
+    type: port
+    default: 6379
+
+services:
+  # Infrastructure
+  postgres:
+    image: postgres:15-alpine
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: '{{DB_NAME}}'
+      POSTGRES_USER: '{{DB_USER}}'
+      POSTGRES_PASSWORD: '{{DB_PASSWORD}}'
+    healthcheck:
+      command: 'pg_isready -U {{DB_USER}}'
+
+  redis:
+    image: redis:7-alpine
+    ports: ["{{REDIS_PORT}}:6379"]
+    healthcheck:
+      command: 'redis-cli ping'
+
+  # Rails Web Server
+  web:
+    process: bundle exec rails server -p {{RAILS_PORT}}
+    cwd: .
+    depends_on: [postgres, redis]
+    environment:
+      PORT: '{{RAILS_PORT}}'
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      REDIS_URL: 'redis://localhost:{{REDIS_PORT}}/0'
+      RAILS_ENV: 'development'
+      RAILS_MAX_THREADS: '5'
+    healthcheck:
+      httpGet: 'http://localhost:{{RAILS_PORT}}/up'
+    install: |
+      bundle install
+      yarn install
+
+  # Sidekiq Background Jobs
+  sidekiq:
+    process: bundle exec sidekiq
+    cwd: .
+    depends_on: [postgres, redis]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      REDIS_URL: 'redis://localhost:{{REDIS_PORT}}/0'
+      RAILS_ENV: 'development'
+    install: |
+      bundle install
+
+  # Webpacker Dev Server (for Rails 6+)
+  webpacker:
+    process: bin/webpack-dev-server
+    cwd: .
+    depends_on: []
+    environment:
+      WEBPACKER_DEV_SERVER_HOST: 'localhost'
+      WEBPACKER_DEV_SERVER_PORT: '{{WEBPACKER_PORT}}'
+    healthcheck:
+      httpGet: 'http://localhost:{{WEBPACKER_PORT}}'
+    install: |
+      yarn install
+
+entrypoint: web
+
+scripts:
+  # Database setup
+  db-setup:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      RAILS_ENV: 'development'
+    script: |
+      bundle exec rails db:create db:migrate
+
+  # Run migrations
+  migrate:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      RAILS_ENV: 'development'
+    script: |
+      bundle exec rails db:migrate
+
+  # Rollback migration
+  rollback:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      RAILS_ENV: 'development'
+    script: |
+      bundle exec rails db:rollback
+
+  # Seed database
+  seed:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      RAILS_ENV: 'development'
+    script: |
+      bundle exec rails db:seed
+
+  # Run tests
+  test:
+    depends_on: [postgres, redis]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}_test'
+      REDIS_URL: 'redis://localhost:{{REDIS_PORT}}/1'
+      RAILS_ENV: 'test'
+    script: |
+      bundle exec rails db:test:prepare
+      bundle exec rspec
+
+  # Rails console
+  console:
+    depends_on: [postgres, redis]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      REDIS_URL: 'redis://localhost:{{REDIS_PORT}}/0'
+      RAILS_ENV: 'development'
+    script: |
+      bundle exec rails console
+
+  # Asset precompile (for production testing)
+  assets-precompile:
+    script: |
+      bundle exec rails assets:precompile

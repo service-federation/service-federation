@@ -1,0 +1,14 @@
+# Database package - reusable PostgreSQL configuration
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - "postgres-data:/var/lib/postgresql/data"
+    ports:
+      - "5432:5432"
+    healthcheck:
+      command: "pg_isready -U admin"
+    restart: always

@@ -1,0 +1,146 @@
+# Real-World Example: Node.js Microservices
+#
+# This demonstrates a realistic Node.js microservices setup with:
+# - PostgreSQL database
+# - Redis cache
+# - Auth service (Express.js)
+# - API gateway (Express.js)
+# - Background workers (Bull queue)
+# - Frontend (React/Next.js)
+
+parameters:
+  # Service ports with preferred defaults
+  AUTH_PORT:
+    type: port
+    default: 3001
+
+  API_PORT:
+    type: port
+    default: 3000
+
+  FRONTEND_PORT:
+    type: port
+    default: 8080
+
+  # Database configuration
+  DB_NAME:
+    default: microservices_dev
+
+  DB_USER:
+    default: postgres
+
+  DB_PASSWORD:
+    default: devpassword
+
+  # Redis
+  REDIS_PORT:
+    type: port
+    default: 6379
+
+services:
+  # Infrastructure
+  postgres:
+    image: postgres:15-alpine
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: '{{DB_NAME}}'
+      POSTGRES_USER: '{{DB_USER}}'
+      POSTGRES_PASSWORD: '{{DB_PASSWORD}}'
+    healthcheck:
+      command: 'pg_isready -U {{DB_USER}}'
+
+  redis:
+    image: redis:7-alpine
+    ports: ["{{REDIS_PORT}}:6379"]
+    healthcheck:
+      command: 'redis-cli ping'
+
+  # Auth Service
+  auth-service:
+    process: npm run dev
+    cwd: ./services/auth
+    depends_on: [postgres, redis]
+    environment:
+      PORT: '{{AUTH_PORT}}'
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      REDIS_URL: 'redis://localhost:{{REDIS_PORT}}'
+      JWT_SECRET: 'dev-secret-change-in-production'
+      NODE_ENV: 'development'
+    healthcheck:
+      httpGet: 'http://localhost:{{AUTH_PORT}}/health'
+    install: |
+      npm install
+
+  # API Gateway
+  api-gateway:
+    process: npm run dev
+    cwd: ./services/api
+    depends_on: [auth-service, redis]
+    environment:
+      PORT: '{{API_PORT}}'
+      AUTH_SERVICE_URL: 'http://localhost:{{AUTH_PORT}}'
+      REDIS_URL: 'redis://localhost:{{REDIS_PORT}}'
+      NODE_ENV: 'development'
+    healthcheck:
+      httpGet: 'http://localhost:{{API_PORT}}/health'
+    install: |
+      npm install
+
+  # Background Workers
+  worker:
+    process: npm run worker
+    cwd: ./services/workers
+    depends_on: [postgres, redis]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+      REDIS_URL: 'redis://localhost:{{REDIS_PORT}}'
+      NODE_ENV: 'development'
+    install: |
+      npm install
+
+  # Frontend
+  frontend:
+    process: npm run dev
+    cwd: ./frontend
+    depends_on: [api-gateway]
+    environment:
+      PORT: '{{FRONTEND_PORT}}'
+      NEXT_PUBLIC_API_URL: 'http://localhost:{{API_PORT}}'
+      NODE_ENV: 'development'
+    healthcheck:
+      httpGet: 'http://localhost:{{FRONTEND_PORT}}'
+    install: |
+      npm install
+
+entrypoint: frontend
+
+scripts:
+  # Database migrations
+  migrate:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+    script: |
+      cd services/auth && npx prisma migrate dev
+
+  # Seed database
+  seed:
+    depends_on: [postgres]
+    environment:
+      DATABASE_URL: 'postgresql://{{DB_USER}}:{{DB_PASSWORD}}@localhost:5432/{{DB_NAME}}'
+    script: |
+      cd services/auth && npx prisma db seed
+
+  # Run integration tests
+  test:
+    depends_on: [api-gateway, auth-service]
+    environment:
+      API_URL: 'http://localhost:{{API_PORT}}'
+      AUTH_URL: 'http://localhost:{{AUTH_PORT}}'
+    script: |
+      npm run test:integration
+
+  # Generate Prisma client
+  prisma-generate:
+    script: |
+      cd services/auth && npx prisma generate

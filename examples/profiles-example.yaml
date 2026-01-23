@@ -1,0 +1,68 @@
+parameters:
+  MONITORING_PORT:
+    type: port
+    default: 9090
+
+  DEV_TOOLS_PORT:
+    type: port
+    default: 3001
+
+  API_PORT:
+    type: port
+    default: 8080
+
+  ANALYTICS_PORT:
+    type: port
+    default: 8081
+
+services:
+  # Always-on API service (no profiles means always starts)
+  api:
+    process: |
+      echo "API service starting on port {{API_PORT}}"
+      while true; do sleep 1; done
+    environment:
+      PORT: '{{API_PORT}}'
+    healthcheck:
+      command: 'true'
+
+  # Production-only monitoring
+  monitoring:
+    process: |
+      echo "Monitoring service starting on port {{MONITORING_PORT}}"
+      while true; do sleep 1; done
+    profiles: ["production", "staging"]
+    environment:
+      PORT: '{{MONITORING_PORT}}'
+    depends_on:
+      - api
+    healthcheck:
+      command: 'true'
+
+  # Development-only tools
+  development-tools:
+    process: |
+      echo "Dev tools starting on port {{DEV_TOOLS_PORT}}"
+      while true; do sleep 1; done
+    profiles: ["development"]
+    environment:
+      PORT: '{{DEV_TOOLS_PORT}}'
+    depends_on:
+      - api
+    healthcheck:
+      command: 'true'
+
+  # Analytics with multiple profiles
+  analytics:
+    process: |
+      echo "Analytics service starting on port {{ANALYTICS_PORT}}"
+      while true; do sleep 1; done
+    profiles: ["production", "staging", "analytics"]
+    environment:
+      PORT: '{{ANALYTICS_PORT}}'
+    depends_on:
+      - api
+    healthcheck:
+      command: 'true'
+
+entrypoint: api

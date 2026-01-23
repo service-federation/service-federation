@@ -1,0 +1,92 @@
+# Scripts Example
+#
+# Demonstrates script features:
+# - Script-to-script dependencies (db:migrate depends on db:create)
+# - Mixed script + service dependencies
+# - Argument passthrough (fed test -- -t "specific test")
+# - Isolated test execution with isolated: true
+#
+# Run with:
+#   fed run db:migrate              # Run migrations
+#   fed test:unit                   # Run unit tests (no deps)
+#   fed test:integration            # Run integration tests (isolated ports)
+#   fed test:integration -- -t auth # Run specific tests with args
+
+parameters:
+  DB_PORT:
+    type: port
+    default: 5432
+  API_PORT:
+    type: port
+    default: 3000
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "{{DB_PORT}}:5432"
+    environment:
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: myapp
+
+  api:
+    process: npm start
+    cwd: ./api
+    depends_on: [postgres]
+    environment:
+      PORT: "{{API_PORT}}"
+      DATABASE_URL: "postgres://postgres:password@localhost:{{DB_PORT}}/myapp"
+    healthcheck:
+      httpGet: "http://localhost:{{API_PORT}}/health"
+
+scripts:
+  # Database setup scripts - can be chained
+  db:create:
+    depends_on: [postgres]
+    script: psql -h localhost -p {{DB_PORT}} -U postgres -c "SELECT 1"
+
+  db:migrate:
+    depends_on: [db:create]  # Script-to-script dependency
+    script: npm run migrate
+    cwd: ./api
+    environment:
+      DATABASE_URL: "postgres://postgres:password@localhost:{{DB_PORT}}/myapp"
+
+  db:seed:
+    depends_on: [db:migrate]  # Chained dependency
+    script: npm run seed
+    cwd: ./api
+    environment:
+      DATABASE_URL: "postgres://postgres:password@localhost:{{DB_PORT}}/myapp"
+
+  # Unit tests - no service dependencies
+  test:unit:
+    script: npm test
+    cwd: ./api
+
+  # Integration tests - isolated from dev stack
+  test:integration:
+    isolated: true     # Fresh ports, scoped volumes, won't conflict with dev stack
+    depends_on: [db:migrate, api]
+    script: npm run test:integration
+    cwd: ./api
+    environment:
+      DATABASE_URL: "postgres://postgres:password@localhost:{{DB_PORT}}/myapp"
+      API_URL: "http://localhost:{{API_PORT}}"
+
+  # E2E tests - also isolated
+  test:e2e:
+    isolated: true
+    depends_on: [api]
+    script: npx playwright test
+    cwd: ./e2e
+    environment:
+      BASE_URL: "http://localhost:{{API_PORT}}"
+
+  # Full test suite
+  test:all:
+    depends_on: [test:unit]  # Run unit tests first (no isolation needed)
+    script: |
+      echo "Running integration tests..."
+      npm run test:integration
+    cwd: ./api

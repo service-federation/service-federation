@@ -1,0 +1,140 @@
+use super::Config;
+use crate::error::{Error, Result};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub struct Parser;
+
+impl Parser {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Find config file starting from current directory
+    pub fn find_config_file(&self) -> Result<PathBuf> {
+        let current_dir = std::env::current_dir()?;
+        Self::find_config_in_dir(&current_dir)
+    }
+
+    pub fn find_config_in_dir(dir: &Path) -> Result<PathBuf> {
+        let config_path = dir.join("service-federation.yaml");
+        if config_path.exists() {
+            return Ok(config_path);
+        }
+
+        // Try alternate name
+        let alt_path = dir.join("service-federation.yml");
+        if alt_path.exists() {
+            return Ok(alt_path);
+        }
+
+        // Try parent directory
+        if let Some(parent) = dir.parent() {
+            return Self::find_config_in_dir(parent);
+        }
+
+        Err(Error::Config(
+            "Could not find service-federation.yaml in current directory or any parent".to_string(),
+        ))
+    }
+
+    /// Load config from file path
+    pub fn load_config<P: AsRef<Path>>(&self, path: P) -> Result<Config> {
+        let content = fs::read_to_string(path.as_ref()).map_err(|e| {
+            Error::Config(format!(
+                "Failed to read config file '{}': {}",
+                path.as_ref().display(),
+                e
+            ))
+        })?;
+
+        self.parse_config(&content)
+    }
+
+    /// Load config and resolve packages (async version with package extension)
+    /// This is the main entry point for loading configs with package support
+    pub async fn load_config_with_packages<P: AsRef<Path>>(&self, path: P) -> Result<Config> {
+        self.load_config_with_packages_offline(path, false).await
+    }
+
+    /// Load config and resolve packages with offline mode option
+    /// When offline=true, git operations are skipped and only cached packages are used
+    pub async fn load_config_with_packages_offline<P: AsRef<Path>>(
+        &self,
+        path: P,
+        offline: bool,
+    ) -> Result<Config> {
+        // Load the base config
+        let mut config = self.load_config(path.as_ref())?;
+
+        // First, resolve local template extensions
+        crate::package::ServiceMerger::merge_local_templates(&mut config)?;
+
+        // If there are no packages, return config after template resolution
+        if config.packages.is_empty() {
+            return Ok(config);
+        }
+
+        // Resolve packages
+        let config_dir = path
+            .as_ref()
+            .parent()
+            .ok_or_else(|| Error::Config("Invalid config path".to_string()))?;
+
+        let mut resolver = crate::package::PackageResolver::with_offline(config_dir, offline)?;
+        let packages = resolver.resolve_all(&config.packages).await?;
+
+        // Apply service extensions from packages
+        crate::package::ServiceMerger::merge_packages(&mut config, &packages)?;
+
+        Ok(config)
+    }
+
+    /// Parse config from YAML string
+    pub fn parse_config(&self, content: &str) -> Result<Config> {
+        let config: Config = serde_yaml::from_str(content)
+            .map_err(|e| Error::Parse(format!("Failed to parse YAML config: {}", e)))?;
+
+        Ok(config)
+    }
+}
+
+impl Default for Parser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_simple_config() {
+        let yaml = r#"
+parameters:
+  PORT:
+    type: port
+
+services:
+  backend:
+    process: echo "Hello"
+    environment:
+      PORT: "{{PORT}}"
+    depends_on:
+      - database
+
+  database:
+    process: echo "Database"
+
+entrypoint: backend
+"#;
+
+        let parser = Parser::new();
+        let config = parser.parse_config(yaml).unwrap();
+
+        assert_eq!(config.services.len(), 2);
+        assert_eq!(config.entrypoint, Some("backend".to_string()));
+        assert!(config.parameters.contains_key("PORT"));
+    }
+}

@@ -1,0 +1,177 @@
+parameters:
+  MAIN_PORT:
+    type: port
+
+  MIDDLEWARE_PORT:
+    type: port
+
+  AUTH_PORT:
+    type: port
+
+  LOGGER_PORT:
+    type: port
+
+  ANALYTICS_PORT:
+    type: port
+
+  BILLING_PORT:
+    type: port
+
+services:
+  # Main application - this is our entrypoint
+  main-app:
+    process: |
+      echo "Main app starting on port {{MAIN_PORT}}"
+      echo "Connecting to middleware at localhost:{{MIDDLEWARE_PORT}}"
+      echo "Starting HTTP server..."
+      export PORT="{{MAIN_PORT}}"
+      export MIDDLEWARE_URL="http://localhost:{{MIDDLEWARE_PORT}}"
+      python3 -c "
+      import http.server
+      import socketserver
+      import os
+
+      PORT = int(os.environ.get('PORT', '3000'))
+
+      class Handler(http.server.SimpleHTTPRequestHandler):
+          def do_GET(self):
+              if self.path == '/health':
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  self.wfile.write(b'OK')
+              else:
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  self.wfile.write(b'Main App - Connected to middleware')
+
+      with socketserver.TCPServer(('', PORT), Handler) as httpd:
+          print(f'Main app serving on port {PORT}')
+          httpd.serve_forever()
+      "
+    environment:
+      PORT: '{{MAIN_PORT}}'
+      MIDDLEWARE_URL: 'http://localhost:{{MIDDLEWARE_PORT}}'
+    depends_on:
+      - middleware
+    healthcheck:
+      httpGet: 'http://localhost:{{MAIN_PORT}}/health'
+
+  # Middleware service from external dependency
+  middleware:
+    dependency: middleware-service
+    service: middleware
+    parameters:
+      PORT: '{{MIDDLEWARE_PORT}}'
+      AUTH_URL: 'http://localhost:{{AUTH_PORT}}'
+    depends_on:
+      - auth-external
+
+  # Auth service from external dependency
+  auth-external:
+    dependency: auth-service
+    service: auth
+    parameters:
+      PORT: '{{AUTH_PORT}}'
+      LOGGER_PORT: '{{LOGGER_PORT}}'
+
+  # These services should NOT start when we start main-app
+  # since they're not in the dependency chain
+  analytics:
+    dependency: analytics-service
+    service: analytics
+    parameters:
+      PORT: '{{ANALYTICS_PORT}}'
+
+  billing:
+    dependency: billing-service
+    service: billing
+    parameters:
+      PORT: '{{BILLING_PORT}}'
+
+# External dependencies using file URLs
+dependencies:
+  middleware-service:
+    repo: file://./dependencies/middleware
+    branch: main
+
+  auth-service:
+    repo: file://./dependencies/auth-service
+    branch: main
+
+  analytics-service:
+    repo: file://./dependencies/analytics
+    branch: main
+
+  billing-service:
+    repo: file://./dependencies/billing
+    branch: main
+
+# Main app is the entrypoint
+entrypoint: main-app
+
+scripts:
+  test-deps:
+    depends_on:
+      - main-app
+    environment:
+      MAIN_PORT: '{{MAIN_PORT}}'
+      MIDDLEWARE_PORT: '{{MIDDLEWARE_PORT}}'
+      AUTH_PORT: '{{AUTH_PORT}}'
+      LOGGER_PORT: '{{LOGGER_PORT}}'
+    script: |
+      echo "=== Testing Complex Dependencies Example ==="
+      echo "Main Port: $MAIN_PORT"
+      echo "Middleware Port: $MIDDLEWARE_PORT"
+      echo "Auth Port: $AUTH_PORT"
+      echo "Logger Port: $LOGGER_PORT"
+      echo ""
+
+      echo "Testing health endpoints..."
+
+      echo -n "Main app: "
+      curl -f -s http://localhost:$MAIN_PORT/health && echo "✅ OK" || echo "❌ FAIL"
+
+      echo -n "Middleware: "
+      curl -f -s http://localhost:$MIDDLEWARE_PORT/health && echo "✅ OK" || echo "❌ FAIL"
+
+      echo -n "Auth service: "
+      curl -f -s http://localhost:$AUTH_PORT/health && echo "✅ OK" || echo "❌ FAIL"
+
+      echo -n "Logger service: "
+      curl -f -s http://localhost:$LOGGER_PORT/health && echo "✅ OK" || echo "❌ FAIL"
+
+      echo ""
+      echo "Testing service communication..."
+
+      echo "Main app response:"
+      curl -s http://localhost:$MAIN_PORT/ || echo "Failed to connect to main app"
+
+      echo ""
+      echo "Middleware response:"
+      curl -s http://localhost:$MIDDLEWARE_PORT/ || echo "Failed to connect to middleware"
+
+      echo ""
+      echo "Auth service response:"
+      curl -s http://localhost:$AUTH_PORT/ || echo "Failed to connect to auth service"
+
+      echo ""
+      echo "Logger logs:"
+      curl -s http://localhost:$LOGGER_PORT/logs || echo "Failed to get logs"
+
+      echo ""
+      echo "=== Test completed! ==="
+
+  validate-isolation:
+    script: |
+      echo "=== Testing Service Isolation ==="
+      echo "These services should NOT be running when main-app starts:"
+
+      echo -n "Analytics (should fail): "
+      curl -f -s http://localhost:{{ANALYTICS_PORT}}/health 2>/dev/null && echo "❌ RUNNING (should be stopped)" || echo "✅ STOPPED (correct)"
+
+      echo -n "Billing (should fail): "
+      curl -f -s http://localhost:{{BILLING_PORT}}/health 2>/dev/null && echo "❌ RUNNING (should be stopped)" || echo "✅ STOPPED (correct)"
+
+      echo "=== Isolation test completed! ==="

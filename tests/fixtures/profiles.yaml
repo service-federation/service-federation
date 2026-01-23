@@ -1,0 +1,68 @@
+parameters:
+  MONITORING_PORT:
+    type: port
+    default: 9090
+
+  DEV_TOOLS_PORT:
+    type: port
+    default: 3001
+
+  EXPERIMENTAL_PORT:
+    type: port
+    default: 8888
+
+  API_PORT:
+    type: port
+    default: 8080
+
+services:
+  # Service with production profile
+  monitoring:
+    process: echo "Prometheus monitoring on port {{MONITORING_PORT}}"
+    profiles: ["production", "staging"]
+    environment:
+      PORT: '{{MONITORING_PORT}}'
+
+  # Service with development profile
+  development-tools:
+    process: echo "Dev tools on port {{DEV_TOOLS_PORT}}"
+    profiles: ["development"]
+    environment:
+      PORT: '{{DEV_TOOLS_PORT}}'
+
+  # Service with experimental profile
+  experimental-metrics:
+    process: echo "Experimental metrics on port {{EXPERIMENTAL_PORT}}"
+    profiles: ["experimental"]
+    environment:
+      PORT: '{{EXPERIMENTAL_PORT}}'
+
+  # Service with no profile - always starts
+  api:
+    process: echo "API on port {{API_PORT}}"
+    environment:
+      PORT: '{{API_PORT}}'
+
+  # Service with multiple profiles
+  analytics:
+    process: echo "Analytics service"
+    profiles: ["production", "staging", "analytics"]
+    depends_on:
+      - api
+
+  # Service depending on profiled service
+  reporting:
+    process: echo "Reporting service"
+    profiles: ["production"]
+    depends_on:
+      - analytics
+      - monitoring
+
+  # Development service depending on always-on service
+  debugger:
+    process: echo "Debugger"
+    profiles: ["development"]
+    depends_on:
+      - api
+
+entrypoint: api

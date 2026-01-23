@@ -1,0 +1,50 @@
+parameters:
+  PORT:
+    type: port
+
+  AUTH_URL:
+    type: string
+
+services:
+  middleware:
+    process: |
+      echo "Middleware starting on port {{PORT}}"
+      echo "Will connect to auth service at {{AUTH_URL}}"
+      echo "Starting HTTP server..."
+      export PORT="{{PORT}}"
+      export AUTH_URL="{{AUTH_URL}}"
+      python3 -c "
+      import http.server
+      import socketserver
+      import os
+      import urllib.request
+
+      PORT = int(os.environ.get('PORT', '3001'))
+      AUTH_URL = os.environ.get('AUTH_URL', 'http://localhost:3002')
+      print(f'Middleware: Attempting to bind to port {PORT}', flush=True)
+
+      class Handler(http.server.SimpleHTTPRequestHandler):
+          def do_GET(self):
+              if self.path == '/health':
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  self.wfile.write(b'OK')
+              else:
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  response = f'Middleware - Connected to auth at {AUTH_URL}'
+                  self.wfile.write(response.encode())
+
+      with socketserver.TCPServer(('', PORT), Handler) as httpd:
+          print(f'Middleware serving on port {PORT}')
+          httpd.serve_forever()
+      "
+    environment:
+      PORT: '{{PORT}}'
+      AUTH_URL: '{{AUTH_URL}}'
+    healthcheck:
+      httpGet: 'http://localhost:{{PORT}}/health'
+
+entrypoint: middleware

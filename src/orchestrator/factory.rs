@@ -1,0 +1,410 @@
+//! Service factory for creating service managers from configuration.
+//!
+//! This module handles:
+//! - Creating appropriate service manager implementations based on service type
+//! - Grouping Gradle services for batch execution
+//! - Restoring state (PIDs, container IDs) for existing services
+//! - Docker container validation
+
+use crate::config::ServiceType;
+use crate::error::{validate_pid_for_check, Error, Result};
+use crate::service::{
+    DockerComposeService, DockerService, ExternalService, GradleService, ProcessService,
+    ServiceManager,
+};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use super::Orchestrator;
+
+/// Type alias for the service registry entry
+type ServiceEntry = Arc<tokio::sync::Mutex<Box<dyn ServiceManager>>>;
+
+impl Orchestrator {
+    /// Check if a Docker container is running
+    pub(super) fn is_container_running(container_id: &str) -> bool {
+        crate::docker::is_container_running_sync(container_id)
+    }
+
+    /// Group Gradle services by working directory for batch execution.
+    ///
+    /// Returns a tuple of:
+    /// - `gradle_groups`: Vec of groups, where each group is a list of service names
+    ///   that share the same working directory and can be executed together
+    /// - `non_gradle`: Vec of service names that are not Gradle services
+    ///
+    /// This optimization allows multiple Gradle tasks in the same project to be
+    /// executed in a single Gradle invocation, significantly reducing startup time.
+    pub(super) fn group_gradle_services(
+        &self,
+        service_names: &[String],
+    ) -> (Vec<Vec<String>>, Vec<String>) {
+        let mut gradle_by_workdir: HashMap<PathBuf, Vec<String>> = HashMap::new();
+        let mut non_gradle = Vec::new();
+
+        for name in service_names {
+            if let Some(service) = self.config.services.get(name) {
+                if service.service_type() == ServiceType::GradleTask {
+                    let work_dir = if let Some(ref cwd) = service.cwd {
+                        let cwd_path = PathBuf::from(cwd);
+                        if cwd_path.is_absolute() {
+                            cwd_path
+                        } else {
+                            self.work_dir().join(cwd)
+                        }
+                    } else {
+                        self.work_dir().to_path_buf()
+                    };
+
+                    gradle_by_workdir
+                        .entry(work_dir)
+                        .or_default()
+                        .push(name.clone());
+                } else {
+                    non_gradle.push(name.clone());
+                }
+            } else {
+                non_gradle.push(name.clone());
+            }
+        }
+
+        let gradle_groups: Vec<Vec<String>> = gradle_by_workdir.into_values().collect();
+        (gradle_groups, non_gradle)
+    }
+
+    /// Create service managers for all configured services.
+    ///
+    /// This method:
+    /// 1. Groups Gradle services by working directory for batch execution
+    /// 2. Creates the appropriate service manager for each service type
+    /// 3. Restores PIDs and container IDs from the state tracker
+    /// 4. Validates that restored processes/containers are still running
+    pub(super) async fn create_services(&mut self) -> Result<()> {
+        let mut services = HashMap::new();
+        let mut gradle_grouped = std::collections::HashSet::new();
+
+        // Group ALL Gradle services by working directory, regardless of dependencies
+        // This is the practical approach: assume gradle tasks are run together by default
+        let all_service_names: Vec<String> = self.config.services.keys().cloned().collect();
+        let (gradle_groups, _) = self.group_gradle_services(&all_service_names);
+
+        // Create grouped Gradle services
+        for gradle_group in gradle_groups {
+            if gradle_group.len() > 1 {
+                let service_entry = self.create_gradle_group(&gradle_group)?;
+                let group_name = format!("gradle-group-{}", gradle_group.join("-"));
+
+                for service_name in &gradle_group {
+                    gradle_grouped.insert(service_name.clone());
+                }
+
+                services.insert(group_name, service_entry);
+            }
+            // If gradle_group.len() == 1, don't add to gradle_grouped, create it normally below
+        }
+
+        // Create all services (both grouped and individual)
+        for (name, service) in &self.config.services {
+            // Skip if already part of a grouped service
+            if gradle_grouped.contains(name) {
+                continue;
+            }
+
+            let service_entry = self.create_service_manager(name, service)?;
+            services.insert(name.clone(), service_entry);
+        }
+
+        // Restore PIDs and container IDs from state tracker for existing services
+        self.restore_service_state(&mut services).await;
+
+        *self.services.write().await = services;
+        Ok(())
+    }
+
+    /// Create a grouped Gradle service for multiple tasks in the same working directory
+    fn create_gradle_group(&self, gradle_group: &[String]) -> Result<ServiceEntry> {
+        let group_name = format!("gradle-group-{}", gradle_group.join("-"));
+
+        let mut configs = Vec::new();
+        let mut merged_env = HashMap::new();
+        let mut work_dir_str = self.work_dir().to_string_lossy().to_string();
+
+        for service_name in gradle_group {
+            if let Some(service) = self.config.services.get(service_name) {
+                configs.push(service.clone());
+                // Merge environments
+                for (k, v) in &service.environment {
+                    merged_env.insert(k.clone(), v.clone());
+                }
+                // Use first service's working directory
+                if configs.len() == 1 {
+                    if let Some(ref cwd) = service.cwd {
+                        let cwd_path = PathBuf::from(cwd);
+                        work_dir_str = if cwd_path.is_absolute() {
+                            cwd.clone()
+                        } else {
+                            format!("{}/{}", self.work_dir().to_string_lossy(), cwd)
+                        };
+                    }
+                }
+            }
+        }
+
+        let grouped_service =
+            GradleService::new_grouped(group_name.clone(), configs, merged_env, work_dir_str);
+
+        Ok(Arc::new(tokio::sync::Mutex::new(
+            Box::new(grouped_service) as Box<dyn ServiceManager>
+        )))
+    }
+
+    /// Create a service manager for a single service
+    fn create_service_manager(
+        &self,
+        name: &str,
+        service: &crate::config::Service,
+    ) -> Result<ServiceEntry> {
+        let service_type = service.service_type();
+        let env = service.environment.clone();
+        let work_dir = self.work_dir().to_string_lossy().to_string();
+
+        tracing::debug!(
+            "Creating service '{}' with work_dir: '{}' (PathBuf: {:?})",
+            name,
+            work_dir,
+            self.work_dir()
+        );
+
+        let manager: Box<dyn ServiceManager> = match service_type {
+            ServiceType::Process => self.create_process_service(name, service, env, work_dir),
+            ServiceType::Docker => self.create_docker_service(name, service, env, work_dir),
+            ServiceType::External => self.create_external_service(name, service, env, work_dir),
+            ServiceType::GradleTask => Box::new(GradleService::new(
+                name.to_string(),
+                service.clone(),
+                env,
+                work_dir,
+            )),
+            ServiceType::DockerCompose => Box::new(DockerComposeService::new(
+                name.to_string(),
+                service.clone(),
+                env,
+                work_dir,
+            )?),
+            ServiceType::Undefined => {
+                return Err(Error::Config(format!(
+                    "Undefined service type for service '{}'",
+                    name
+                )));
+            }
+        };
+
+        Ok(Arc::new(tokio::sync::Mutex::new(manager)))
+    }
+
+    /// Create a process service manager
+    fn create_process_service(
+        &self,
+        name: &str,
+        service: &crate::config::Service,
+        env: HashMap<String, String>,
+        work_dir: String,
+    ) -> Box<dyn ServiceManager> {
+        // Get log file path for File mode
+        // Always capture logs - never send to /dev/null
+        let log_file_path = if self.output_mode.is_file() {
+            // Try session first for organized logs, fall back to workspace .fed/logs/
+            if let Ok(Some(session)) = crate::session::Session::current() {
+                let _ = session.ensure_logs_dir();
+                Some(session.log_file_path(name))
+            } else {
+                // No session - still capture logs to workspace .fed/logs/
+                let logs_dir = self.work_dir().join(".fed").join("logs");
+                if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+                    tracing::warn!("Failed to create logs directory {:?}: {}", logs_dir, e);
+                    None
+                } else {
+                    // Sanitize service name for filesystem safety
+                    let sanitized_name = name
+                        .chars()
+                        .map(|c| {
+                            if c.is_alphanumeric() || c == '-' || c == '_' {
+                                c
+                            } else {
+                                '_'
+                            }
+                        })
+                        .collect::<String>();
+                    Some(logs_dir.join(format!("{}.log", sanitized_name)))
+                }
+            }
+        } else {
+            None
+        };
+
+        Box::new(ProcessService::new(
+            name.to_string(),
+            service.clone(),
+            env,
+            work_dir,
+            self.output_mode,
+            log_file_path,
+        ))
+    }
+
+    /// Create a docker service manager
+    fn create_docker_service(
+        &self,
+        name: &str,
+        service: &crate::config::Service,
+        env: HashMap<String, String>,
+        work_dir: String,
+    ) -> Box<dyn ServiceManager> {
+        // Get session ID for container labeling
+        let session_id = if let Ok(Some(session)) = crate::session::Session::current() {
+            Some(session.id().to_string())
+        } else {
+            None
+        };
+
+        Box::new(DockerService::new(
+            name.to_string(),
+            service.clone(),
+            env,
+            work_dir,
+            session_id,
+        ))
+    }
+
+    /// Create an external service manager
+    fn create_external_service(
+        &self,
+        name: &str,
+        service: &crate::config::Service,
+        env: HashMap<String, String>,
+        work_dir: String,
+    ) -> Box<dyn ServiceManager> {
+        let mut ext_service =
+            ExternalService::new(name.to_string(), service.clone(), env, work_dir);
+        ext_service.set_dependencies(self.config.dependencies.clone());
+        Box::new(ext_service)
+    }
+
+    /// Restore PIDs and container IDs from state tracker for existing services
+    async fn restore_service_state(&self, services: &mut HashMap<String, ServiceEntry>) {
+        let state_services = { self.state_tracker.read().await.get_services().await };
+
+        for (service_id, service_state) in state_services {
+            // Extract service name from ID (format: "namespace/name")
+            let service_name = service_id.split('/').next_back().unwrap_or(&service_id);
+
+            if let Some(manager_arc) = services.get_mut(service_name) {
+                let mut manager = manager_arc.lock().await;
+
+                // Restore PID for process services
+                if let Some(pid) = service_state.pid {
+                    self.restore_process_pid(&mut manager, service_name, pid)
+                        .await;
+                }
+
+                // Restore container ID for docker services
+                if let Some(container_id) = &service_state.container_id {
+                    self.restore_container_id(&mut manager, service_name, container_id)
+                        .await;
+                }
+            }
+        }
+    }
+
+    /// Restore a process PID if the process is still running
+    async fn restore_process_pid(
+        &self,
+        manager: &mut Box<dyn ServiceManager>,
+        service_name: &str,
+        pid: u32,
+    ) {
+        if let Some(process_service) = manager.as_any_mut().downcast_mut::<ProcessService>() {
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::kill;
+
+                // Validate PID for read-only check (rejects 0 and >i32::MAX)
+                if let Some(nix_pid) = validate_pid_for_check(pid) {
+                    if kill(nix_pid, None).is_ok() {
+                        // Process exists, restore it
+                        tracing::debug!("Restoring PID {} for service '{}'", pid, service_name);
+                        process_service.set_pid(pid);
+                    } else {
+                        // Process doesn't exist, don't restore
+                        tracing::warn!(
+                            "Skipping PID {} for service '{}' - process no longer exists",
+                            pid,
+                            service_name
+                        );
+                        // Unregister the stale service from state
+                        self.state_tracker
+                            .write()
+                            .await
+                            .unregister_service(service_name)
+                            .await;
+                    }
+                } else {
+                    tracing::error!(
+                        "Cannot restore PID {} for service '{}' - invalid PID",
+                        pid,
+                        service_name
+                    );
+                    // Unregister the invalid PID from state
+                    self.state_tracker
+                        .write()
+                        .await
+                        .unregister_service(service_name)
+                        .await;
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                // Non-Unix platforms: always restore (fallback behavior)
+                tracing::warn!(
+                    "Process validation not available on this platform, restoring PID {}",
+                    pid
+                );
+                process_service.set_pid(pid);
+            }
+        }
+    }
+
+    /// Restore a container ID if the container is still running
+    async fn restore_container_id(
+        &self,
+        manager: &mut Box<dyn ServiceManager>,
+        service_name: &str,
+        container_id: &str,
+    ) {
+        if let Some(docker_service) = manager.as_any_mut().downcast_mut::<DockerService>() {
+            // Verify the container still exists before restoring
+            if Self::is_container_running(container_id) {
+                tracing::debug!(
+                    "Restoring container ID {} for service '{}'",
+                    container_id,
+                    service_name
+                );
+                docker_service.set_container_id(container_id.to_string());
+            } else {
+                tracing::warn!(
+                    "Skipping container ID {} for service '{}' - container no longer exists",
+                    container_id,
+                    service_name
+                );
+                // Unregister the stale service from state
+                self.state_tracker
+                    .write()
+                    .await
+                    .unregister_service(service_name)
+                    .await;
+            }
+        }
+    }
+}

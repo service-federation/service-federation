@@ -1,0 +1,88 @@
+# Example demonstrating Gradle task grouping
+# Services in the same working directory and parallel group will be executed together
+
+parameters:
+  AUTH_PORT:
+    type: port
+    default: 8080
+
+  USER_PORT:
+    type: port
+    default: 8081
+
+  NOTIFICATION_PORT:
+    type: port
+    default: 8082
+
+  ANALYTICS_PORT:
+    type: port
+    default: 8083
+
+services:
+  # Infrastructure
+  database:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: 'mydb'
+      POSTGRES_USER: 'user'
+      POSTGRES_PASSWORD: 'password'
+    ports:
+      - '5432:5432'
+
+  # Core services - same CWD, no dependencies between them
+  # These should be GROUPED into a single gradle command:
+  # ./gradlew :auth-service:bootRun :user-service:bootRun
+  auth-service:
+    gradleTask: ':auth-service:bootRun'
+    environment:
+      SERVER_PORT: '{{AUTH_PORT}}'
+      DB_URL: 'postgresql://localhost:5432/mydb'
+    depends_on:
+      - database
+    healthcheck:
+      httpGet: 'http://localhost:{{AUTH_PORT}}/health'
+
+  user-service:
+    gradleTask: ':user-service:bootRun'
+    environment:
+      SERVER_PORT: '{{USER_PORT}}'
+      DB_URL: 'postgresql://localhost:5432/mydb'
+    depends_on:
+      - database
+    healthcheck:
+      httpGet: 'http://localhost:{{USER_PORT}}/health'
+
+  # Notification service - different CWD
+  # Will NOT be grouped with auth/user services
+  notification-service:
+    gradleTask: ':notification:bootRun'
+    cwd: 'services/notification'
+    environment:
+      SERVER_PORT: '{{NOTIFICATION_PORT}}'
+      USER_SERVICE_URL: 'http://localhost:{{USER_PORT}}'
+    depends_on:
+      - user-service
+    healthcheck:
+      httpGet: 'http://localhost:{{NOTIFICATION_PORT}}/health'
+
+  # Analytics service - depends on user-service
+  # Will NOT be grouped with user-service because of dependency
+  # But could be grouped with other services in the same parallel group
+  analytics-service:
+    gradleTask: ':analytics:bootRun'
+    environment:
+      SERVER_PORT: '{{ANALYTICS_PORT}}'
+      USER_SERVICE_URL: 'http://localhost:{{USER_PORT}}'
+    depends_on:
+      - user-service
+    healthcheck:
+      httpGet: 'http://localhost:{{ANALYTICS_PORT}}/health'
+
+entrypoint: notification-service
+
+# Expected grouping behavior:
+# 1. database starts first (parallel group 0)
+# 2. auth-service + user-service + analytics-service start together in ONE gradle command
+#    (all in same default CWD, grouped REGARDLESS of dependencies between them)
+#    Command: ./gradlew :auth-service:bootRun :user-service:bootRun :analytics:bootRun
+# 3. notification-service starts separately (different CWD - services/notification)

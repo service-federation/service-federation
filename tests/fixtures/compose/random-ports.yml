@@ -1,0 +1,21 @@
+services:
+  # Nginx with random host port to avoid conflicts
+  nginx-random:
+    image: nginx:alpine
+    ports:
+      - "0:80"  # Random port assignment
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 2s
+      timeout: 3s
+      retries: 3
+
+  redis-random:
+    image: redis:7-alpine
+    ports:
+      - "0:6379"  # Random port assignment
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 3

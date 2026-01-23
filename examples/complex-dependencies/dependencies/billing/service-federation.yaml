@@ -1,0 +1,19 @@
+parameters:
+  PORT:
+    type: port
+    default: "3005"
+
+services:
+  billing:
+    process: |
+      echo "Billing service starting on port {{PORT}}"
+      echo "THIS SERVICE SHOULD NOT START when main-app is started!"
+      while true; do
+        echo "Billing service processing payments..."
+        sleep 4
+      done
+    environment:
+      PORT: '{{PORT}}'
+    healthcheck: echo "Billing service healthy"
+
+entrypoint: billing

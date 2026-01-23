@@ -1,0 +1,6 @@
+services:
+  broken:
+    image: nginx
+    ports:
+      - this is not valid yaml syntax [
+      - more broken stuff

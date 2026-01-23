@@ -1,0 +1,61 @@
+variables:
+  # Simple environment overrides
+  DEBUG_MODE:
+    default: "true"
+    production: "false"
+
+  # Dynamic port allocation with environment-specific defaults
+  API_PORT:
+    type: port
+    default: 8000
+    production: 8080
+
+  # Database configuration per environment
+  POSTGRES_DB:
+    default: "myapp_dev"
+    develop: "myapp_dev"
+    staging: "myapp_staging"
+    production: "myapp_prod"
+
+  # Conditional replica counts
+  REPLICA_COUNT:
+    default: 1
+    staging: 2
+    production: 5
+
+  # Log level per environment
+  LOG_LEVEL:
+    default: "debug"
+    staging: "info"
+    production: "warn"
+
+services:
+  database:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: '{{POSTGRES_DB}}'
+      POSTGRES_PASSWORD: 'password'
+    ports:
+      - "5432:5432"
+
+  backend:
+    process: |
+      echo "Starting backend API..."
+      echo "Environment: {{LOG_LEVEL}}"
+      echo "Debug mode: {{DEBUG_MODE}}"
+      echo "Port: {{API_PORT}}"
+      echo "Database: {{POSTGRES_DB}}"
+      echo "Replicas: {{REPLICA_COUNT}}"
+      sleep infinity
+    environment:
+      PORT: '{{API_PORT}}'
+      LOG_LEVEL: '{{LOG_LEVEL}}'
+      DEBUG: '{{DEBUG_MODE}}'
+      DATABASE_URL: 'postgresql://postgres:password@localhost:5432/{{POSTGRES_DB}}'
+      REPLICA_COUNT: '{{REPLICA_COUNT}}'
+    depends_on:
+      - database
+    healthcheck:
+      httpGet: 'http://localhost:{{API_PORT}}/health'
+
+entrypoint: backend

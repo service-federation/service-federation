@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+# Format code and stage changes
+cargo fmt
+git add -u
+
+# Run fast unit tests only
+cargo test --lib

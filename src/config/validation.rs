@@ -1,0 +1,737 @@
+use super::{Config, ServiceType};
+use crate::error::{Error, Result};
+use std::collections::HashSet;
+
+impl Config {
+    /// Validate the configuration
+    pub fn validate(&self) -> Result<()> {
+        // Check entrypoint/entrypoints exclusivity
+        if self.entrypoint.is_some() && !self.entrypoints.is_empty() {
+            return Err(Error::Validation(
+                "Cannot specify both 'entrypoint' and 'entrypoints'".to_string(),
+            ));
+        }
+
+        // Validate entrypoint references
+        if let Some(ref ep) = self.entrypoint {
+            if !self.services.contains_key(ep) {
+                return Err(Error::Validation(format!(
+                    "Entrypoint '{}' references non-existent service",
+                    ep
+                )));
+            }
+        }
+
+        for ep in &self.entrypoints {
+            if !self.services.contains_key(ep) {
+                return Err(Error::Validation(format!(
+                    "Entrypoint '{}' references non-existent service",
+                    ep
+                )));
+            }
+        }
+
+        // Validate external service dependencies
+        for (name, service) in &self.services {
+            if service.service_type() == ServiceType::External {
+                if let Some(ref dep_name) = service.dependency {
+                    if !self.dependencies.contains_key(dep_name) {
+                        return Err(Error::Validation(format!(
+                            "External service '{}' references undefined dependency '{}'",
+                            name, dep_name
+                        )));
+                    }
+                }
+            }
+
+            // Check service dependencies exist
+            for dep in &service.depends_on {
+                let dep_name = dep.service_name();
+                // For external dependencies, we can't validate at config load time
+                // They will be validated when external configs are loaded
+                if dep.is_simple() && !self.services.contains_key(dep_name) {
+                    return Err(Error::Validation(format!(
+                        "Service '{}' depends on non-existent service '{}'",
+                        name, dep_name
+                    )));
+                }
+            }
+        }
+
+        // Check for circular dependencies
+        self.check_circular_dependencies()?;
+
+        // Check for service/script name conflicts
+        for script_name in self.scripts.keys() {
+            if self.services.contains_key(script_name) {
+                return Err(Error::Validation(format!(
+                    "Script '{}' has the same name as a service. Service and script names must be unique.",
+                    script_name
+                )));
+            }
+        }
+
+        // Validate script dependencies exist
+        for (script_name, script) in &self.scripts {
+            for dep in &script.depends_on {
+                if !self.services.contains_key(dep) && !self.scripts.contains_key(dep) {
+                    return Err(Error::Validation(format!(
+                        "Script '{}' depends on non-existent service or script '{}'",
+                        script_name, dep
+                    )));
+                }
+            }
+        }
+
+        // Validate resource limits for all services
+        for (service_name, service) in &self.services {
+            if let Some(ref resources) = service.resources {
+                validate_resource_limits(service_name, resources)?;
+            }
+        }
+
+        // Validate environment variables for all services
+        for (service_name, service) in &self.services {
+            if !service.environment.is_empty() {
+                crate::config::env_loader::validate_and_sanitize_env(&service.environment)
+                    .map_err(|e| {
+                        Error::Config(format!(
+                            "Service '{}' has invalid environment variable: {}",
+                            service_name, e
+                        ))
+                    })?;
+            }
+        }
+
+        // Validate environment variables for all scripts
+        for (script_name, script) in &self.scripts {
+            if !script.environment.is_empty() {
+                crate::config::env_loader::validate_and_sanitize_env(&script.environment).map_err(
+                    |e| {
+                        Error::Config(format!(
+                            "Script '{}' has invalid environment variable: {}",
+                            script_name, e
+                        ))
+                    },
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn check_circular_dependencies(&self) -> Result<()> {
+        let mut visited = HashSet::new();
+        let mut rec_stack = HashSet::new();
+        let mut path = Vec::new();
+
+        for service_name in self.services.keys() {
+            if !visited.contains(service_name) {
+                if let Some(cycle) =
+                    self.find_cycle(service_name, &mut visited, &mut rec_stack, &mut path)
+                {
+                    return Err(Error::CircularDependency(cycle));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn find_cycle(
+        &self,
+        service: &str,
+        visited: &mut HashSet<String>,
+        rec_stack: &mut HashSet<String>,
+        path: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        visited.insert(service.to_string());
+        rec_stack.insert(service.to_string());
+        path.push(service.to_string());
+
+        if let Some(svc) = self.services.get(service) {
+            for dep in &svc.depends_on {
+                let dep_name = dep.service_name();
+                if !visited.contains(dep_name) {
+                    if let Some(cycle) = self.find_cycle(dep_name, visited, rec_stack, path) {
+                        return Some(cycle);
+                    }
+                } else if rec_stack.contains(dep_name) {
+                    // Found cycle - extract it from path
+                    let cycle_start = path.iter().position(|n| n == dep_name).unwrap_or(0);
+                    let mut cycle: Vec<String> = path[cycle_start..].to_vec();
+                    cycle.push(dep_name.to_string()); // Complete the cycle
+                    return Some(cycle);
+                }
+            }
+        }
+
+        rec_stack.remove(service);
+        path.pop();
+        None
+    }
+}
+
+/// Validate parameter value against constraints
+pub fn validate_parameter_value(
+    param_name: &str,
+    value: &str,
+    param_type: Option<&str>,
+    either: &[String],
+) -> Result<()> {
+    // Type validation
+    if param_type == Some("port") {
+        let port: u16 = value.parse().map_err(|_| Error::InvalidParameter {
+            name: param_name.to_string(),
+            reason: format!("Invalid port value: {}", value),
+        })?;
+
+        if port == 0 {
+            return Err(Error::InvalidParameter {
+                name: param_name.to_string(),
+                reason: "Port must be between 1 and 65535".to_string(),
+            });
+        }
+    }
+
+    // Either constraint validation
+    if !either.is_empty() && !either.contains(&value.to_string()) {
+        return Err(Error::InvalidParameter {
+            name: param_name.to_string(),
+            reason: format!("Value '{}' not in allowed values: {:?}", value, either),
+        });
+    }
+
+    Ok(())
+}
+
+/// Validate resource limits for a service
+fn validate_resource_limits(service_name: &str, resources: &super::ResourceLimits) -> Result<()> {
+    // Validate memory limit
+    if let Some(ref memory) = resources.memory {
+        validate_memory_string(memory).map_err(|e| {
+            Error::Validation(format!(
+                "Service '{}': invalid memory limit '{}': {}",
+                service_name, memory, e
+            ))
+        })?;
+    }
+
+    // Validate memory reservation
+    if let Some(ref memory_reservation) = resources.memory_reservation {
+        validate_memory_string(memory_reservation).map_err(|e| {
+            Error::Validation(format!(
+                "Service '{}': invalid memory_reservation '{}': {}",
+                service_name, memory_reservation, e
+            ))
+        })?;
+    }
+
+    // Validate memory swap
+    if let Some(ref memory_swap) = resources.memory_swap {
+        // memory_swap can be "0" to disable swap, or a memory string
+        if memory_swap != "0" && memory_swap != "-1" {
+            validate_memory_string(memory_swap).map_err(|e| {
+                Error::Validation(format!(
+                    "Service '{}': invalid memory_swap '{}': {}",
+                    service_name, memory_swap, e
+                ))
+            })?;
+        }
+    }
+
+    // Validate CPUs
+    if let Some(ref cpus) = resources.cpus {
+        validate_cpus_string(cpus).map_err(|e| {
+            Error::Validation(format!(
+                "Service '{}': invalid cpus '{}': {}",
+                service_name, cpus, e
+            ))
+        })?;
+    }
+
+    // Validate CPU shares (must be > 0, typically 2-262144)
+    if let Some(cpu_shares) = resources.cpu_shares {
+        if cpu_shares == 0 {
+            return Err(Error::Validation(format!(
+                "Service '{}': cpu_shares must be greater than 0",
+                service_name
+            )));
+        }
+        if cpu_shares > 262144 {
+            return Err(Error::Validation(format!(
+                "Service '{}': cpu_shares {} exceeds maximum of 262144",
+                service_name, cpu_shares
+            )));
+        }
+    }
+
+    // Validate PIDs limit (must be > 0 or -1 for unlimited)
+    if let Some(pids) = resources.pids {
+        if pids == 0 {
+            return Err(Error::Validation(format!(
+                "Service '{}': pids limit must be greater than 0",
+                service_name
+            )));
+        }
+    }
+
+    // Validate nofile limit (must be > 0)
+    if let Some(nofile) = resources.nofile {
+        if nofile == 0 {
+            return Err(Error::Validation(format!(
+                "Service '{}': nofile limit must be greater than 0",
+                service_name
+            )));
+        }
+        // Typical max on Linux is 1048576 (2^20), but we'll be lenient
+        if nofile > 1048576 {
+            return Err(Error::Validation(format!(
+                "Service '{}': nofile limit {} exceeds typical maximum of 1048576",
+                service_name, nofile
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate memory string format (e.g., "512m", "2g", "1024mb")
+fn validate_memory_string(memory: &str) -> std::result::Result<(), String> {
+    if memory.is_empty() {
+        return Err("memory string cannot be empty".to_string());
+    }
+
+    // Must start with a digit
+    if !memory.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return Err("memory string must start with a number".to_string());
+    }
+
+    // Find where the suffix starts (first non-digit, non-dot character)
+    let suffix_start = memory
+        .chars()
+        .position(|c| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(memory.len());
+
+    let num_part = &memory[..suffix_start];
+    let suffix = &memory[suffix_start..];
+
+    if num_part.is_empty() {
+        return Err("memory string must start with a number".to_string());
+    }
+
+    // Parse numeric part
+    let value: f64 = num_part
+        .parse()
+        .map_err(|_| format!("invalid numeric value '{}'", num_part))?;
+
+    if value <= 0.0 {
+        return Err("memory value must be positive".to_string());
+    }
+
+    // Validate suffix
+    let suffix_lower = suffix.to_lowercase();
+    match suffix_lower.as_str() {
+        "" | "b" => {
+            // Plain bytes, ensure it's a reasonable value (at least 4KB)
+            if value < 4096.0 {
+                return Err(
+                    "memory must be at least 4KB (4096 bytes or use k/m/g suffix)".to_string(),
+                );
+            }
+        }
+        "k" | "kb" => {
+            if value < 4.0 {
+                return Err("memory must be at least 4KB".to_string());
+            }
+        }
+        "m" | "mb" => {
+            // Common case, no minimum check needed
+        }
+        "g" | "gb" => {
+            // Common case, no minimum check needed
+        }
+        "t" | "tb" => {
+            // Terabytes - warn if excessive
+            if value > 100.0 {
+                return Err("memory limit exceeds 100TB, likely a typo".to_string());
+            }
+        }
+        _ => {
+            return Err(format!(
+                "invalid memory suffix '{}' (valid: b, k, kb, m, mb, g, gb, t, tb)",
+                suffix
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate CPUs string (e.g., "0.5", "2.0", "4")
+fn validate_cpus_string(cpus: &str) -> std::result::Result<(), String> {
+    if cpus.is_empty() {
+        return Err("cpus string cannot be empty".to_string());
+    }
+
+    let value: f64 = cpus
+        .parse()
+        .map_err(|_| format!("invalid cpus value '{}', must be a decimal number", cpus))?;
+
+    if value <= 0.0 {
+        return Err("cpus value must be positive".to_string());
+    }
+
+    if value > 1024.0 {
+        return Err(format!(
+            "cpus value {} exceeds reasonable maximum of 1024",
+            value
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Service;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_validate_circular_dependency() {
+        use crate::config::DependsOn;
+        let mut config = Config::default();
+
+        let service_a = Service {
+            process: Some("echo a".to_string()),
+            depends_on: vec![DependsOn::Simple("b".to_string())],
+            ..Default::default()
+        };
+
+        let service_b = Service {
+            process: Some("echo b".to_string()),
+            depends_on: vec![DependsOn::Simple("a".to_string())],
+            ..Default::default()
+        };
+
+        config.services.insert("a".to_string(), service_a);
+        config.services.insert("b".to_string(), service_b);
+
+        assert!(matches!(
+            config.validate(),
+            Err(Error::CircularDependency(_))
+        ));
+    }
+
+    #[test]
+    fn test_circular_dependency_error_shows_cycle_path() {
+        use crate::config::DependsOn;
+        let mut config = Config::default();
+
+        // Create a 3-service cycle: x -> y -> z -> x
+        let service_x = Service {
+            process: Some("echo x".to_string()),
+            depends_on: vec![DependsOn::Simple("y".to_string())],
+            ..Default::default()
+        };
+
+        let service_y = Service {
+            process: Some("echo y".to_string()),
+            depends_on: vec![DependsOn::Simple("z".to_string())],
+            ..Default::default()
+        };
+
+        let service_z = Service {
+            process: Some("echo z".to_string()),
+            depends_on: vec![DependsOn::Simple("x".to_string())],
+            ..Default::default()
+        };
+
+        config.services.insert("x".to_string(), service_x);
+        config.services.insert("y".to_string(), service_y);
+        config.services.insert("z".to_string(), service_z);
+
+        let result = config.validate();
+        assert!(result.is_err());
+
+        // Verify the error message contains the cycle path
+        let error = result.unwrap_err();
+        let error_msg = error.to_string();
+
+        // The cycle should show something like "x -> y -> z -> x"
+        assert!(
+            error_msg.contains("->"),
+            "Error should show cycle path with arrows, got: {}",
+            error_msg
+        );
+
+        // At least some of the services should appear in the message
+        let contains_services =
+            error_msg.contains("x") || error_msg.contains("y") || error_msg.contains("z");
+        assert!(
+            contains_services,
+            "Error should mention services in the cycle, got: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_validate_missing_entrypoint() {
+        let config = Config {
+            entrypoint: Some("nonexistent".to_string()),
+            ..Default::default()
+        };
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_service_script_name_conflict() {
+        use crate::config::Script;
+
+        let mut config = Config::default();
+
+        let service = Service {
+            process: Some("echo service".to_string()),
+            ..Default::default()
+        };
+
+        let script = Script {
+            script: "echo script".to_string(),
+            cwd: None,
+            depends_on: vec![],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        config.services.insert("app".to_string(), service);
+        config.scripts.insert("app".to_string(), script);
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("same name as a service"));
+    }
+
+    #[test]
+    fn test_script_missing_dependency() {
+        use crate::config::Script;
+
+        let mut config = Config::default();
+
+        let script = Script {
+            script: "echo test".to_string(),
+            cwd: None,
+            depends_on: vec!["nonexistent".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        config.scripts.insert("test".to_string(), script);
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("depends on non-existent service or script"));
+    }
+
+    #[test]
+    fn test_script_valid_service_dependency() {
+        use crate::config::Script;
+
+        let mut config = Config::default();
+
+        let service = Service {
+            process: Some("echo service".to_string()),
+            ..Default::default()
+        };
+
+        let script = Script {
+            script: "echo script".to_string(),
+            cwd: None,
+            depends_on: vec!["database".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        config.services.insert("database".to_string(), service);
+        config.scripts.insert("migrate".to_string(), script);
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_script_valid_script_dependency() {
+        use crate::config::Script;
+
+        let mut config = Config::default();
+
+        let script1 = Script {
+            script: "echo script1".to_string(),
+            cwd: None,
+            depends_on: vec![],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        let script2 = Script {
+            script: "echo script2".to_string(),
+            cwd: None,
+            depends_on: vec!["script1".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        config.scripts.insert("script1".to_string(), script1);
+        config.scripts.insert("script2".to_string(), script2);
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_memory_string_valid() {
+        assert!(validate_memory_string("512m").is_ok());
+        assert!(validate_memory_string("2g").is_ok());
+        assert!(validate_memory_string("1024mb").is_ok());
+        assert!(validate_memory_string("1.5g").is_ok());
+        assert!(validate_memory_string("4096").is_ok()); // bytes
+        assert!(validate_memory_string("100000k").is_ok());
+    }
+
+    #[test]
+    fn test_validate_memory_string_invalid() {
+        assert!(validate_memory_string("").is_err()); // empty
+        assert!(validate_memory_string("m512").is_err()); // no number
+        assert!(validate_memory_string("0m").is_err()); // zero
+        assert!(validate_memory_string("-512m").is_err()); // negative
+        assert!(validate_memory_string("512x").is_err()); // invalid suffix
+        assert!(validate_memory_string("100").is_err()); // too small for bytes
+        assert!(validate_memory_string("200t").is_err()); // excessive terabytes
+    }
+
+    #[test]
+    fn test_validate_cpus_string_valid() {
+        assert!(validate_cpus_string("0.5").is_ok());
+        assert!(validate_cpus_string("1").is_ok());
+        assert!(validate_cpus_string("2.0").is_ok());
+        assert!(validate_cpus_string("4").is_ok());
+        assert!(validate_cpus_string("16.5").is_ok());
+    }
+
+    #[test]
+    fn test_validate_cpus_string_invalid() {
+        assert!(validate_cpus_string("").is_err()); // empty
+        assert!(validate_cpus_string("0").is_err()); // zero
+        assert!(validate_cpus_string("-1").is_err()); // negative
+        assert!(validate_cpus_string("abc").is_err()); // not a number
+        assert!(validate_cpus_string("2000").is_err()); // excessive
+    }
+
+    #[test]
+    fn test_validate_resource_limits_valid() {
+        use crate::config::ResourceLimits;
+
+        let resources = ResourceLimits {
+            memory: Some("512m".to_string()),
+            memory_reservation: Some("256m".to_string()),
+            memory_swap: Some("1g".to_string()),
+            cpus: Some("2.0".to_string()),
+            cpu_shares: Some(1024),
+            pids: Some(100),
+            nofile: Some(1024),
+            strict_limits: false,
+        };
+
+        assert!(validate_resource_limits("test-service", &resources).is_ok());
+    }
+
+    #[test]
+    fn test_validate_resource_limits_invalid_memory() {
+        use crate::config::ResourceLimits;
+
+        let resources = ResourceLimits {
+            memory: Some("invalid".to_string()),
+            memory_reservation: None,
+            memory_swap: None,
+            cpus: None,
+            cpu_shares: None,
+            pids: None,
+            nofile: None,
+            strict_limits: false,
+        };
+
+        let result = validate_resource_limits("test-service", &resources);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid memory limit"));
+    }
+
+    #[test]
+    fn test_validate_resource_limits_invalid_cpus() {
+        use crate::config::ResourceLimits;
+
+        let resources = ResourceLimits {
+            memory: None,
+            memory_reservation: None,
+            memory_swap: None,
+            cpus: Some("0".to_string()),
+            cpu_shares: None,
+            pids: None,
+            nofile: None,
+            strict_limits: false,
+        };
+
+        let result = validate_resource_limits("test-service", &resources);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid cpus"));
+    }
+
+    #[test]
+    fn test_validate_resource_limits_zero_cpu_shares() {
+        use crate::config::ResourceLimits;
+
+        let resources = ResourceLimits {
+            memory: None,
+            memory_reservation: None,
+            memory_swap: None,
+            cpus: None,
+            cpu_shares: Some(0),
+            pids: None,
+            nofile: None,
+            strict_limits: false,
+        };
+
+        let result = validate_resource_limits("test-service", &resources);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("cpu_shares must be greater than 0"));
+    }
+
+    #[test]
+    fn test_validate_resource_limits_zero_pids() {
+        use crate::config::ResourceLimits;
+
+        let resources = ResourceLimits {
+            memory: None,
+            memory_reservation: None,
+            memory_swap: None,
+            cpus: None,
+            cpu_shares: None,
+            pids: Some(0),
+            nofile: None,
+            strict_limits: false,
+        };
+
+        let result = validate_resource_limits("test-service", &resources);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("pids limit must be greater than 0"));
+    }
+}

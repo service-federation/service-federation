@@ -1,0 +1,772 @@
+use service_federation::{
+    config::{Config, ServiceType},
+    port::PortConflict,
+    service::Status,
+    Orchestrator, WatchMode,
+};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+pub async fn run_start(
+    orchestrator: &mut Orchestrator,
+    config: &Config,
+    services: Vec<String>,
+    watch: bool,
+    replace: bool,
+    dry_run: bool,
+    config_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let services_to_start = if services.is_empty() {
+        // Use entrypoint
+        if let Some(ref ep) = config.entrypoint {
+            vec![ep.clone()]
+        } else if !config.entrypoints.is_empty() {
+            config.entrypoints.clone()
+        } else {
+            println!("No services specified and no entrypoint configured");
+            return Ok(());
+        }
+    } else {
+        // Expand tag references (e.g., @backend) into service names
+        config.expand_service_selection(&services)
+    };
+
+    // Handle dry run mode - show what would happen without starting services
+    if dry_run {
+        return run_dry_run(orchestrator, config, services_to_start).await;
+    }
+
+    // If --replace is set, kill any processes occupying required ports
+    if replace {
+        let params = orchestrator.get_resolved_parameters();
+        let mut any_conflicts = false;
+        let current_pid = std::process::id();
+
+        for (name, value) in params {
+            // Check if this looks like a port parameter (ends with _PORT or is all numbers)
+            if name.ends_with("_PORT") || name.ends_with("_port") || name.parse::<u16>().is_ok() {
+                if let Ok(port) = value.parse::<u16>() {
+                    if let Some(conflict) = PortConflict::check(port) {
+                        // Filter out ourselves from the process list for display
+                        let other_processes: Vec<_> = conflict
+                            .processes
+                            .iter()
+                            .filter(|p| p.pid != current_pid)
+                            .collect();
+
+                        if other_processes.is_empty() {
+                            // Port is in use but only by ourselves - this is normal (we're reserving it)
+                            continue;
+                        }
+
+                        any_conflicts = true;
+
+                        // Print all processes we're about to kill (excluding ourselves)
+                        for process in &other_processes {
+                            println!(
+                                "Killing process '{}' (PID {}) occupying port {} ({})",
+                                process.name, process.pid, port, name
+                            );
+                        }
+
+                        // Kill and verify with retries
+                        match conflict.kill_and_verify(3) {
+                            Ok(()) => {
+                                println!("  Port {} freed successfully", port);
+                            }
+                            Err(e) => {
+                                eprintln!("\x1b[31mError: {}\x1b[0m", e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if any_conflicts {
+            println!();
+        }
+    }
+
+    // Show what we're about to start with their dependencies
+    let dep_graph = orchestrator.get_dependency_graph();
+    for service in &services_to_start {
+        let deps = dep_graph.get_dependencies(service);
+        if deps.is_empty() {
+            println!("Starting: {}", service);
+        } else {
+            println!("Starting: {} (with deps: {})", service, deps.join(", "));
+        }
+    }
+    println!();
+
+    // Set up Ctrl+C handler during startup to allow aborting
+    let startup_abort = Arc::new(AtomicBool::new(false));
+    let startup_abort_clone = startup_abort.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        startup_abort_clone.store(true, Ordering::SeqCst);
+    });
+
+    // Track which services we've already started (to avoid duplicate messages)
+    let mut started: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for service in &services_to_start {
+        // Check if user aborted during startup
+        if startup_abort.load(Ordering::SeqCst) {
+            println!("\n\nStartup aborted. Cleaning up...");
+            orchestrator.cleanup().await;
+            println!("Cleanup complete");
+            return Ok(());
+        }
+
+        // Get dependencies for this service
+        let deps = orchestrator
+            .get_dependency_graph()
+            .get_dependencies(service);
+
+        // Start dependencies first (show progress)
+        for dep in &deps {
+            if !started.contains(dep) {
+                print!("  {} (dependency)...", dep);
+                std::io::Write::flush(&mut std::io::stdout())?;
+                match orchestrator.start(dep).await {
+                    Ok(_) => {
+                        println!(" ready");
+                        started.insert(dep.clone());
+                    }
+                    Err(e) => {
+                        println!(" \x1b[31mfailed\x1b[0m");
+                        eprintln!(
+                            "\n\x1b[31mError starting dependency '{}': {}\x1b[0m",
+                            dep, e
+                        );
+                        orchestrator.cleanup().await;
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+
+        // Start the main service
+        if !started.contains(service) {
+            print!("  {}...", service);
+            std::io::Write::flush(&mut std::io::stdout())?;
+            match orchestrator.start(service).await {
+                Ok(_) => {
+                    println!(" ready");
+                    started.insert(service.clone());
+                }
+                Err(e) => {
+                    println!(" \x1b[31mfailed\x1b[0m");
+                    eprintln!("\n\x1b[31mError: {}\x1b[0m", e);
+
+                    // If service not found, show available services
+                    if e.to_string().contains("Service not found") {
+                        let status = orchestrator.get_status().await;
+                        if !status.is_empty() {
+                            eprintln!("\nAvailable services:");
+                            for name in status.keys() {
+                                eprintln!("  - {}", name);
+                            }
+                        }
+                        eprintln!(
+                            "\nHint: Check your service-federation.yaml or run 'fed validate'"
+                        );
+                    }
+
+                    orchestrator.cleanup().await;
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+
+    println!("\nAll services started successfully!");
+
+    // Mark startup complete - enables monitoring to clean up dead services
+    orchestrator.mark_startup_complete();
+
+    // Print resolved parameters
+    let params = orchestrator.get_resolved_parameters();
+    if !params.is_empty() {
+        println!("\nResolved parameters:");
+        for (key, value) in params {
+            println!("  {}: {}", key, value);
+        }
+    }
+
+    // Print status and check for failing services
+    println!("\nService Status:");
+    let status = orchestrator.get_status().await;
+    let params = orchestrator.get_resolved_parameters();
+
+    // Collect port conflicts for all port parameters
+    let mut port_conflicts: Vec<(String, u16, String, Option<u32>)> = Vec::new();
+    let has_failing = status.values().any(|s| *s == Status::Failing);
+
+    for (name, stat) in &status {
+        let status_str = match stat {
+            Status::Running => "Running",
+            Status::Healthy => "Healthy",
+            Status::Failing => "Failing",
+            Status::Stopped => "Stopped",
+            Status::Starting => "Starting",
+            Status::Stopping => "Stopping",
+        };
+        println!("  {}: {}", name, status_str);
+    }
+
+    // If any services are failing, check ALL port parameters for conflicts
+    if has_failing {
+        // Collect PIDs of all fed-managed services to filter them out
+        let mut managed_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for name in status.keys() {
+            if let Ok(Some(pid)) = orchestrator.get_service_pid(name).await {
+                managed_pids.insert(pid);
+            }
+        }
+
+        for (param_name, param_value) in params.iter() {
+            // Check if this is a port parameter
+            if param_name.ends_with("_PORT") || param_name.ends_with("_port") {
+                if let Ok(port) = param_value.parse::<u16>() {
+                    if let Some(conflict) = PortConflict::check(port) {
+                        for process in &conflict.processes {
+                            // Skip if this is a fed-managed service
+                            if managed_pids.contains(&process.pid) {
+                                continue;
+                            }
+                            port_conflicts.push((
+                                param_name.clone(),
+                                port,
+                                process.name.clone(),
+                                Some(process.pid),
+                            ));
+                        }
+                        // Only report unknown if no processes found at all
+                        if conflict.processes.is_empty() {
+                            port_conflicts.push((
+                                param_name.clone(),
+                                port,
+                                "unknown".to_string(),
+                                None,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        println!();
+        if !port_conflicts.is_empty() {
+            eprintln!("\x1b[31m⚠️  Port conflicts detected:\x1b[0m");
+            for (param_name, port, process_name, pid) in &port_conflicts {
+                if let Some(p) = pid {
+                    eprintln!(
+                        "\x1b[31m  {} (port {}) - occupied by '{}' (PID {})\x1b[0m",
+                        param_name, port, process_name, p
+                    );
+                } else {
+                    eprintln!(
+                        "\x1b[31m  {} (port {}) - occupied by external process\x1b[0m",
+                        param_name, port
+                    );
+                }
+            }
+            println!();
+            println!("Hint: Run 'fed start --replace' to kill conflicting processes");
+            println!("      Or manually stop the external services first");
+        } else {
+            eprintln!("\x1b[31m⚠️  Some services are failing. Check logs with 'fed logs <service>'\x1b[0m");
+        }
+    }
+
+    if !watch {
+        println!("\nServices running in background");
+        println!("  Use 'fed stop' to stop them");
+        println!("  Use 'fed tui' for interactive mode");
+    } else {
+        run_watch_mode(orchestrator, config, config_path).await?;
+    }
+
+    Ok(())
+}
+
+async fn run_watch_mode(
+    orchestrator: &mut Orchestrator,
+    config: &Config,
+    config_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    println!("\nServices running with watch mode enabled");
+    println!("  Files will be monitored for changes. Press Ctrl+C to stop...");
+
+    // Set up watch mode
+    let work_dir = if let Some(parent) = config_path.parent() {
+        if parent.as_os_str().is_empty() {
+            std::env::current_dir()?
+        } else {
+            parent.to_path_buf()
+        }
+    } else {
+        std::env::current_dir()?
+    };
+
+    let mut watch_mode = match WatchMode::new(config, &work_dir) {
+        Ok(wm) => {
+            println!("  Watching for file changes...");
+            Some(wm)
+        }
+        Err(e) => {
+            eprintln!("Failed to start watch mode: {}", e);
+            eprintln!("  Continuing without file watching...");
+            None
+        }
+    };
+
+    // Install signal handler for SIGINT (Ctrl+C) and SIGTERM
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let force_quit = Arc::new(AtomicBool::new(false));
+    let force_quit_clone = force_quit.clone();
+
+    // Clone state tracker, monitoring shutdown, and services for force quit cleanup
+    let state_tracker_clone = orchestrator.state_tracker.clone();
+    let monitoring_shutdown_clone = orchestrator.monitoring_shutdown.clone();
+    let services_clone = orchestrator.get_services_arc();
+
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        // Set up signal handlers, logging warnings if they fail
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!("Failed to create SIGINT handler: {}", e);
+                None
+            }
+        };
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!("Failed to create SIGTERM handler: {}", e);
+                None
+            }
+        };
+
+        // If neither signal handler works, just wait forever (process can still be killed)
+        if sigint.is_none() && sigterm.is_none() {
+            tracing::warn!(
+                "No signal handlers available - process can only be terminated externally"
+            );
+            std::future::pending::<()>().await;
+            return;
+        }
+
+        let mut signal_count = 0;
+        loop {
+            tokio::select! {
+                _ = async {
+                    if let Some(ref mut s) = sigint {
+                        s.recv().await
+                    } else {
+                        std::future::pending::<Option<()>>().await
+                    }
+                } => {
+                    signal_count += 1;
+
+                    if signal_count == 1 {
+                        println!("\n\nStopping services... (Press Ctrl+C again to force quit)");
+                        shutdown_tx.send(()).await.ok();
+                    } else {
+                        println!("\n\nForce quitting...");
+                        force_quit_clone.store(true, Ordering::SeqCst);
+
+                        // Kill all running services before exit
+                        let services_map = services_clone.read().await;
+                        for (_, service_arc) in services_map.iter() {
+                            if let Ok(mut manager) = service_arc.try_lock() {
+                                let _ = manager.kill().await;
+                            }
+                        }
+                        drop(services_map);
+
+                        // Save state tracker before exit
+                        if let Err(e) = state_tracker_clone.write().await.save().await {
+                            eprintln!("Failed to save state: {}", e);
+                        }
+
+                        // Signal monitoring task to shut down
+                        monitoring_shutdown_clone.notify_waiters();
+
+                        std::process::exit(130);
+                    }
+                }
+                _ = async {
+                    if let Some(ref mut s) = sigterm {
+                        s.recv().await
+                    } else {
+                        std::future::pending::<Option<()>>().await
+                    }
+                } => {
+                    println!("\n\nReceived SIGTERM, stopping services gracefully...");
+                    shutdown_tx.send(()).await.ok();
+                    break;
+                }
+            }
+        }
+    });
+
+    // Main event loop: watch for file changes or shutdown signal
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                break;
+            }
+            event = async {
+                if let Some(ref mut wm) = watch_mode {
+                    wm.next_event().await
+                } else {
+                    std::future::pending::<Option<service_federation::watch::FileChangeEvent>>().await
+                }
+            } => {
+                if let Some(event) = event {
+                    println!("\nFile change detected in service '{}': {} file(s) changed",
+                        event.service_name, event.changed_paths.len());
+                    println!("  Restarting {}...", event.service_name);
+
+                    // Stop the service
+                    match orchestrator.stop(&event.service_name).await {
+                        Ok(_) => {
+                            match orchestrator.start(&event.service_name).await {
+                                Ok(_) => {
+                                    println!("  {} restarted successfully", event.service_name);
+                                }
+                                Err(e) => {
+                                    eprintln!("  Failed to start {}: {}", event.service_name, e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("  Failed to stop {}: {}", event.service_name, e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Perform cleanup if not force quitting
+    if !force_quit.load(Ordering::SeqCst) {
+        orchestrator.cleanup().await;
+        println!("All services stopped");
+    }
+
+    Ok(())
+}
+
+/// Run in dry-run mode: show what would happen without starting services.
+///
+/// This displays:
+/// 1. Services to start (with their dependencies)
+/// 2. Start order (topological sort)
+/// 3. Resolved parameters
+/// 4. Port conflict detection
+/// 5. Environment variables per service (with secrets masked)
+/// 6. Resource limits
+/// 7. Validation summary
+async fn run_dry_run(
+    orchestrator: &Orchestrator,
+    config: &Config,
+    services_to_start: Vec<String>,
+) -> anyhow::Result<()> {
+    println!("=== Dry Run Mode ===\n");
+
+    let dep_graph = orchestrator.get_dependency_graph();
+
+    // 1. Show services that would be started with their dependencies
+    println!("Services to start:");
+    for service in &services_to_start {
+        let deps = dep_graph.get_dependencies(service);
+        if deps.is_empty() {
+            println!("  - {}", service);
+        } else {
+            println!("  - {} (depends on: {})", service, deps.join(", "));
+        }
+    }
+
+    // 2. Calculate and show start order (topological sort of all services to start)
+    // Collect all services including dependencies
+    let mut all_services: Vec<String> = Vec::new();
+    for service in &services_to_start {
+        let deps = dep_graph.get_dependencies(service);
+        for dep in deps {
+            if !all_services.contains(&dep) {
+                all_services.push(dep);
+            }
+        }
+        if !all_services.contains(service) {
+            all_services.push(service.clone());
+        }
+    }
+
+    println!("\nStart order:");
+    for (i, service) in all_services.iter().enumerate() {
+        let service_config = config.services.get(service);
+        let service_type = service_config
+            .map(|s| s.service_type())
+            .unwrap_or(ServiceType::Undefined);
+        println!("  {}. {} ({:?})", i + 1, service, service_type);
+    }
+
+    // 3. Show resolved parameters
+    let params = orchestrator.get_resolved_parameters();
+    if !params.is_empty() {
+        println!("\nResolved parameters:");
+        // Sort parameters for consistent output
+        let mut sorted_params: Vec<_> = params.iter().collect();
+        sorted_params.sort_by_key(|(k, _)| *k);
+        for (key, value) in sorted_params {
+            println!("  {}: {}", key, value);
+        }
+    }
+
+    // 4. Check for port conflicts
+    println!("\nPort availability:");
+    let mut conflicts_found = false;
+    let mut checked_ports = std::collections::HashSet::new();
+
+    for (name, value) in params.iter() {
+        if name.ends_with("_PORT") || name.ends_with("_port") {
+            if let Ok(port) = value.parse::<u16>() {
+                // Avoid checking the same port multiple times
+                if checked_ports.contains(&port) {
+                    continue;
+                }
+                checked_ports.insert(port);
+
+                if let Some(conflict) = PortConflict::check(port) {
+                    conflicts_found = true;
+                    println!("  [CONFLICT] Port {} ({}):", port, name);
+                    if conflict.processes.is_empty() {
+                        println!("    - Port in use by unknown process");
+                    } else {
+                        for process in &conflict.processes {
+                            println!("    - '{}' (PID {})", process.name, process.pid);
+                        }
+                    }
+                } else {
+                    println!("  [OK] Port {} ({}) is available", port, name);
+                }
+            }
+        }
+    }
+    if !conflicts_found && checked_ports.is_empty() {
+        println!("  No port parameters detected");
+    } else if !conflicts_found {
+        println!("  All {} port(s) available", checked_ports.len());
+    }
+
+    // 5. Show environment variables per service (mask sensitive values)
+    println!("\nService configuration:");
+    for service_name in &all_services {
+        if let Some(service_config) = config.services.get(service_name) {
+            println!("  {}:", service_name);
+
+            // Show service type
+            let service_type = service_config.service_type();
+            println!("    type: {:?}", service_type);
+
+            // Show process command or image
+            if let Some(ref process) = service_config.process {
+                println!("    command: {}", process);
+            }
+            if let Some(ref image) = service_config.image {
+                println!("    image: {}", image);
+            }
+            if let Some(ref gradle_task) = service_config.gradle_task {
+                println!("    gradle_task: {}", gradle_task);
+            }
+
+            // Show working directory if set
+            if let Some(ref cwd) = service_config.cwd {
+                println!("    cwd: {}", cwd);
+            }
+
+            // Show health check if configured
+            if let Some(ref healthcheck) = service_config.healthcheck {
+                let timeout = healthcheck.get_timeout();
+                match healthcheck.get_http_url() {
+                    Some(url) => {
+                        println!("    healthcheck: HTTP GET {} (timeout: {:?})", url, timeout)
+                    }
+                    None => {
+                        if let Some(cmd) = healthcheck.get_command() {
+                            println!(
+                                "    healthcheck: command '{}' (timeout: {:?})",
+                                cmd, timeout
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Show environment variables with masked secrets
+            if !service_config.environment.is_empty() {
+                println!("    environment:");
+                let mut sorted_env: Vec<_> = service_config.environment.iter().collect();
+                sorted_env.sort_by_key(|(k, _)| *k);
+                for (key, value) in sorted_env {
+                    let display_value = mask_sensitive_value(key, value);
+                    println!("      {}: {}", key, display_value);
+                }
+            }
+
+            // Show restart policy if configured
+            if let Some(ref restart) = service_config.restart {
+                println!("    restart: {:?}", restart);
+            }
+        }
+    }
+
+    // 6. Show resource limits
+    println!("\nResource limits:");
+    let mut any_limits = false;
+    for service_name in &all_services {
+        if let Some(service_config) = config.services.get(service_name) {
+            if let Some(ref resources) = service_config.resources {
+                any_limits = true;
+                println!("  {}:", service_name);
+                if let Some(ref mem) = resources.memory {
+                    println!("    memory: {}", mem);
+                }
+                if let Some(ref cpus) = resources.cpus {
+                    println!("    cpus: {}", cpus);
+                }
+                if let Some(nofile) = resources.nofile {
+                    println!("    nofile: {}", nofile);
+                }
+                if let Some(pids) = resources.pids {
+                    println!("    pids: {}", pids);
+                }
+            }
+        }
+    }
+    if !any_limits {
+        println!("  No resource limits configured");
+    }
+
+    // 7. Validation summary
+    println!("\n=== Validation Summary ===");
+    println!("  Configuration: OK (parsed successfully)");
+    println!("  Services to start: {}", all_services.len());
+    if conflicts_found {
+        println!("  Port conflicts: DETECTED (use --replace to kill conflicting processes)");
+    } else {
+        println!("  Port conflicts: None");
+    }
+
+    println!("\n=== Dry run complete ===");
+    println!("Run without --dry-run to actually start services");
+
+    Ok(())
+}
+
+/// Mask sensitive environment variable values.
+///
+/// Returns "***" for values whose keys contain sensitive keywords,
+/// otherwise returns the original value.
+fn mask_sensitive_value(key: &str, value: &str) -> String {
+    let key_lower = key.to_lowercase();
+    let sensitive_patterns = [
+        "secret",
+        "password",
+        "token",
+        "api_key",
+        "apikey",
+        "private_key",
+        "privatekey",
+        "auth",
+        "credential",
+    ];
+
+    for pattern in &sensitive_patterns {
+        if key_lower.contains(pattern) {
+            return "***".to_string();
+        }
+    }
+
+    value.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mask_sensitive_value_secrets() {
+        // Should mask secrets
+        assert_eq!(mask_sensitive_value("API_SECRET", "my-secret"), "***");
+        assert_eq!(mask_sensitive_value("secret_key", "value"), "***");
+        assert_eq!(mask_sensitive_value("MY_SECRET_VALUE", "hidden"), "***");
+    }
+
+    #[test]
+    fn test_mask_sensitive_value_passwords() {
+        assert_eq!(mask_sensitive_value("PASSWORD", "pass123"), "***");
+        assert_eq!(mask_sensitive_value("db_password", "dbpass"), "***");
+        assert_eq!(mask_sensitive_value("USER_PASSWORD", "userpass"), "***");
+    }
+
+    #[test]
+    fn test_mask_sensitive_value_tokens() {
+        assert_eq!(mask_sensitive_value("AUTH_TOKEN", "token123"), "***");
+        assert_eq!(mask_sensitive_value("access_token", "abc"), "***");
+        assert_eq!(mask_sensitive_value("REFRESH_TOKEN", "xyz"), "***");
+    }
+
+    #[test]
+    fn test_mask_sensitive_value_api_keys() {
+        assert_eq!(mask_sensitive_value("API_KEY", "key123"), "***");
+        assert_eq!(mask_sensitive_value("APIKEY", "key456"), "***");
+        assert_eq!(mask_sensitive_value("my_api_key", "key789"), "***");
+    }
+
+    #[test]
+    fn test_mask_sensitive_value_auth() {
+        assert_eq!(mask_sensitive_value("AUTH_HEADER", "bearer xxx"), "***");
+        assert_eq!(mask_sensitive_value("OAUTH_TOKEN", "oauth123"), "***");
+    }
+
+    #[test]
+    fn test_mask_sensitive_value_credentials() {
+        assert_eq!(mask_sensitive_value("CREDENTIAL", "cred123"), "***");
+        assert_eq!(mask_sensitive_value("aws_credentials", "xxx"), "***");
+    }
+
+    #[test]
+    fn test_mask_sensitive_value_private_keys() {
+        assert_eq!(mask_sensitive_value("PRIVATE_KEY", "-----BEGIN"), "***");
+        assert_eq!(mask_sensitive_value("privatekey", "key"), "***");
+    }
+
+    #[test]
+    fn test_mask_sensitive_value_non_sensitive() {
+        // Non-sensitive values should NOT be masked
+        assert_eq!(
+            mask_sensitive_value("DATABASE_URL", "postgres://localhost"),
+            "postgres://localhost"
+        );
+        assert_eq!(mask_sensitive_value("PORT", "8080"), "8080");
+        assert_eq!(mask_sensitive_value("NODE_ENV", "production"), "production");
+        assert_eq!(mask_sensitive_value("DEBUG", "true"), "true");
+    }
+
+    #[test]
+    fn test_mask_sensitive_value_case_insensitive() {
+        // Should be case insensitive
+        assert_eq!(mask_sensitive_value("password", "pass"), "***");
+        assert_eq!(mask_sensitive_value("PASSWORD", "pass"), "***");
+        assert_eq!(mask_sensitive_value("Password", "pass"), "***");
+        assert_eq!(mask_sensitive_value("PaSsWoRd", "pass"), "***");
+    }
+}
