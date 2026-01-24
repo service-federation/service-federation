@@ -61,6 +61,9 @@ impl Config {
         // Check for circular dependencies
         self.check_circular_dependencies()?;
 
+        // Check for script circular dependencies
+        self.check_script_circular_dependencies()?;
+
         // Check for service/script name conflicts
         for script_name in self.scripts.keys() {
             if self.services.contains_key(script_name) {
@@ -167,6 +170,61 @@ impl Config {
         }
 
         rec_stack.remove(service);
+        path.pop();
+        None
+    }
+
+    fn check_script_circular_dependencies(&self) -> Result<()> {
+        let mut visited = HashSet::new();
+        let mut rec_stack = HashSet::new();
+        let mut path = Vec::new();
+
+        for script_name in self.scripts.keys() {
+            if !visited.contains(script_name) {
+                if let Some(cycle) =
+                    self.find_script_cycle(script_name, &mut visited, &mut rec_stack, &mut path)
+                {
+                    return Err(Error::CircularDependency(cycle));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn find_script_cycle(
+        &self,
+        script: &str,
+        visited: &mut HashSet<String>,
+        rec_stack: &mut HashSet<String>,
+        path: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        visited.insert(script.to_string());
+        rec_stack.insert(script.to_string());
+        path.push(script.to_string());
+
+        if let Some(scr) = self.scripts.get(script) {
+            for dep in &scr.depends_on {
+                // Only follow script→script edges
+                // Script→service edges are valid and don't create script cycles
+                if self.scripts.contains_key(dep) {
+                    if !visited.contains(dep) {
+                        if let Some(cycle) = self.find_script_cycle(dep, visited, rec_stack, path)
+                        {
+                            return Some(cycle);
+                        }
+                    } else if rec_stack.contains(dep) {
+                        // Found cycle - extract it from path
+                        let cycle_start = path.iter().position(|n| n == dep).unwrap_or(0);
+                        let mut cycle: Vec<String> = path[cycle_start..].to_vec();
+                        cycle.push(dep.to_string()); // Complete the cycle
+                        return Some(cycle);
+                    }
+                }
+            }
+        }
+
+        rec_stack.remove(script);
         path.pop();
         None
     }
@@ -733,5 +791,152 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("pids limit must be greater than 0"));
+    }
+
+    #[test]
+    fn test_script_circular_dependency_simple() {
+        use crate::config::Script;
+
+        let mut config = Config::default();
+
+        // Create a 2-script cycle: script_a -> script_b -> script_a
+        let script_a = Script {
+            script: "echo a".to_string(),
+            cwd: None,
+            depends_on: vec!["script_b".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        let script_b = Script {
+            script: "echo b".to_string(),
+            cwd: None,
+            depends_on: vec!["script_a".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        config.scripts.insert("script_a".to_string(), script_a);
+        config.scripts.insert("script_b".to_string(), script_b);
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::CircularDependency(_)
+        ));
+    }
+
+    #[test]
+    fn test_script_circular_dependency_three_way() {
+        use crate::config::Script;
+
+        let mut config = Config::default();
+
+        // Create a 3-script cycle: x -> y -> z -> x
+        let script_x = Script {
+            script: "echo x".to_string(),
+            cwd: None,
+            depends_on: vec!["y".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        let script_y = Script {
+            script: "echo y".to_string(),
+            cwd: None,
+            depends_on: vec!["z".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        let script_z = Script {
+            script: "echo z".to_string(),
+            cwd: None,
+            depends_on: vec!["x".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        config.scripts.insert("x".to_string(), script_x);
+        config.scripts.insert("y".to_string(), script_y);
+        config.scripts.insert("z".to_string(), script_z);
+
+        let result = config.validate();
+        assert!(result.is_err());
+
+        // Verify the error message contains the cycle path
+        let error = result.unwrap_err();
+        let error_msg = error.to_string();
+
+        // The cycle should show something like "x -> y -> z -> x"
+        assert!(
+            error_msg.contains("->"),
+            "Error should show cycle path with arrows, got: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_script_depending_on_service_is_valid() {
+        use crate::config::Script;
+
+        let mut config = Config::default();
+
+        let service = Service {
+            process: Some("echo service".to_string()),
+            ..Default::default()
+        };
+
+        let script = Script {
+            script: "echo script".to_string(),
+            cwd: None,
+            depends_on: vec!["database".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        config.services.insert("database".to_string(), service);
+        config.scripts.insert("migrate".to_string(), script);
+
+        // This should be valid - script→service dependencies are allowed
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_script_chain_with_service_no_cycle() {
+        use crate::config::Script;
+
+        let mut config = Config::default();
+
+        // Create a chain: script_a -> script_b -> service
+        // This is valid - no cycle
+        let service = Service {
+            process: Some("echo db".to_string()),
+            ..Default::default()
+        };
+
+        let script_b = Script {
+            script: "echo b".to_string(),
+            cwd: None,
+            depends_on: vec!["db".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        let script_a = Script {
+            script: "echo a".to_string(),
+            cwd: None,
+            depends_on: vec!["script_b".to_string()],
+            environment: HashMap::new(),
+            isolated: false,
+        };
+
+        config.services.insert("db".to_string(), service);
+        config.scripts.insert("script_b".to_string(), script_b);
+        config.scripts.insert("script_a".to_string(), script_a);
+
+        // This should be valid - no script→script cycle
+        assert!(config.validate().is_ok());
     }
 }
