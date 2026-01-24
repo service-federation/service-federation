@@ -83,7 +83,7 @@ impl SqliteStateTracker {
             .map_err(|e| Error::Config(format!("Failed to open lock file: {}", e)))?;
 
         // Try non-blocking exclusive lock
-        match file.try_lock_exclusive() {
+        match FileExt::try_lock_exclusive(&file) {
             Ok(()) => {
                 // Write our PID to the lock file for debugging
                 let _ = file.set_len(0); // Truncate

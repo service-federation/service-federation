@@ -299,9 +299,8 @@ impl LogCapture {
 
             // Acquire shared lock (allows concurrent reads, blocks writes)
             // Use try_lock to avoid deadlocks - if we can't get lock, read anyway
-            #[allow(unused_imports)]
             use fs2::FileExt;
-            if file.try_lock_shared().is_err() {
+            if FileExt::try_lock_shared(&file).is_err() {
                 tracing::debug!("Could not acquire shared lock on log file, reading without lock");
             }
 
