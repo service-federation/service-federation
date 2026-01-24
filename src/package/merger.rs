@@ -658,4 +658,124 @@ mod tests {
         let pkg_svc = config.services.get("pkg-svc").unwrap();
         assert_eq!(pkg_svc.extends.as_deref(), Some("pkg.service"));
     }
+
+    #[test]
+    fn test_circular_package_dependency_detected() {
+        // When a service extends a package service that itself has extends,
+        // we should get CircularPackageDependency error.
+        //
+        // This prevents: my-service extends pkg.base, pkg.base extends pkg.deeper
+        // Which would require recursive merging and could lead to cycles.
+
+        let mut main_config = Config::default();
+
+        // Service in main config that extends a package service
+        let local_service = Service {
+            extends: Some("db-pkg.postgres".to_string()),
+            ..Default::default()
+        };
+        main_config
+            .services
+            .insert("my-db".to_string(), local_service);
+
+        // Package with a service that ALSO has extends (the problem case)
+        let mut pkg_config = Config::default();
+        let pkg_service = Service {
+            image: Some("postgres:15".to_string()),
+            extends: Some("another-pkg.base".to_string()), // This triggers the error
+            ..Default::default()
+        };
+        pkg_config
+            .services
+            .insert("postgres".to_string(), pkg_service);
+
+        let package = Package {
+            alias: "db-pkg".to_string(),
+            source: crate::package::PackageSource::Local {
+                path: std::path::PathBuf::from("/fake/path"),
+            },
+            config: pkg_config,
+            path: std::path::PathBuf::from("/fake/path"),
+            metadata: crate::package::PackageMetadata {
+                name: None,
+                description: None,
+                version: None,
+                updated_at: chrono::Utc::now(),
+                checksum: None,
+            },
+        };
+
+        let mut packages = HashMap::new();
+        packages.insert("db-pkg".to_string(), package);
+
+        let result = ServiceMerger::merge_packages(&mut main_config, &packages);
+
+        assert!(result.is_err(), "Should detect circular package dependency");
+        assert!(
+            matches!(result.unwrap_err(), Error::CircularPackageDependency),
+            "Should return CircularPackageDependency error"
+        );
+    }
+
+    #[test]
+    fn test_package_service_without_extends_succeeds() {
+        // Normal case: service extends package service that has no further extends
+
+        let mut main_config = Config::default();
+
+        let local_service = Service {
+            extends: Some("db-pkg.postgres".to_string()),
+            environment: std::collections::HashMap::from([(
+                "EXTRA".to_string(),
+                "value".to_string(),
+            )]),
+            ..Default::default()
+        };
+        main_config
+            .services
+            .insert("my-db".to_string(), local_service);
+
+        let mut pkg_config = Config::default();
+        let pkg_service = Service {
+            image: Some("postgres:15".to_string()),
+            environment: std::collections::HashMap::from([(
+                "POSTGRES_DB".to_string(),
+                "app".to_string(),
+            )]),
+            extends: None, // No further extends - this is fine
+            ..Default::default()
+        };
+        pkg_config
+            .services
+            .insert("postgres".to_string(), pkg_service);
+
+        let package = Package {
+            alias: "db-pkg".to_string(),
+            source: crate::package::PackageSource::Local {
+                path: std::path::PathBuf::from("/fake/path"),
+            },
+            config: pkg_config,
+            path: std::path::PathBuf::from("/fake/path"),
+            metadata: crate::package::PackageMetadata {
+                name: None,
+                description: None,
+                version: None,
+                updated_at: chrono::Utc::now(),
+                checksum: None,
+            },
+        };
+
+        let mut packages = HashMap::new();
+        packages.insert("db-pkg".to_string(), package);
+
+        let result = ServiceMerger::merge_packages(&mut main_config, &packages);
+
+        assert!(result.is_ok(), "Should succeed when package service has no extends");
+
+        let merged = main_config.services.get("my-db").unwrap();
+        assert_eq!(merged.image.as_deref(), Some("postgres:15"));
+        assert_eq!(merged.environment.get("POSTGRES_DB").unwrap(), "app");
+        assert_eq!(merged.environment.get("EXTRA").unwrap(), "value");
+        assert!(merged.extends.is_none(), "extends should be cleared after merge");
+    }
 }
