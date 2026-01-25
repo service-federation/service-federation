@@ -174,17 +174,18 @@ services:
 
 See [`examples/templates-example.yaml`](./examples/templates-example.yaml) for a complete example.
 
-### Install and Clean Hooks
+### Lifecycle Hooks (Install, Build, Clean)
 
-Manage service setup and cleanup with lifecycle hooks:
+Manage service setup, build, and cleanup with lifecycle hooks:
 
 ```yaml
 services:
   backend:
     process: npm start
     cwd: ./backend
-    install: npm ci           # Run before first start
-    clean: rm -rf node_modules dist  # Run with `fed clean`
+    install: npm ci                   # Run before first start
+    build: npm run build              # Run with `fed build`
+    clean: rm -rf node_modules dist   # Run with `fed clean`
     environment:
       PORT: '{{API_PORT}}'
 
@@ -198,6 +199,11 @@ services:
 - Run before the service's first start (tracked to avoid re-running)
 - Run manually with `fed install` (forces re-run)
 - Cleared by `fed clean` (install will run again on next start)
+
+**Build hooks:**
+- Run with `fed build` (always runs, not tracked)
+- Useful for compiling code, bundling assets, generating artifacts
+- Runs in service's `cwd` with its `environment` variables
 
 **Clean hooks:**
 - Run custom cleanup commands (remove build artifacts, caches, etc.)
@@ -546,6 +552,8 @@ fed top                      # Show resource usage (CPU, memory, PID)
 # Build lifecycle
 fed install                  # Run install commands for all services
 fed install backend          # Run install for specific service
+fed build                    # Run build commands for all services
+fed build backend            # Build specific service
 fed clean                    # Run clean commands and remove Docker volumes
 fed clean backend            # Clean specific service
 
@@ -661,7 +669,7 @@ fed session cleanup
 - Session-based port allocation with TOCTOU race prevention
 - Parameter templating with port fallback
 - Service templates for reusable configurations
-- Install and clean lifecycle hooks
+- Lifecycle hooks (install, build, clean)
 - Resource limits (memory, CPU, PIDs, file descriptors)
 - Environment file (.env) support with strict variable checking
 - Scripts with service/script dependencies and argument passthrough
@@ -675,7 +683,6 @@ fed session cleanup
 **Roadmap:**
 - Remote dependencies (GitHub, Git sources)
 - TUI detail view enhancements
-- Script circular dependency detection at config validation time
 
 ## Contributing
 
