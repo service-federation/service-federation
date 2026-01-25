@@ -110,6 +110,11 @@ pub enum Commands {
         /// Services to clean (defaults to all services with clean field)
         services: Vec<String>,
     },
+    /// Run build commands for services
+    Build {
+        /// Services to build (defaults to all services with build field)
+        services: Vec<String>,
+    },
     /// Manage sessions
     #[command(subcommand)]
     Session(SessionCommands),

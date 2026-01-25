@@ -341,6 +341,9 @@ async fn run() -> anyhow::Result<()> {
         Commands::Clean { services } => {
             commands::run_clean(&orchestrator, &config, services).await?;
         }
+        Commands::Build { services } => {
+            commands::run_build(&orchestrator, &config, services).await?;
+        }
         Commands::Top { interval } => {
             commands::run_top(&orchestrator, interval).await?;
         }

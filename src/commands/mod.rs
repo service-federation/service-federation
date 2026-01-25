@@ -1,3 +1,4 @@
+mod build;
 mod clean;
 mod debug;
 mod doctor;
@@ -16,6 +17,7 @@ mod top;
 mod tui;
 mod validate;
 
+pub use build::run_build;
 pub use clean::run_clean;
 pub use debug::{run_debug, DebugCommand};
 pub use doctor::run_doctor;

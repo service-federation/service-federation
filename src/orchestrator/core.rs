@@ -533,6 +533,13 @@ impl Orchestrator {
         lifecycle.run_clean(service_name).await
     }
 
+    /// Run build command for a service.
+    pub async fn run_build(&self, service_name: &str) -> Result<()> {
+        let lifecycle =
+            crate::orchestrator::ServiceLifecycleCommands::new(&self.config, &self.work_dir);
+        lifecycle.run_build(service_name).await
+    }
+
     /// Start a specific service and its dependencies.
     ///
     /// This method is cancellable via `cancel_operations()` and respects

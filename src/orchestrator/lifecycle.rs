@@ -182,6 +182,101 @@ impl<'a> ServiceLifecycleCommands<'a> {
         Ok(())
     }
 
+    /// Run build command for a service.
+    ///
+    /// This runs the user-defined build command for the service. Build commands
+    /// are typically used for compiling code, bundling assets, or other build steps.
+    ///
+    /// Unlike install, build does not track whether the service has been built before,
+    /// so it will always run the build command.
+    ///
+    /// # Arguments
+    ///
+    /// * `service_name` - Name of the service to build
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Service not found in configuration
+    /// - Service has no build command defined
+    /// - Build command execution fails
+    /// - Build command returns non-zero exit code
+    pub async fn run_build(&self, service_name: &str) -> Result<()> {
+        // Get service config
+        let service_config = self
+            .config
+            .services
+            .get(service_name)
+            .ok_or_else(|| Error::ServiceNotFound(service_name.to_string()))?;
+
+        // Check if service has build command
+        let build_cmd = match &service_config.build {
+            Some(cmd) => cmd,
+            None => {
+                return Err(Error::Config(format!(
+                    "Service '{}' has no build command defined",
+                    service_name
+                )));
+            }
+        };
+
+        // Run build command
+        tracing::info!(
+            "Running build command for service '{}': {}",
+            service_name,
+            build_cmd
+        );
+
+        // Get working directory from service config, relative to orchestrator work_dir
+        let cwd = if let Some(ref service_cwd) = service_config.cwd {
+            let cwd_path = std::path::Path::new(service_cwd);
+            if cwd_path.is_absolute() {
+                cwd_path.to_path_buf()
+            } else {
+                self.work_dir.join(service_cwd)
+            }
+        } else {
+            self.work_dir.to_path_buf()
+        };
+
+        // Get environment variables
+        let mut env_vars = std::collections::HashMap::new();
+        for (key, value) in &service_config.environment {
+            env_vars.insert(key.clone(), value.clone());
+        }
+
+        // Run the build command with streaming output
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(build_cmd)
+            .current_dir(cwd)
+            .envs(&env_vars)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .await
+            .map_err(|e| {
+                Error::Config(format!(
+                    "Failed to execute build command for '{}': {}",
+                    service_name, e
+                ))
+            })?;
+
+        if !status.success() {
+            return Err(Error::Config(format!(
+                "Build command failed for '{}'",
+                service_name
+            )));
+        }
+
+        tracing::info!(
+            "Successfully completed build for service '{}'",
+            service_name
+        );
+        Ok(())
+    }
+
     /// Run clean command for a service.
     ///
     /// This will:

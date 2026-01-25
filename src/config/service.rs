@@ -26,6 +26,10 @@ pub struct Service {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clean: Option<String>,
 
+    /// Command to build the service (e.g., "npm run build", "cargo build --release")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process: Option<String>,
 
