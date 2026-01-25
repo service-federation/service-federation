@@ -209,8 +209,7 @@ impl Config {
                 // Script→service edges are valid and don't create script cycles
                 if self.scripts.contains_key(dep) {
                     if !visited.contains(dep) {
-                        if let Some(cycle) = self.find_script_cycle(dep, visited, rec_stack, path)
-                        {
+                        if let Some(cycle) = self.find_script_cycle(dep, visited, rec_stack, path) {
                             return Some(cycle);
                         }
                     } else if rec_stack.contains(dep) {
@@ -821,10 +820,7 @@ mod tests {
 
         let result = config.validate();
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::CircularDependency(_)
-        ));
+        assert!(matches!(result.unwrap_err(), Error::CircularDependency(_)));
     }
 
     #[test]

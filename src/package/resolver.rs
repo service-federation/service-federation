@@ -902,8 +902,12 @@ services:
         let resolver = PackageResolver::new(temp_dir.path()).unwrap();
 
         // Parse two references to the same GitHub package at different versions
-        let source1 = resolver.parse_source("github:corp/shared-pkg@v1.0").unwrap();
-        let source2 = resolver.parse_source("github:corp/shared-pkg@v2.0").unwrap();
+        let source1 = resolver
+            .parse_source("github:corp/shared-pkg@v1.0")
+            .unwrap();
+        let source2 = resolver
+            .parse_source("github:corp/shared-pkg@v2.0")
+            .unwrap();
 
         // Both should have the same identity
         assert_eq!(source1.identity(), source2.identity());

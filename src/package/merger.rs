@@ -770,12 +770,18 @@ mod tests {
 
         let result = ServiceMerger::merge_packages(&mut main_config, &packages);
 
-        assert!(result.is_ok(), "Should succeed when package service has no extends");
+        assert!(
+            result.is_ok(),
+            "Should succeed when package service has no extends"
+        );
 
         let merged = main_config.services.get("my-db").unwrap();
         assert_eq!(merged.image.as_deref(), Some("postgres:15"));
         assert_eq!(merged.environment.get("POSTGRES_DB").unwrap(), "app");
         assert_eq!(merged.environment.get("EXTRA").unwrap(), "value");
-        assert!(merged.extends.is_none(), "extends should be cleared after merge");
+        assert!(
+            merged.extends.is_none(),
+            "extends should be cleared after merge"
+        );
     }
 }
