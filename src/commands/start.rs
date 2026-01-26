@@ -36,36 +36,52 @@ pub async fn run_start(
         return run_dry_run(orchestrator, config, services_to_start).await;
     }
 
-    // If --replace is set, kill any processes occupying required ports
+    // If --replace is set, first stop any fed-managed services gracefully,
+    // then kill any remaining external processes occupying required ports
     if replace {
-        let mut freed_any = false;
-        let params = orchestrator.get_resolved_parameters();
-
-        for name in orchestrator.get_port_parameter_names() {
-            let Some(value) = params.get(name) else {
-                continue;
-            };
-            let Ok(port) = value.parse::<u16>() else {
-                continue;
-            };
-            let Some(conflict) = PortConflict::check(port) else {
-                continue;
-            };
-
-            print!("Freeing port {} ({})... ", port, name);
-            match conflict.free_port() {
-                Ok(msg) => {
-                    println!("{}", msg);
-                    freed_any = true;
-                }
-                Err(e) => {
-                    println!("\x1b[31mfailed: {}\x1b[0m", e);
-                }
-            }
+        // First, gracefully stop services from previous sessions
+        let stopped_services = stop_previous_session_services(orchestrator).await;
+        if stopped_services > 0 {
+            println!(
+                "Stopped {} service(s) from previous session\n",
+                stopped_services
+            );
+            // Give a moment for ports to be fully released
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
-        if freed_any {
-            println!();
+        // Only try to free ports if we didn't stop any fed services
+        // (if we did, the ports should be available now, or in TIME_WAIT briefly)
+        let mut freed_any = false;
+        if stopped_services == 0 {
+            let params = orchestrator.get_resolved_parameters();
+
+            for name in orchestrator.get_port_parameter_names() {
+                let Some(value) = params.get(name) else {
+                    continue;
+                };
+                let Ok(port) = value.parse::<u16>() else {
+                    continue;
+                };
+                let Some(conflict) = PortConflict::check(port) else {
+                    continue;
+                };
+
+                print!("Freeing port {} ({})... ", port, name);
+                match conflict.free_port() {
+                    Ok(msg) => {
+                        println!("{}", msg);
+                        freed_any = true;
+                    }
+                    Err(e) => {
+                        println!("\x1b[31mfailed: {}\x1b[0m", e);
+                    }
+                }
+            }
+
+            if freed_any {
+                println!();
+            }
         }
     }
 
@@ -723,6 +739,170 @@ fn mask_sensitive_value(key: &str, value: &str) -> String {
     }
 
     value.to_string()
+}
+
+/// Stop services from a previous fed session gracefully.
+///
+/// This is called by `--replace` to cleanly stop fed-managed services
+/// before killing any remaining external processes.
+///
+/// Returns the number of services stopped.
+async fn stop_previous_session_services(orchestrator: &Orchestrator) -> usize {
+    let services = orchestrator.state_tracker.read().await.get_services().await;
+
+    if services.is_empty() {
+        return 0;
+    }
+
+    let mut stopped = 0;
+
+    for (name, state) in &services {
+        // Skip services that aren't running
+        if state.status != "running" && state.status != "healthy" {
+            continue;
+        }
+
+        print!("Stopping {} ({})... ", name, state.service_type);
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        let success = if let Some(ref container_id) = state.container_id {
+            // Docker service - stop and remove container
+            graceful_docker_stop(container_id).await
+        } else if let Some(pid) = state.pid {
+            // Process service - graceful kill
+            graceful_process_kill(pid).await
+        } else {
+            // No PID or container - nothing to stop
+            println!("skipped (no PID/container)");
+            continue;
+        };
+
+        if success {
+            println!("stopped");
+            stopped += 1;
+        } else {
+            println!("\x1b[33mfailed\x1b[0m");
+        }
+    }
+
+    // Clear the state tracker so we start fresh
+    if stopped > 0 {
+        if let Err(e) = orchestrator.state_tracker.write().await.clear().await {
+            tracing::warn!("Failed to clear state after stopping services: {}", e);
+        }
+    }
+
+    stopped
+}
+
+/// Gracefully stop a Docker container.
+///
+/// Tries `docker stop` first (sends SIGTERM, waits), then `docker rm -f`.
+async fn graceful_docker_stop(container_id: &str) -> bool {
+    use std::process::Command;
+
+    // Try graceful stop first (SIGTERM with 10 second timeout)
+    let stop_result = Command::new("docker")
+        .args(["stop", "-t", "10", container_id])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    if let Ok(status) = stop_result {
+        if status.success() {
+            // Remove the stopped container
+            let _ = Command::new("docker")
+                .args(["rm", "-f", container_id])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            return true;
+        }
+    }
+
+    // Fallback: force remove
+    let rm_result = Command::new("docker")
+        .args(["rm", "-f", container_id])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    rm_result.map(|s| s.success()).unwrap_or(false)
+}
+
+/// Gracefully kill a process.
+///
+/// Sends SIGTERM first, waits up to 5 seconds, then sends SIGKILL.
+async fn graceful_process_kill(pid: u32) -> bool {
+    use std::process::Command;
+    use std::time::Duration;
+
+    // Check if process exists first
+    let exists = Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !exists {
+        // Process already dead
+        return true;
+    }
+
+    // Send SIGTERM
+    let term_result = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    if term_result.is_err() {
+        return false;
+    }
+
+    // Wait for process to exit (up to 5 seconds)
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let still_exists = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !still_exists {
+            return true;
+        }
+    }
+
+    // Process didn't exit, send SIGKILL
+    let kill_result = Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    // Wait a bit more for SIGKILL to take effect
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Check if finally dead
+    let dead = !Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if kill_result.is_ok() && dead {
+        return true;
+    }
+
+    false
 }
 
 #[cfg(test)]
