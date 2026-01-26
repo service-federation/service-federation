@@ -51,8 +51,15 @@ impl Config {
                 // They will be validated when external configs are loaded
                 if dep.is_simple() && !self.services.contains_key(dep_name) {
                     return Err(Error::Validation(format!(
-                        "Service '{}' depends on non-existent service '{}'",
-                        name, dep_name
+                        "Service '{}' depends on non-existent service '{}'\n\n\
+                        ╭─────────────────────────────────────────────────────────────╮\n\
+                        │ Did you remove '{}'? Update the depends_on list:  │\n\
+                        ╰─────────────────────────────────────────────────────────────╯\n\n\
+                        services:\n  \
+                          {}:\n    \
+                            depends_on:\n      \
+                              - {}  # ← remove this line",
+                        name, dep_name, dep_name, name, dep_name
                     )));
                 }
             }
@@ -79,8 +86,15 @@ impl Config {
             for dep in &script.depends_on {
                 if !self.services.contains_key(dep) && !self.scripts.contains_key(dep) {
                     return Err(Error::Validation(format!(
-                        "Script '{}' depends on non-existent service or script '{}'",
-                        script_name, dep
+                        "Script '{}' depends on non-existent service or script '{}'\n\n\
+                        ╭─────────────────────────────────────────────────────────────╮\n\
+                        │ Did you remove '{}'? Update the depends_on list:  │\n\
+                        ╰─────────────────────────────────────────────────────────────╯\n\n\
+                        scripts:\n  \
+                          {}:\n    \
+                            depends_on:\n      \
+                              - {}  # ← remove this line",
+                        script_name, dep, dep, script_name, dep
                     )));
                 }
             }
