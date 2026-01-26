@@ -208,6 +208,26 @@ pub async fn run_start(
             }
         }
 
+        // Collect names of running/healthy services to match against process names
+        // This helps identify when our own services are holding ports
+        let running_services: std::collections::HashSet<String> = status
+            .iter()
+            .filter(|(_, s)| matches!(s, Status::Running | Status::Healthy))
+            .map(|(name, _)| name.to_lowercase())
+            .collect();
+
+        // Check if any Docker services are running (to skip com.docker.backend as "conflict")
+        let has_running_docker_services = orchestrator.has_docker_services()
+            && running_services
+                .iter()
+                .any(|name| orchestrator.is_docker_service(name));
+
+        // Check if any process-based services are running (non-Docker, non-Gradle)
+        // These typically run as node/npm/bun/python/java etc.
+        let has_running_process_services = running_services
+            .iter()
+            .any(|name| orchestrator.is_process_service(name));
+
         for param_name in orchestrator.get_port_parameter_names() {
             let Some(param_value) = params.get(param_name) else {
                 continue;
@@ -220,10 +240,41 @@ pub async fn run_start(
             };
 
             for process in &conflict.processes {
-                // Skip if this is a fed-managed service
+                // Skip if this is a fed-managed service (by PID)
                 if managed_pids.contains(&process.pid) {
                     continue;
                 }
+
+                // Skip Docker daemon if we have running Docker services
+                // (it holds ports on behalf of containers)
+                let name_lower = process.name.to_lowercase();
+                if has_running_docker_services
+                    && (name_lower.contains("docker") || name_lower.contains("com.docker"))
+                {
+                    continue;
+                }
+
+                // Skip if process name matches a running service name
+                // (handles forked processes and containers)
+                let matches_service = running_services
+                    .iter()
+                    .any(|svc| name_lower.contains(svc) || svc.contains(&name_lower));
+                if matches_service {
+                    continue;
+                }
+
+                // Skip common runtime processes if we have running process services
+                // (node/npm/bun for JS, python for Python, java for JVM, etc.)
+                const COMMON_RUNTIMES: &[&str] = &[
+                    "node", "npm", "npx", "bun", "deno", "python", "python3", "java", "gradle",
+                    "ruby", "go", "cargo", "rust",
+                ];
+                if has_running_process_services
+                    && COMMON_RUNTIMES.iter().any(|rt| name_lower == *rt)
+                {
+                    continue;
+                }
+
                 port_conflicts.push((
                     param_name.clone(),
                     port,

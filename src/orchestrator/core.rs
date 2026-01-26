@@ -1050,6 +1050,32 @@ impl Orchestrator {
         self.resolver.get_port_parameter_names()
     }
 
+    /// Check if any services in the config are Docker-based.
+    pub fn has_docker_services(&self) -> bool {
+        self.config
+            .services
+            .values()
+            .any(|svc| svc.image.is_some())
+    }
+
+    /// Check if a specific service is Docker-based (has an image).
+    pub fn is_docker_service(&self, name: &str) -> bool {
+        self.config
+            .services
+            .get(name)
+            .map(|svc| svc.image.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Check if a specific service is process-based (has a process command).
+    pub fn is_process_service(&self, name: &str) -> bool {
+        self.config
+            .services
+            .get(name)
+            .map(|svc| svc.process.is_some())
+            .unwrap_or(false)
+    }
+
     /// Get cloned services Arc for external access (e.g., signal handlers)
     pub fn get_services_arc(&self) -> SharedServiceRegistry {
         Arc::clone(&self.services)
