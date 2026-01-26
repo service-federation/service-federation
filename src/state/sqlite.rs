@@ -144,6 +144,99 @@ impl SqliteStateTracker {
         }
     }
 
+    /// Clone the database connection handle.
+    ///
+    /// This can be used to perform read operations without holding the outer RwLock,
+    /// since tokio_rusqlite::Connection is internally thread-safe and Clone.
+    /// Useful for avoiding lock contention during long-running queries.
+    pub fn clone_connection(&self) -> Connection {
+        self.conn.clone()
+    }
+
+    /// Fetch all services from the database using a cloned connection.
+    ///
+    /// This static method allows fetching services without borrowing `&self`,
+    /// enabling the caller to release any outer locks before the async query.
+    pub async fn fetch_services_from_connection(conn: &Connection) -> HashMap<String, ServiceState> {
+        match conn
+            .call(|conn: &mut rusqlite::Connection| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures FROM services"
+                )?;
+
+                let services_iter = stmt.query_map([], |row| {
+                    let id: String = row.get(0)?;
+                    let started_at_str: String = row.get(5)?;
+                    let last_restart_str: Option<String> = row.get(9)?;
+
+                    Ok((
+                        id.clone(),
+                        ServiceState {
+                            id,
+                            status: row.get(1)?,
+                            service_type: row.get(2)?,
+                            pid: row.get(3)?,
+                            container_id: row.get(4)?,
+                            started_at: started_at_str
+                                .parse::<DateTime<Utc>>()
+                                .unwrap_or_else(|_| Utc::now()),
+                            external_repo: row.get(6)?,
+                            namespace: row.get(7)?,
+                            restart_count: row.get(8)?,
+                            last_restart_at: last_restart_str
+                                .and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+                            consecutive_failures: row.get(10)?,
+                            port_allocations: HashMap::new(),
+                        },
+                    ))
+                })?;
+
+                let mut services: HashMap<String, ServiceState> = services_iter
+                    .filter_map(|r| r.ok())
+                    .collect();
+
+                // Validate PIDs - filter out invalid ones (don't delete, just skip)
+                services.retain(|service_id, service_state| {
+                    if let Some(pid) = service_state.pid {
+                        if pid > i32::MAX as u32 || pid == 0 {
+                            warn!(
+                                "Service '{}' has invalid PID {} (exceeds i32::MAX or is 0), skipping",
+                                service_id, pid
+                            );
+                            return false;
+                        }
+                    }
+                    true
+                });
+
+                // Load port allocations for each service
+                for (service_id, service) in services.iter_mut() {
+                    let mut port_stmt = conn.prepare(
+                        "SELECT parameter_name, port FROM port_allocations WHERE service_id = ?1"
+                    )?;
+
+                    let ports: HashMap<String, u16> = port_stmt
+                        .query_map(rusqlite::params![service_id], |row| {
+                            Ok((row.get(0)?, row.get(1)?))
+                        })?
+                        .filter_map(|r| r.ok())
+                        .collect();
+
+                    service.port_allocations = ports;
+                }
+
+                Ok(services)
+            })
+            .await
+        {
+            Ok(services) => services,
+            Err(e) => {
+                warn!("Failed to fetch services: {}", e);
+                HashMap::new()
+            }
+        }
+    }
+
     /// Execute a function within a transaction, automatically updating the lock file timestamp and committing.
     /// This reduces boilerplate across all transaction-based methods.
     #[tracing::instrument(skip(self, f), fields(operation = "db_transaction"))]
