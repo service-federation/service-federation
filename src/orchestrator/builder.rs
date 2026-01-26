@@ -188,16 +188,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_creates_orchestrator() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let config = Config::default();
-        let result = OrchestratorBuilder::new().config(config).build().await;
+        let result = OrchestratorBuilder::new()
+            .config(config)
+            .work_dir(temp_dir.path().to_path_buf())
+            .build()
+            .await;
         assert!(result.is_ok(), "Builder failed: {:?}", result.err());
     }
 
     #[tokio::test]
     async fn test_builder_fluent_api() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let config = Config::default();
         let result = OrchestratorBuilder::new()
             .config(config)
+            .work_dir(temp_dir.path().to_path_buf())
             .output_mode(OutputMode::Captured)
             .auto_resolve_conflicts(true)
             .build()
