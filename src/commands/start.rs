@@ -38,52 +38,33 @@ pub async fn run_start(
 
     // If --replace is set, kill any processes occupying required ports
     if replace {
+        let mut freed_any = false;
         let params = orchestrator.get_resolved_parameters();
-        let mut any_conflicts = false;
-        let current_pid = std::process::id();
 
-        for (name, value) in params {
-            // Check if this looks like a port parameter (ends with _PORT or is all numbers)
-            if name.ends_with("_PORT") || name.ends_with("_port") || name.parse::<u16>().is_ok() {
-                if let Ok(port) = value.parse::<u16>() {
-                    if let Some(conflict) = PortConflict::check(port) {
-                        // Filter out ourselves from the process list for display
-                        let other_processes: Vec<_> = conflict
-                            .processes
-                            .iter()
-                            .filter(|p| p.pid != current_pid)
-                            .collect();
+        for name in orchestrator.get_port_parameter_names() {
+            let Some(value) = params.get(name) else {
+                continue;
+            };
+            let Ok(port) = value.parse::<u16>() else {
+                continue;
+            };
+            let Some(conflict) = PortConflict::check(port) else {
+                continue;
+            };
 
-                        if other_processes.is_empty() {
-                            // Port is in use but only by ourselves - this is normal (we're reserving it)
-                            continue;
-                        }
-
-                        any_conflicts = true;
-
-                        // Print all processes we're about to kill (excluding ourselves)
-                        for process in &other_processes {
-                            println!(
-                                "Killing process '{}' (PID {}) occupying port {} ({})",
-                                process.name, process.pid, port, name
-                            );
-                        }
-
-                        // Kill and verify with retries
-                        match conflict.kill_and_verify(3) {
-                            Ok(()) => {
-                                println!("  Port {} freed successfully", port);
-                            }
-                            Err(e) => {
-                                eprintln!("\x1b[31mError: {}\x1b[0m", e);
-                            }
-                        }
-                    }
+            print!("Freeing port {} ({})... ", port, name);
+            match conflict.free_port() {
+                Ok(msg) => {
+                    println!("{}", msg);
+                    freed_any = true;
+                }
+                Err(e) => {
+                    println!("\x1b[31mfailed: {}\x1b[0m", e);
                 }
             }
         }
 
-        if any_conflicts {
+        if freed_any {
             println!();
         }
     }
@@ -227,34 +208,37 @@ pub async fn run_start(
             }
         }
 
-        for (param_name, param_value) in params.iter() {
-            // Check if this is a port parameter
-            if param_name.ends_with("_PORT") || param_name.ends_with("_port") {
-                if let Ok(port) = param_value.parse::<u16>() {
-                    if let Some(conflict) = PortConflict::check(port) {
-                        for process in &conflict.processes {
-                            // Skip if this is a fed-managed service
-                            if managed_pids.contains(&process.pid) {
-                                continue;
-                            }
-                            port_conflicts.push((
-                                param_name.clone(),
-                                port,
-                                process.name.clone(),
-                                Some(process.pid),
-                            ));
-                        }
-                        // Only report unknown if no processes found at all
-                        if conflict.processes.is_empty() {
-                            port_conflicts.push((
-                                param_name.clone(),
-                                port,
-                                "unknown".to_string(),
-                                None,
-                            ));
-                        }
-                    }
+        for param_name in orchestrator.get_port_parameter_names() {
+            let Some(param_value) = params.get(param_name) else {
+                continue;
+            };
+            let Ok(port) = param_value.parse::<u16>() else {
+                continue;
+            };
+            let Some(conflict) = PortConflict::check(port) else {
+                continue;
+            };
+
+            for process in &conflict.processes {
+                // Skip if this is a fed-managed service
+                if managed_pids.contains(&process.pid) {
+                    continue;
                 }
+                port_conflicts.push((
+                    param_name.clone(),
+                    port,
+                    process.name.clone(),
+                    Some(process.pid),
+                ));
+            }
+            // Only report unknown if no processes found at all
+            if conflict.processes.is_empty() {
+                port_conflicts.push((
+                    param_name.clone(),
+                    port,
+                    "unknown".to_string(),
+                    None,
+                ));
             }
         }
 
@@ -533,37 +517,34 @@ async fn run_dry_run(
     // 4. Check for port conflicts
     println!("\nPort availability:");
     let mut conflicts_found = false;
-    let mut checked_ports = std::collections::HashSet::new();
+    let port_params = orchestrator.get_port_parameter_names();
 
-    for (name, value) in params.iter() {
-        if name.ends_with("_PORT") || name.ends_with("_port") {
-            if let Ok(port) = value.parse::<u16>() {
-                // Avoid checking the same port multiple times
-                if checked_ports.contains(&port) {
-                    continue;
-                }
-                checked_ports.insert(port);
+    for name in port_params {
+        let Some(value) = params.get(name) else {
+            continue;
+        };
+        let Ok(port) = value.parse::<u16>() else {
+            continue;
+        };
 
-                if let Some(conflict) = PortConflict::check(port) {
-                    conflicts_found = true;
-                    println!("  [CONFLICT] Port {} ({}):", port, name);
-                    if conflict.processes.is_empty() {
-                        println!("    - Port in use by unknown process");
-                    } else {
-                        for process in &conflict.processes {
-                            println!("    - '{}' (PID {})", process.name, process.pid);
-                        }
-                    }
-                } else {
-                    println!("  [OK] Port {} ({}) is available", port, name);
+        if let Some(conflict) = PortConflict::check(port) {
+            conflicts_found = true;
+            println!("  [CONFLICT] Port {} ({}):", port, name);
+            if conflict.processes.is_empty() {
+                println!("    - Port in use by unknown process");
+            } else {
+                for process in &conflict.processes {
+                    println!("    - '{}' (PID {})", process.name, process.pid);
                 }
             }
+        } else {
+            println!("  [OK] Port {} ({}) is available", port, name);
         }
     }
-    if !conflicts_found && checked_ports.is_empty() {
+    if !conflicts_found && port_params.is_empty() {
         println!("  No port parameters detected");
     } else if !conflicts_found {
-        println!("  All {} port(s) available", checked_ports.len());
+        println!("  All {} port(s) available", port_params.len());
     }
 
     // 5. Show environment variables per service (mask sensitive values)
