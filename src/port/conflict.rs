@@ -66,9 +66,18 @@ impl PortConflict {
 
     #[cfg(target_os = "macos")]
     fn find_processes_macos(port: u16) -> Vec<ProcessInfo> {
-        // Use lsof to find ALL processes on macOS
+        // Use lsof to find LISTENING processes on macOS
+        // -sTCP:LISTEN filters to only show listeners, not clients
         let output = match Command::new("lsof")
-            .args(["-i", &format!(":{}", port), "-P", "-n", "-F", "pcn"])
+            .args([
+                "-i",
+                &format!(":{}", port),
+                "-P",
+                "-n",
+                "-sTCP:LISTEN",
+                "-F",
+                "pcn",
+            ])
             .output()
         {
             Ok(o) => o,
@@ -194,8 +203,17 @@ impl PortConflict {
 
     #[cfg(target_os = "linux")]
     fn find_processes_linux_lsof(port: u16) -> Vec<ProcessInfo> {
+        // -sTCP:LISTEN filters to only show listeners, not clients
         let output = match Command::new("lsof")
-            .args(["-i", &format!(":{}", port), "-P", "-n", "-F", "pcn"])
+            .args([
+                "-i",
+                &format!(":{}", port),
+                "-P",
+                "-n",
+                "-sTCP:LISTEN",
+                "-F",
+                "pcn",
+            ])
             .output()
         {
             Ok(o) => o,
@@ -324,26 +342,49 @@ impl PortConflict {
     }
 
     /// Find Docker containers bound to a specific port.
+    ///
+    /// This lists all containers and parses their port mappings to find ones
+    /// that have the target port published on the host.
     fn find_docker_containers_on_port(port: u16) -> Vec<String> {
+        // Get container names and port mappings (tab-separated)
         let output = match Command::new("docker")
-            .args([
-                "ps",
-                "--filter",
-                &format!("publish={}", port),
-                "--format",
-                "{{.Names}}",
-            ])
+            .args(["ps", "--format", "{{.Names}}\t{{.Ports}}"])
             .output()
         {
             Ok(o) if o.status.success() => o,
             _ => return Vec::new(),
         };
 
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect()
+        let port_str = port.to_string();
+        let mut containers = Vec::new();
+
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let parts: Vec<&str> = line.splitn(2, '\t').collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let name = parts[0];
+            let ports = parts[1];
+
+            // Port mappings look like: "0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp"
+            // We need to match the host port (before "->")
+            for mapping in ports.split(", ") {
+                // Extract the host port: "0.0.0.0:5433->5432/tcp" -> "5433"
+                if let Some(arrow_pos) = mapping.find("->") {
+                    let host_part = &mapping[..arrow_pos];
+                    // Host part is "0.0.0.0:5433" or "[::]:5433" - get port after last ':'
+                    if let Some(colon_pos) = host_part.rfind(':') {
+                        let host_port = &host_part[colon_pos + 1..];
+                        if host_port == port_str {
+                            containers.push(name.to_string());
+                            break; // Found this container, move to next
+                        }
+                    }
+                }
+            }
+        }
+
+        containers
     }
 
     /// Kill ALL processes using the port (except the current process)
@@ -364,15 +405,30 @@ impl PortConflict {
                     continue;
                 }
 
+                // Use output() to capture stderr and suppress "No such process" noise
+                // when processes exit between detection and kill (race condition)
                 let result = Command::new("kill")
                     .arg(process.pid.to_string())
-                    .status()
+                    .stderr(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .output()
                     .map_err(|e| format!("Failed to kill process {}: {}", process.pid, e))
-                    .and_then(|status| {
-                        if status.success() {
+                    .and_then(|output| {
+                        if output.status.success() {
                             Ok(())
                         } else {
-                            Err(format!("kill exited with status: {}", status))
+                            // Check if it's just "No such process" (ESRCH) - treat as success
+                            // since the process is gone which is what we wanted
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            if stderr.contains("No such process") {
+                                tracing::debug!(
+                                    "Process {} already exited before kill",
+                                    process.pid
+                                );
+                                Ok(())
+                            } else {
+                                Err(format!("kill failed: {}", stderr.trim()))
+                            }
                         }
                     });
                 results.push((process.pid, result));
