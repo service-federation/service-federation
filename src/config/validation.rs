@@ -50,16 +50,21 @@ impl Config {
                 // For external dependencies, we can't validate at config load time
                 // They will be validated when external configs are loaded
                 if dep.is_simple() && !self.services.contains_key(dep_name) {
+                    // Build a dynamically-sized hint box
+                    let hint_text = format!("Did you remove '{}'? Update the depends_on list:", dep_name);
+                    let box_width = hint_text.len() + 2; // +2 for padding
+                    let border = "─".repeat(box_width);
+
                     return Err(Error::Validation(format!(
                         "Service '\x1b[1;36m{}\x1b[0m' depends on non-existent service '\x1b[1;31m{}\x1b[0m'\n\n\
-                        \x1b[33m╭─────────────────────────────────────────────────────────────╮\x1b[0m\n\
-                        \x1b[33m│\x1b[0m Did you remove '\x1b[1m{}\x1b[0m'? Update the depends_on list:    \x1b[33m│\x1b[0m\n\
-                        \x1b[33m╰─────────────────────────────────────────────────────────────╯\x1b[0m\n\n\
+                        \x1b[33m╭{}╮\x1b[0m\n\
+                        \x1b[33m│\x1b[0m {} \x1b[33m│\x1b[0m\n\
+                        \x1b[33m╰{}╯\x1b[0m\n\n\
                         \x1b[36mservices:\n  \
                           {}:\n    \
                             depends_on:\n      \
                               - {}\x1b[0m  \x1b[31m# ← remove this line\x1b[0m",
-                        name, dep_name, dep_name, name, dep_name
+                        name, dep_name, border, hint_text, border, name, dep_name
                     )));
                 }
             }
@@ -85,16 +90,20 @@ impl Config {
         for (script_name, script) in &self.scripts {
             for dep in &script.depends_on {
                 if !self.services.contains_key(dep) && !self.scripts.contains_key(dep) {
+                    let hint_text = format!("Did you remove '{}'? Update the depends_on list:", dep);
+                    let box_width = hint_text.len() + 2;
+                    let border = "─".repeat(box_width);
+
                     return Err(Error::Validation(format!(
                         "Script '\x1b[1;36m{}\x1b[0m' depends on non-existent service or script '\x1b[1;31m{}\x1b[0m'\n\n\
-                        \x1b[33m╭─────────────────────────────────────────────────────────────╮\x1b[0m\n\
-                        \x1b[33m│\x1b[0m Did you remove '\x1b[1m{}\x1b[0m'? Update the depends_on list:    \x1b[33m│\x1b[0m\n\
-                        \x1b[33m╰─────────────────────────────────────────────────────────────╯\x1b[0m\n\n\
+                        \x1b[33m╭{}╮\x1b[0m\n\
+                        \x1b[33m│\x1b[0m {} \x1b[33m│\x1b[0m\n\
+                        \x1b[33m╰{}╯\x1b[0m\n\n\
                         \x1b[36mscripts:\n  \
                           {}:\n    \
                             depends_on:\n      \
                               - {}\x1b[0m  \x1b[31m# ← remove this line\x1b[0m",
-                        script_name, dep, dep, script_name, dep
+                        script_name, dep, border, hint_text, border, script_name, dep
                     )));
                 }
             }
