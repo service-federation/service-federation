@@ -51,14 +51,14 @@ impl Config {
                 // They will be validated when external configs are loaded
                 if dep.is_simple() && !self.services.contains_key(dep_name) {
                     return Err(Error::Validation(format!(
-                        "Service '{}' depends on non-existent service '{}'\n\n\
-                        ╭─────────────────────────────────────────────────────────────╮\n\
-                        │ Did you remove '{}'? Update the depends_on list:  │\n\
-                        ╰─────────────────────────────────────────────────────────────╯\n\n\
-                        services:\n  \
+                        "Service '\x1b[1;36m{}\x1b[0m' depends on non-existent service '\x1b[1;31m{}\x1b[0m'\n\n\
+                        \x1b[33m╭─────────────────────────────────────────────────────────────╮\x1b[0m\n\
+                        \x1b[33m│\x1b[0m Did you remove '\x1b[1m{}\x1b[0m'? Update the depends_on list:    \x1b[33m│\x1b[0m\n\
+                        \x1b[33m╰─────────────────────────────────────────────────────────────╯\x1b[0m\n\n\
+                        \x1b[36mservices:\n  \
                           {}:\n    \
                             depends_on:\n      \
-                              - {}  # ← remove this line",
+                              - {}\x1b[0m  \x1b[31m# ← remove this line\x1b[0m",
                         name, dep_name, dep_name, name, dep_name
                     )));
                 }
@@ -86,14 +86,14 @@ impl Config {
             for dep in &script.depends_on {
                 if !self.services.contains_key(dep) && !self.scripts.contains_key(dep) {
                     return Err(Error::Validation(format!(
-                        "Script '{}' depends on non-existent service or script '{}'\n\n\
-                        ╭─────────────────────────────────────────────────────────────╮\n\
-                        │ Did you remove '{}'? Update the depends_on list:  │\n\
-                        ╰─────────────────────────────────────────────────────────────╯\n\n\
-                        scripts:\n  \
+                        "Script '\x1b[1;36m{}\x1b[0m' depends on non-existent service or script '\x1b[1;31m{}\x1b[0m'\n\n\
+                        \x1b[33m╭─────────────────────────────────────────────────────────────╮\x1b[0m\n\
+                        \x1b[33m│\x1b[0m Did you remove '\x1b[1m{}\x1b[0m'? Update the depends_on list:    \x1b[33m│\x1b[0m\n\
+                        \x1b[33m╰─────────────────────────────────────────────────────────────╯\x1b[0m\n\n\
+                        \x1b[36mscripts:\n  \
                           {}:\n    \
                             depends_on:\n      \
-                              - {}  # ← remove this line",
+                              - {}\x1b[0m  \x1b[31m# ← remove this line\x1b[0m",
                         script_name, dep, dep, script_name, dep
                     )));
                 }
