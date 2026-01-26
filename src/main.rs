@@ -347,9 +347,6 @@ async fn run() -> anyhow::Result<()> {
         Commands::Top { interval } => {
             commands::run_top(&orchestrator, interval).await?;
         }
-        Commands::Port { service } => {
-            commands::run_port(&orchestrator, &service).await?;
-        }
         // These are handled earlier
         Commands::Session(_)
         | Commands::Package(_)

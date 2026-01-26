@@ -1045,6 +1045,11 @@ impl Orchestrator {
         self.resolver.get_resolved_parameters().clone()
     }
 
+    /// Get names of parameters with `type: port`.
+    pub fn get_port_parameter_names(&self) -> &[String] {
+        self.resolver.get_port_parameter_names()
+    }
+
     /// Get cloned services Arc for external access (e.g., signal handlers)
     pub fn get_services_arc(&self) -> SharedServiceRegistry {
         Arc::clone(&self.services)

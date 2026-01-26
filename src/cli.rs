@@ -138,11 +138,6 @@ pub enum Commands {
         #[arg(value_name = "SHELL")]
         shell: clap_complete::Shell,
     },
-    /// Show port for a service
-    Port {
-        /// Service name
-        service: String,
-    },
     /// Check system requirements (Docker, Gradle, etc.)
     Doctor,
     /// Show resource usage for all services

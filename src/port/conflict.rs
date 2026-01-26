@@ -13,6 +13,14 @@ pub struct ProcessInfo {
     pub command: Option<String>,
 }
 
+/// Check if a process name indicates Docker is holding the port.
+/// On macOS, Docker Desktop reports as "com.docker.backend".
+/// On Linux, Docker uses "docker-proxy" for port forwarding.
+fn is_docker_process(name: &str) -> bool {
+    let name_lower = name.to_lowercase();
+    name_lower.contains("docker") || name_lower.contains("com.docker")
+}
+
 impl PortConflict {
     /// Check if a port is in use and return conflict info
     pub fn check(port: u16) -> Option<Self> {
@@ -240,6 +248,104 @@ impl PortConflict {
         processes
     }
 
+    /// Free the port by stopping whatever is using it.
+    /// Handles both Docker containers and regular processes.
+    /// Returns a description of what was stopped, or an error.
+    pub fn free_port(&self) -> std::result::Result<String, String> {
+        let current_pid = std::process::id();
+        let other_processes: Vec<_> = self
+            .processes
+            .iter()
+            .filter(|p| p.pid != current_pid)
+            .collect();
+
+        if other_processes.is_empty() {
+            return Ok("port already available".to_string());
+        }
+
+        // Check if Docker is holding the port
+        let is_docker = other_processes.iter().any(|p| is_docker_process(&p.name));
+
+        if is_docker {
+            return self.free_docker_port();
+        }
+
+        // Regular processes - kill them
+        let names: Vec<_> = other_processes
+            .iter()
+            .map(|p| format!("'{}' (PID {})", p.name, p.pid))
+            .collect();
+
+        self.kill_and_verify(3)?;
+        Ok(format!("killed {}", names.join(", ")))
+    }
+
+    /// Free a port held by Docker containers.
+    fn free_docker_port(&self) -> std::result::Result<String, String> {
+        let containers = Self::find_docker_containers_on_port(self.port);
+
+        if containers.is_empty() {
+            return Err(format!(
+                "port {} is held by Docker but no container found (try: docker ps --filter \"publish={}\")",
+                self.port, self.port
+            ));
+        }
+
+        let mut stopped = Vec::new();
+        let mut errors = Vec::new();
+
+        for container in &containers {
+            match Command::new("docker")
+                .args(["rm", "-f", container])
+                .status()
+            {
+                Ok(status) if status.success() => stopped.push(container.clone()),
+                Ok(status) => errors.push(format!("{}: exit {}", container, status)),
+                Err(e) => errors.push(format!("{}: {}", container, e)),
+            }
+        }
+
+        if !errors.is_empty() {
+            return Err(errors.join(", "));
+        }
+
+        // Wait for port release
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        if Self::is_port_available(self.port) {
+            Ok(format!("stopped container(s) {}", stopped.join(", ")))
+        } else {
+            Err(format!(
+                "stopped {} but port {} still in use",
+                stopped.join(", "),
+                self.port
+            ))
+        }
+    }
+
+    /// Find Docker containers bound to a specific port.
+    fn find_docker_containers_on_port(port: u16) -> Vec<String> {
+        let output = match Command::new("docker")
+            .args([
+                "ps",
+                "--filter",
+                &format!("publish={}", port),
+                "--format",
+                "{{.Names}}",
+            ])
+            .output()
+        {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
+
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect()
+    }
+
     /// Kill ALL processes using the port (except the current process)
     pub fn kill_all_blocking_processes(&self) -> Vec<(u32, std::result::Result<(), String>)> {
         let current_pid = std::process::id();
@@ -333,5 +439,43 @@ impl PortConflict {
             "Port {} still in use after {} attempts to kill blocking processes",
             self.port, max_attempts
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_docker_process_macos() {
+        assert!(is_docker_process("com.docker.backend"));
+        assert!(is_docker_process("com.docker.vpnkit"));
+    }
+
+    #[test]
+    fn test_is_docker_process_linux() {
+        assert!(is_docker_process("docker-proxy"));
+        assert!(is_docker_process("dockerd"));
+    }
+
+    #[test]
+    fn test_is_docker_process_negative() {
+        assert!(!is_docker_process("node"));
+        assert!(!is_docker_process("nginx"));
+        assert!(!is_docker_process("postgres"));
+    }
+
+    #[test]
+    fn test_free_port_already_available() {
+        // Port held only by current process should return success
+        let conflict = PortConflict {
+            port: 9999,
+            processes: vec![ProcessInfo {
+                pid: std::process::id(),
+                name: "self".to_string(),
+                command: None,
+            }],
+        };
+        assert!(conflict.free_port().unwrap().contains("already available"));
     }
 }

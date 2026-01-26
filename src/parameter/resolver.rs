@@ -72,6 +72,8 @@ pub(crate) fn shell_escape(s: &str) -> String {
 pub struct Resolver {
     port_allocator: PortAllocator,
     resolved_parameters: HashMap<String, String>,
+    /// Names of parameters with type: port
+    port_parameter_names: Vec<String>,
     environment: crate::config::Environment,
     /// When true, port conflicts are auto-resolved using alternative ports (no interactive prompt)
     auto_resolve_conflicts: bool,
@@ -86,6 +88,7 @@ impl Resolver {
         Self {
             port_allocator: PortAllocator::new(),
             resolved_parameters: HashMap::new(),
+            port_parameter_names: Vec::new(),
             environment: crate::config::Environment::default(),
             auto_resolve_conflicts: false,
             work_dir: None,
@@ -98,6 +101,7 @@ impl Resolver {
         Self {
             port_allocator: PortAllocator::new(),
             resolved_parameters: HashMap::new(),
+            port_parameter_names: Vec::new(),
             environment,
             auto_resolve_conflicts: false,
             work_dir: None,
@@ -273,6 +277,11 @@ impl Resolver {
         let effective_params = config.get_effective_parameters().clone();
 
         for (name, param) in &effective_params {
+            // Track port-type parameters
+            if param.is_port_type() {
+                self.port_parameter_names.push(name.clone());
+            }
+
             if let Some(ref value) = param.value {
                 // Validate port values if parameter is port type
                 if param.is_port_type() {
@@ -668,6 +677,11 @@ impl Resolver {
     /// Get all allocated ports
     pub fn get_allocated_ports(&self) -> Vec<u16> {
         self.port_allocator.allocated_ports()
+    }
+
+    /// Get names of all port-type parameters
+    pub fn get_port_parameter_names(&self) -> &[String] {
+        &self.port_parameter_names
     }
 
     /// Release port listeners.
