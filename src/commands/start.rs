@@ -233,12 +233,7 @@ pub async fn run_start(
             }
             // Only report unknown if no processes found at all
             if conflict.processes.is_empty() {
-                port_conflicts.push((
-                    param_name.clone(),
-                    port,
-                    "unknown".to_string(),
-                    None,
-                ));
+                port_conflicts.push((param_name.clone(), port, "unknown".to_string(), None));
             }
         }
 
