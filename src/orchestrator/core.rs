@@ -1055,6 +1055,11 @@ impl Orchestrator {
         &self.dep_graph
     }
 
+    /// Get a reference to the resolved config (templates substituted).
+    pub fn get_config(&self) -> &Config {
+        &self.config
+    }
+
     /// Get a reference to resolved parameters.
     ///
     /// This is more efficient than [`Self::get_resolved_parameters_owned`] when you only

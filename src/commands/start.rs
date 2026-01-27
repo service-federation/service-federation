@@ -182,8 +182,8 @@ pub async fn run_start(
 
     println!("\nAll services started successfully!");
 
-    // Print startup messages in a box
-    print_startup_messages(config, &started);
+    // Print startup messages from the resolved config (templates substituted)
+    print_startup_messages(orchestrator.get_config(), &started);
 
     // Mark startup complete - enables monitoring to clean up dead services
     orchestrator.mark_startup_complete();
