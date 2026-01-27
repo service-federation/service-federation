@@ -408,3 +408,194 @@ impl Orchestrator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Parser;
+
+    /// Helper: parse YAML config and create an Orchestrator (no initialize — no ports, no Docker).
+    async fn orchestrator_from_yaml(yaml: &str) -> Orchestrator {
+        let parser = Parser::new();
+        let config = parser.parse_config(yaml).expect("valid YAML");
+        let temp = tempfile::tempdir().unwrap();
+        Orchestrator::new(config, temp.path().to_path_buf())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_gradle_services_grouped_by_cwd() {
+        let orch = orchestrator_from_yaml(
+            r#"
+services:
+  database:
+    image: postgres:15
+
+  auth-service:
+    gradleTask: ':auth-service:bootRun'
+    depends_on:
+      - database
+
+  user-service:
+    gradleTask: ':user-service:bootRun'
+    depends_on:
+      - database
+
+  notification-service:
+    gradleTask: ':notification:bootRun'
+    cwd: 'services/notification'
+    depends_on:
+      - user-service
+
+  analytics-service:
+    gradleTask: ':analytics:bootRun'
+    depends_on:
+      - user-service
+"#,
+        )
+        .await;
+
+        let names: Vec<String> = orch.config.services.keys().cloned().collect();
+        let (gradle_groups, non_gradle) = orch.group_gradle_services(&names);
+
+        // database is not a gradle service
+        assert!(non_gradle.contains(&"database".to_string()));
+
+        // auth, user, analytics share the default cwd → one group
+        let main_group = gradle_groups
+            .iter()
+            .find(|g| g.contains(&"auth-service".to_string()))
+            .expect("should have a group containing auth-service");
+        assert!(
+            main_group.contains(&"user-service".to_string()),
+            "user-service should be in same group as auth-service"
+        );
+        assert!(
+            main_group.contains(&"analytics-service".to_string()),
+            "analytics-service should be in same group as auth-service (same cwd)"
+        );
+
+        // notification-service has a different cwd → separate group
+        assert!(
+            !main_group.contains(&"notification-service".to_string()),
+            "notification-service has different cwd, must not be in main group"
+        );
+        let notif_group = gradle_groups
+            .iter()
+            .find(|g| g.contains(&"notification-service".to_string()))
+            .expect("notification-service should be in its own group");
+        assert_eq!(notif_group.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_gradle_grouping_service_count() {
+        // After create_services, grouped services merge into one entry.
+        // Expected: database + gradle-group(auth+user+analytics) + notification = 3
+        let orch = orchestrator_from_yaml(
+            r#"
+services:
+  database:
+    image: postgres:15
+
+  auth-service:
+    gradleTask: ':auth-service:bootRun'
+    depends_on:
+      - database
+
+  user-service:
+    gradleTask: ':user-service:bootRun'
+    depends_on:
+      - database
+
+  notification-service:
+    gradleTask: ':notification:bootRun'
+    cwd: 'services/notification'
+    depends_on:
+      - user-service
+
+  analytics-service:
+    gradleTask: ':analytics:bootRun'
+    depends_on:
+      - user-service
+"#,
+        )
+        .await;
+
+        let names: Vec<String> = orch.config.services.keys().cloned().collect();
+        let (gradle_groups, non_gradle) = orch.group_gradle_services(&names);
+
+        // 1 non-gradle (database)
+        assert_eq!(non_gradle.len(), 1);
+
+        // 2 gradle groups: one with 3 services (same cwd), one with 1 (different cwd)
+        assert_eq!(gradle_groups.len(), 2);
+
+        let mut sizes: Vec<usize> = gradle_groups.iter().map(|g| g.len()).collect();
+        sizes.sort();
+        assert_eq!(sizes, vec![1, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_single_gradle_service_not_grouped() {
+        let orch = orchestrator_from_yaml(
+            r#"
+services:
+  app:
+    gradleTask: ':app:bootRun'
+"#,
+        )
+        .await;
+
+        let names: Vec<String> = orch.config.services.keys().cloned().collect();
+        let (gradle_groups, non_gradle) = orch.group_gradle_services(&names);
+
+        assert!(non_gradle.is_empty());
+        // Single gradle service → group of 1 (create_services treats len==1 as ungrouped)
+        assert_eq!(gradle_groups.len(), 1);
+        assert_eq!(gradle_groups[0].len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_no_gradle_services() {
+        let orch = orchestrator_from_yaml(
+            r#"
+services:
+  web:
+    process: "node server.js"
+  db:
+    image: postgres:15
+"#,
+        )
+        .await;
+
+        let names: Vec<String> = orch.config.services.keys().cloned().collect();
+        let (gradle_groups, non_gradle) = orch.group_gradle_services(&names);
+
+        assert!(gradle_groups.is_empty());
+        assert_eq!(non_gradle.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_absolute_cwd_separates_groups() {
+        let orch = orchestrator_from_yaml(
+            r#"
+services:
+  svc-a:
+    gradleTask: ':a:run'
+  svc-b:
+    gradleTask: ':b:run'
+    cwd: '/tmp/other-project'
+"#,
+        )
+        .await;
+
+        let names: Vec<String> = orch.config.services.keys().cloned().collect();
+        let (gradle_groups, _) = orch.group_gradle_services(&names);
+
+        assert_eq!(gradle_groups.len(), 2, "different cwds must produce separate groups");
+        for group in &gradle_groups {
+            assert_eq!(group.len(), 1);
+        }
+    }
+}
