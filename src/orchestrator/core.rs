@@ -63,7 +63,7 @@ type SharedHealthCheckerRegistry = Arc<tokio::sync::RwLock<HealthCheckerRegistry
 ///
 /// # async fn example() -> Result<(), service_federation::Error> {
 /// let config = Config::default(); // Load from YAML in practice
-/// let mut orchestrator = Orchestrator::new(config).await?;
+/// let mut orchestrator = Orchestrator::new(config, std::path::PathBuf::from(".")).await?;
 /// orchestrator.initialize().await?;
 /// orchestrator.start_all().await?;
 ///
@@ -138,8 +138,7 @@ impl Orchestrator {
     }
 
     /// Create a new orchestrator from configuration
-    pub async fn new(config: Config) -> Result<Self> {
-        let work_dir = PathBuf::from(".");
+    pub async fn new(config: Config, work_dir: PathBuf) -> Result<Self> {
         // Store original config for isolated child orchestrators
         let original_config = Some(config.clone());
         Ok(Self {
@@ -168,8 +167,7 @@ impl Orchestrator {
     }
 
     /// Create a nested orchestrator with a namespace (for external services)
-    pub async fn new_with_namespace(config: Config, namespace: String) -> Result<Self> {
-        let work_dir = PathBuf::from(".");
+    pub async fn new_with_namespace(config: Config, namespace: String, work_dir: PathBuf) -> Result<Self> {
         // Store original config for isolated child orchestrators
         let original_config = Some(config.clone());
         Ok(Self {
@@ -1339,10 +1337,7 @@ impl Orchestrator {
             .ok_or_else(|| Error::ScriptNotFound(script_name.to_string()))?
             .clone();
 
-        let mut child_orchestrator = Orchestrator::new(child_config).await?;
-        child_orchestrator
-            .set_work_dir(self.work_dir.clone())
-            .await?;
+        let mut child_orchestrator = Orchestrator::new(child_config, self.work_dir.clone()).await?;
         child_orchestrator.output_mode = self.output_mode;
 
         // Enable isolated mode to skip session port cache and allocate fresh ports
@@ -1703,8 +1698,9 @@ mod tests {
     /// Test that concurrent cleanup calls are handled safely - only one executes
     #[tokio::test]
     async fn test_concurrent_cleanup_guard() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let config = Config::default();
-        let orchestrator = Orchestrator::new(config).await.unwrap();
+        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
 
         // Verify cleanup_started is initially false
         assert!(!orchestrator.cleanup_started.load(Ordering::SeqCst));
@@ -1727,8 +1723,9 @@ mod tests {
     /// Test that cleanup runs exactly once even with sequential calls
     #[tokio::test]
     async fn test_cleanup_runs_once() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let config = Config::default();
-        let orchestrator = Orchestrator::new(config).await.unwrap();
+        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
         let orch = Arc::new(orchestrator);
 
         // First cleanup should execute
@@ -1745,8 +1742,9 @@ mod tests {
     /// Test that cleanup completes within a reasonable timeout
     #[tokio::test]
     async fn test_cleanup_does_not_hang() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let config = Config::default();
-        let orchestrator = Orchestrator::new(config).await.unwrap();
+        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
         let orch = Arc::new(orchestrator);
 
         // Cleanup should complete within 10 seconds even in worst case
@@ -1759,8 +1757,9 @@ mod tests {
     /// Test that cleanup cancels the cancellation token
     #[tokio::test]
     async fn test_cleanup_cancels_operations() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let config = Config::default();
-        let orchestrator = Orchestrator::new(config).await.unwrap();
+        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
 
         // Before cleanup, cancellation should not be set
         assert!(!orchestrator.is_cancelled());

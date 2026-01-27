@@ -136,18 +136,14 @@ impl OrchestratorBuilder {
             .ok_or_else(|| crate::error::Error::Validation("config is required".to_string()))?;
 
         // Create orchestrator
+        let work_dir = self.work_dir.unwrap_or_else(|| PathBuf::from("."));
         let mut orchestrator = if self.profiles.is_empty() {
-            Orchestrator::new(config).await?
+            Orchestrator::new(config, work_dir).await?
         } else {
-            Orchestrator::new(config)
+            Orchestrator::new(config, work_dir)
                 .await?
                 .with_profiles(self.profiles)
         };
-
-        // Apply optional configuration
-        if let Some(dir) = self.work_dir {
-            orchestrator.set_work_dir(dir).await?;
-        }
 
         orchestrator.set_output_mode(self.output_mode);
         orchestrator.set_auto_resolve_conflicts(self.auto_resolve_conflicts);

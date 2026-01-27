@@ -173,7 +173,7 @@ async fn run() -> anyhow::Result<()> {
     config.validate()?;
 
     // Create orchestrator with profiles
-    let mut orchestrator = Orchestrator::new(config.clone())
+    let mut orchestrator = Orchestrator::new(config.clone(), std::path::PathBuf::from("."))
         .await?
         .with_profiles(cli.profile.clone());
 

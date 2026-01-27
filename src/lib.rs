@@ -27,7 +27,7 @@
 //! let config = parser.load_config("service-federation.yaml")?;
 //!
 //! // Create and initialize orchestrator
-//! let mut orchestrator = Orchestrator::new(config).await?;
+//! let mut orchestrator = Orchestrator::new(config, std::path::PathBuf::from(".")).await?;
 //! orchestrator.initialize().await?;
 //!
 //! // Start all services (respects dependency order)
