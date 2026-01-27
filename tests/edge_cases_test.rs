@@ -905,27 +905,34 @@ async fn test_multiple_service_failures_returns_aggregated_error() {
     // Both are entrypoints so both will be started
     config.entrypoints = vec!["failing1".to_string(), "failing2".to_string()];
 
-    let orchestrator_result = Orchestrator::new(config).await;
-    if orchestrator_result.is_err() {
-        // If orchestrator creation itself fails, that's also valid behavior
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+    let mut orchestrator = match Orchestrator::new(config).await {
+        Ok(o) => o,
+        Err(_) => return, // Orchestrator creation failure is acceptable
+    };
+    if orchestrator
+        .set_work_dir(temp_dir.path().to_path_buf())
+        .await
+        .is_err()
+    {
         return;
     }
-
-    let mut orchestrator = orchestrator_result.unwrap();
     if orchestrator.initialize().await.is_err() {
-        // Initialization failure is acceptable
         return;
     }
 
     let result = orchestrator.start_all().await;
 
-    // The start should fail
+    // The start should fail — both services reference nonexistent binaries
     assert!(result.is_err(), "Starting nonexistent binaries should fail");
 
     let error = result.unwrap_err();
 
-    // Check if we got an aggregated error or a single error
-    // (depends on timing - if both fail "simultaneously" we get Multiple)
+    // Check if we got an aggregated error or a single error.
+    // Both services are in the same dependency level and start concurrently.
+    // If both fail "simultaneously" we get Error::Multiple; if one fails
+    // before the other starts, we get a single error. Both are correct.
     match &error {
         Error::Multiple(errors) => {
             assert!(
@@ -933,18 +940,19 @@ async fn test_multiple_service_failures_returns_aggregated_error() {
                 "Error::Multiple should contain at least 2 errors, got {}",
                 errors.len()
             );
-            // Verify the error message mentions aggregation
-            let error_str = error.to_string();
+        }
+        Error::ServiceStartFailed(name, _) => {
             assert!(
-                error_str.contains("Multiple") || error_str.contains("errors"),
-                "Error message should indicate multiple failures: {}",
-                error_str
+                name == "failing1" || name == "failing2",
+                "Expected failing1 or failing2, got: {}",
+                name
             );
         }
-        _ => {
-            // If we got a single error, that's also acceptable
-            // (one service might have failed before the other started)
-            // The important thing is that we got SOME error
+        other => {
+            panic!(
+                "Expected ServiceStartFailed or Multiple error, got: {:?}",
+                other
+            );
         }
     }
 }
