@@ -275,6 +275,17 @@ impl Orchestrator {
         self.resolver.set_auto_resolve_conflicts(auto_resolve);
     }
 
+    /// Enable randomized port allocation.
+    ///
+    /// Skips the session port cache and allocates fresh random ports for all
+    /// port-type parameters. Also enables auto-resolve to avoid interactive
+    /// conflict prompts. Useful for running a second instance of the same
+    /// project in a different worktree.
+    pub fn set_randomize_ports(&mut self, randomize: bool) {
+        self.resolver.set_isolated_mode(randomize);
+        self.resolver.set_auto_resolve_conflicts(randomize);
+    }
+
     /// Set active profiles for service filtering
     pub fn with_profiles(mut self, profiles: Vec<String>) -> Self {
         self.active_profiles = profiles;
