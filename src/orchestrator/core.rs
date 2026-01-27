@@ -1058,6 +1058,11 @@ impl Orchestrator {
         self.resolver.get_port_parameter_names()
     }
 
+    /// Get port resolution decisions for display in dry-run and status commands.
+    pub fn get_port_resolutions(&self) -> &[crate::parameter::PortResolution] {
+        self.resolver.get_port_resolutions()
+    }
+
     /// Release port listeners so that port conflict checks can detect external processes.
     ///
     /// In dry-run mode, the resolver holds TcpListeners on resolved ports to prevent TOCTOU races.

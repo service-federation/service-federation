@@ -1,5 +1,6 @@
 use service_federation::{
     config::{Config, ServiceType},
+    parameter::PortResolutionReason,
     port::PortConflict,
     service::Status,
     Orchestrator, WatchMode,
@@ -576,83 +577,68 @@ async fn run_dry_run(
         }
     }
 
-    // 4. Check for port conflicts
+    // 4. Check for port conflicts using resolution tracking
     // Release port listeners first so our own listeners don't appear as conflicts.
     // Safe in dry-run since we never start services.
     orchestrator.release_port_listeners();
 
     println!("\nPort availability:");
+    let port_resolutions = orchestrator.get_port_resolutions();
     let mut conflicts_found = false;
-    let port_params = orchestrator.get_port_parameter_names();
-
-    // Collect default port values from config to detect conflicts the resolver auto-resolved
-    let mut default_ports: std::collections::HashMap<&str, u16> =
-        std::collections::HashMap::new();
-    for name in port_params {
-        if let Some(param) = config.parameters.get(name.as_str()) {
-            if let Some(default_val) = &param.default {
-                if let Some(port) = default_val
-                    .as_u64()
-                    .and_then(|v| u16::try_from(v).ok())
-                    .or_else(|| {
-                        default_val
-                            .as_str()
-                            .and_then(|s| s.parse::<u16>().ok())
-                    })
-                {
-                    default_ports.insert(name.as_str(), port);
-                }
-            }
-        }
-    }
-
-    for name in port_params {
-        let Some(value) = params.get(name) else {
-            continue;
-        };
-        let Ok(resolved_port) = value.parse::<u16>() else {
-            continue;
-        };
-
-        // Check the resolved port
-        if let Some(conflict) = PortConflict::check(resolved_port) {
-            conflicts_found = true;
-            println!("  [CONFLICT] Port {} ({}):", resolved_port, name);
-            if conflict.processes.is_empty() {
-                println!("    - Port in use by unknown process");
-            } else {
-                for process in &conflict.processes {
-                    println!("    - '{}' (PID {})", process.name, process.pid);
-                }
-            }
-        } else {
-            println!("  [OK] Port {} ({}) is available", resolved_port, name);
-        }
-
-        // If the resolved port differs from the default, check the default too
-        if let Some(&default_port) = default_ports.get(name.as_str()) {
-            if default_port != resolved_port {
-                if let Some(conflict) = PortConflict::check(default_port) {
-                    conflicts_found = true;
-                    println!(
-                        "  [CONFLICT] Default port {} ({}) - resolved to {} instead:",
-                        default_port, name, resolved_port
-                    );
-                    if conflict.processes.is_empty() {
-                        println!("    - Port in use by unknown process");
-                    } else {
-                        for process in &conflict.processes {
-                            println!("    - '{}' (PID {})", process.name, process.pid);
+    if port_resolutions.is_empty() {
+        println!("  No port parameters detected");
+    } else {
+        for resolution in port_resolutions {
+            match &resolution.reason {
+                PortResolutionReason::DefaultAvailable | PortResolutionReason::SessionCached => {
+                    // Check if port is still available (it might have been taken since resolution)
+                    if let Some(conflict) = PortConflict::check(resolution.resolved_port) {
+                        conflicts_found = true;
+                        println!(
+                            "  [CONFLICT] Port {} ({}):",
+                            resolution.resolved_port, resolution.param_name
+                        );
+                        if conflict.processes.is_empty() {
+                            println!("    - Port in use by unknown process");
+                        } else {
+                            for process in &conflict.processes {
+                                println!("    - '{}' (PID {})", process.name, process.pid);
+                            }
                         }
+                    } else {
+                        println!(
+                            "  [OK] Port {} ({}) is available",
+                            resolution.resolved_port, resolution.param_name
+                        );
                     }
                 }
+                PortResolutionReason::ConflictAutoResolved {
+                    default_port,
+                    conflict_pid,
+                    conflict_process,
+                } => {
+                    conflicts_found = true;
+                    let process_info = match (conflict_pid, conflict_process) {
+                        (Some(pid), Some(name)) => format!("'{}' (PID {})", name, pid),
+                        (Some(pid), None) => format!("PID {}", pid),
+                        _ => "unknown process".to_string(),
+                    };
+                    println!(
+                        "  [CONFLICT] Default port {} ({}) occupied by {} - resolved to {}",
+                        default_port, resolution.param_name, process_info, resolution.resolved_port
+                    );
+                }
+                PortResolutionReason::Random => {
+                    println!(
+                        "  [OK] Port {} ({}) randomly allocated",
+                        resolution.resolved_port, resolution.param_name
+                    );
+                }
             }
         }
-    }
-    if !conflicts_found && port_params.is_empty() {
-        println!("  No port parameters detected");
-    } else if !conflicts_found {
-        println!("  All {} port(s) available", port_params.len());
+        if !conflicts_found {
+            println!("  All {} port(s) available", port_resolutions.len());
+        }
     }
 
     // 5. Show environment variables per service (mask sensitive values)

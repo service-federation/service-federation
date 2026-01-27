@@ -37,6 +37,31 @@ pub(crate) fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// Reason a port was resolved to its final value
+#[derive(Debug, Clone, PartialEq)]
+pub enum PortResolutionReason {
+    /// Default port was available and used directly
+    DefaultAvailable,
+    /// Default port had a conflict, auto-resolved to a different port
+    ConflictAutoResolved {
+        default_port: u16,
+        conflict_pid: Option<u32>,
+        conflict_process: Option<String>,
+    },
+    /// Port was restored from session cache
+    SessionCached,
+    /// No default available, allocated a random port
+    Random,
+}
+
+/// Record of how a port parameter was resolved
+#[derive(Debug, Clone)]
+pub struct PortResolution {
+    pub param_name: String,
+    pub resolved_port: u16,
+    pub reason: PortResolutionReason,
+}
+
 /// Resolver handles parameter resolution and template substitution.
 ///
 /// The resolver is responsible for:
@@ -81,6 +106,8 @@ pub struct Resolver {
     work_dir: Option<PathBuf>,
     /// When true, skip session port cache and always allocate fresh ports (for test isolation)
     isolated_mode: bool,
+    /// Tracks how each port parameter was resolved (for dry-run display and debuggability)
+    port_resolutions: Vec<PortResolution>,
 }
 
 impl Resolver {
@@ -93,6 +120,7 @@ impl Resolver {
             auto_resolve_conflicts: false,
             work_dir: None,
             isolated_mode: false,
+            port_resolutions: Vec::new(),
         }
     }
 
@@ -106,6 +134,7 @@ impl Resolver {
             auto_resolve_conflicts: false,
             work_dir: None,
             isolated_mode: false,
+            port_resolutions: Vec::new(),
         }
     }
 
@@ -304,17 +333,17 @@ impl Resolver {
                 self.resolved_parameters.insert(name.clone(), value.clone());
             } else if param.is_port_type() {
                 // Handle port allocation with session persistence
-                let port = if self.isolated_mode {
+                let (port, reason) = if self.isolated_mode {
                     // Isolated mode: always allocate fresh ports (skip session cache)
                     // Used by isolated scripts for test isolation
-                    let fresh_port = if let Some(env_value) =
+                    let (fresh_port, reason) = if let Some(env_value) =
                         param.get_value_for_environment(&self.environment)
                     {
                         let default_str = Self::value_to_string(env_value);
                         if let Ok(default_port) = default_str.parse::<u16>() {
                             // In isolated mode, auto-resolve conflicts without prompts
                             if self.port_allocator.try_allocate_port(default_port).is_ok() {
-                                default_port
+                                (default_port, PortResolutionReason::DefaultAvailable)
                             } else {
                                 // Default port taken, allocate random
                                 tracing::debug!(
@@ -322,13 +351,18 @@ impl Resolver {
                                     default_port,
                                     name
                                 );
-                                self.port_allocator.allocate_random_port()?
+                                let port = self.port_allocator.allocate_random_port()?;
+                                (port, PortResolutionReason::ConflictAutoResolved {
+                                    default_port,
+                                    conflict_pid: None,
+                                    conflict_process: None,
+                                })
                             }
                         } else {
-                            self.port_allocator.allocate_random_port()?
+                            (self.port_allocator.allocate_random_port()?, PortResolutionReason::Random)
                         }
                     } else {
-                        self.port_allocator.allocate_random_port()?
+                        (self.port_allocator.allocate_random_port()?, PortResolutionReason::Random)
                     };
 
                     tracing::debug!(
@@ -336,12 +370,12 @@ impl Resolver {
                         fresh_port,
                         name
                     );
-                    fresh_port
+                    (fresh_port, reason)
                 } else {
                     // Normal mode: check session for cached ports
                     use crate::session::Session;
 
-                    let cached_port = if let Ok(Some(mut session)) =
+                    let cached_result: Option<(u16, PortResolutionReason)> = if let Ok(Some(mut session)) =
                         Session::current_for_workdir(self.work_dir.as_deref())
                     {
                         if let Some(port) = session.get_port(name) {
@@ -353,7 +387,7 @@ impl Resolver {
                                     port,
                                     name
                                 );
-                                Some(port)
+                                Some((port, PortResolutionReason::SessionCached))
                             } else {
                                 // Port is taken - this is a cache invalidation scenario
                                 // The port was available in a previous session but is now in use
@@ -365,39 +399,48 @@ impl Resolver {
                                 );
                                 let new_port = self.handle_port_conflict_interactive(port, name)?;
                                 session.save_port(name.clone(), new_port)?;
-                                Some(new_port)
+                                Some((new_port, PortResolutionReason::ConflictAutoResolved {
+                                    default_port: port,
+                                    conflict_pid: None,
+                                    conflict_process: None,
+                                }))
                             }
                         } else {
                             // Allocate new port and save to session
-                            let new_port = if let Some(env_value) =
+                            let (new_port, reason) = if let Some(env_value) =
                                 param.get_value_for_environment(&self.environment)
                             {
                                 let default_str = Self::value_to_string(env_value);
                                 if let Ok(default_port) = default_str.parse::<u16>() {
                                     // Try the default port, use allocator to keep listener alive
                                     if self.port_allocator.try_allocate_port(default_port).is_ok() {
-                                        default_port
+                                        (default_port, PortResolutionReason::DefaultAvailable)
                                     } else {
-                                        self.handle_port_conflict_interactive(default_port, name)?
+                                        let p = self.handle_port_conflict_interactive(default_port, name)?;
+                                        (p, PortResolutionReason::ConflictAutoResolved {
+                                            default_port,
+                                            conflict_pid: None,
+                                            conflict_process: None,
+                                        })
                                     }
                                 } else {
-                                    self.port_allocator.allocate_random_port()?
+                                    (self.port_allocator.allocate_random_port()?, PortResolutionReason::Random)
                                 }
                             } else {
-                                self.port_allocator.allocate_random_port()?
+                                (self.port_allocator.allocate_random_port()?, PortResolutionReason::Random)
                             };
 
                             // Save to session for reuse
                             session.save_port(name.clone(), new_port)?;
-                            Some(new_port)
+                            Some((new_port, reason))
                         }
                     } else {
                         None
                     };
 
                     // Use cached port if available, otherwise allocate
-                    if let Some(p) = cached_port {
-                        p
+                    if let Some((p, reason)) = cached_result {
+                        (p, reason)
                     } else {
                         // No session: allocate normally
                         if let Some(env_value) = param.get_value_for_environment(&self.environment)
@@ -407,18 +450,29 @@ impl Resolver {
                                 // Try the default port, use allocator to keep listener alive
                                 // This prevents TOCTOU race - port stays reserved until services start
                                 if self.port_allocator.try_allocate_port(default_port).is_ok() {
-                                    default_port
+                                    (default_port, PortResolutionReason::DefaultAvailable)
                                 } else {
-                                    self.handle_port_conflict_interactive(default_port, name)?
+                                    let p = self.handle_port_conflict_interactive(default_port, name)?;
+                                    (p, PortResolutionReason::ConflictAutoResolved {
+                                        default_port,
+                                        conflict_pid: None,
+                                        conflict_process: None,
+                                    })
                                 }
                             } else {
-                                self.port_allocator.allocate_random_port()?
+                                (self.port_allocator.allocate_random_port()?, PortResolutionReason::Random)
                             }
                         } else {
-                            self.port_allocator.allocate_random_port()?
+                            (self.port_allocator.allocate_random_port()?, PortResolutionReason::Random)
                         }
                     }
                 };
+
+                self.port_resolutions.push(PortResolution {
+                    param_name: name.clone(),
+                    resolved_port: port,
+                    reason,
+                });
 
                 let port_str = port.to_string();
                 parameters.insert(name.clone(), port_str.clone());
@@ -682,6 +736,11 @@ impl Resolver {
     /// Get names of all port-type parameters
     pub fn get_port_parameter_names(&self) -> &[String] {
         &self.port_parameter_names
+    }
+
+    /// Get port resolution decisions for display in dry-run and status commands
+    pub fn get_port_resolutions(&self) -> &[PortResolution] {
+        &self.port_resolutions
     }
 
     /// Release port listeners.
