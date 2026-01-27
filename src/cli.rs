@@ -56,7 +56,7 @@ pub enum Commands {
         dry_run: bool,
 
         /// Allocate fresh random ports instead of using configured defaults
-        #[arg(long)]
+        #[arg(long, alias = "isolated")]
         randomize_ports: bool,
     },
     /// Stop services
