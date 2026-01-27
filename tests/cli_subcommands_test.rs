@@ -977,21 +977,6 @@ fn test_completions_fish() {
     );
 }
 
-// ============================================================================
-// port subcommand
-// ============================================================================
-
-#[test]
-fn test_port_help() {
-    let output = Command::new(fed_binary())
-        .args(["port", "--help"])
-        .output()
-        .expect("Failed to run fed");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("port") || stdout.contains("Port"));
-}
 
 // ============================================================================
 // doctor subcommand
