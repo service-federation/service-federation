@@ -7,6 +7,80 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Generate a Docker container name scoped by session or work directory.
+///
+/// - With session: `fed-{sanitized_session}-{sanitized_service}` (session is already unique)
+/// - Without session: `fed-{work_dir_hash}-{sanitized_service}` (8-hex-char hash of work_dir)
+///
+/// This prevents container name collisions across different project directories.
+pub(crate) fn docker_container_name(
+    service_name: &str,
+    session_id: Option<&str>,
+    work_dir: &str,
+) -> String {
+    let sanitized_service = sanitize_container_name_component(service_name);
+
+    if let Some(session_id) = session_id {
+        let sanitized_session = sanitize_container_name_component(session_id);
+        format!("fed-{}-{}", sanitized_session, sanitized_service)
+    } else {
+        let hash = hash_work_dir(work_dir);
+        format!("fed-{}-{}", hash, sanitized_service)
+    }
+}
+
+/// Sanitize a string for use in Docker container names.
+///
+/// Docker container names must match `[a-zA-Z0-9][a-zA-Z0-9_.-]*`.
+/// This function:
+/// - Replaces invalid characters with underscores
+/// - Truncates to 32 characters (to keep total name under Docker's 64 char limit)
+/// - Ensures the result doesn't start with invalid characters
+pub(crate) fn sanitize_container_name_component(input: &str) -> String {
+    const MAX_COMPONENT_LEN: usize = 32;
+
+    if input.is_empty() {
+        return "unnamed".to_string();
+    }
+
+    let sanitized: String = input
+        .chars()
+        .take(MAX_COMPONENT_LEN)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    // Ensure doesn't start with invalid character (dash, period, or underscore)
+    // Docker requires first char to be alphanumeric
+    let sanitized = if sanitized.starts_with(|c: char| !c.is_ascii_alphanumeric()) {
+        format!("x{}", &sanitized[1..])
+    } else {
+        sanitized
+    };
+
+    // Handle edge case of empty result after sanitization
+    if sanitized.is_empty() {
+        "unnamed".to_string()
+    } else {
+        sanitized
+    }
+}
+
+/// Hash a work directory path to 8 hex characters for container name scoping.
+fn hash_work_dir(work_dir: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    work_dir.hash(&mut hasher);
+    format!("{:08x}", hasher.finish() as u32)
+}
+
 // Docker operation timeouts (normalized for consistency)
 const DOCKER_REMOVE_TIMEOUT: Duration = Duration::from_secs(10); // Remove container
 const DOCKER_START_TIMEOUT: Duration = Duration::from_secs(30); // Start container
@@ -54,70 +128,6 @@ impl DockerService {
         base.set_status(Status::Running);
     }
 
-    /// Get container name with session scoping if FED_SESSION is set.
-    ///
-    /// Format: `fed-{service-name}` or `fed-{session-id}-{service-name}`
-    ///
-    /// Session scoping ensures containers from different fed sessions don't conflict.
-    /// When docker rm -f runs, it removes containers by name - without session scoping,
-    /// one session could accidentally remove another session's containers.
-    ///
-    /// Session IDs and service names are sanitized to ensure valid Docker container names:
-    /// - Only alphanumeric characters, underscores, periods, and dashes allowed
-    /// - Truncated to 32 characters to avoid excessively long names
-    /// - Invalid characters replaced with underscores
-    fn get_container_name(service_name: &str) -> String {
-        let sanitized_service = Self::sanitize_container_name_component(service_name);
-
-        if let Ok(session_id) = std::env::var("FED_SESSION") {
-            let sanitized_session = Self::sanitize_container_name_component(&session_id);
-            format!("fed-{}-{}", sanitized_session, sanitized_service)
-        } else {
-            format!("fed-{}", sanitized_service)
-        }
-    }
-
-    /// Sanitize a string for use in Docker container names.
-    ///
-    /// Docker container names must match `[a-zA-Z0-9][a-zA-Z0-9_.-]*`.
-    /// This function:
-    /// - Replaces invalid characters with underscores
-    /// - Truncates to 32 characters (to keep total name under Docker's 64 char limit)
-    /// - Ensures the result doesn't start with invalid characters
-    fn sanitize_container_name_component(input: &str) -> String {
-        const MAX_COMPONENT_LEN: usize = 32;
-
-        if input.is_empty() {
-            return "unnamed".to_string();
-        }
-
-        let sanitized: String = input
-            .chars()
-            .take(MAX_COMPONENT_LEN)
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-
-        // Ensure doesn't start with invalid character (dash, period, or underscore)
-        // Docker requires first char to be alphanumeric
-        let sanitized = if sanitized.starts_with(|c: char| !c.is_ascii_alphanumeric()) {
-            format!("x{}", &sanitized[1..])
-        } else {
-            sanitized
-        };
-
-        // Handle edge case of empty result after sanitization
-        if sanitized.is_empty() {
-            "unnamed".to_string()
-        } else {
-            sanitized
-        }
-    }
 
     /// Scope a volume specification with a session ID.
     ///
@@ -475,7 +485,10 @@ impl ServiceManager for DockerService {
             (base.name.clone(), env_args)
         };
 
-        let container_name = Self::get_container_name(&service_name);
+        let container_name = {
+            let base = self.base.read();
+            docker_container_name(&service_name, self.session_id.as_deref(), &base.work_dir)
+        };
 
         // Remove any existing container with this name unconditionally.
         // Using `docker rm -f` is atomic and avoids TOCTOU race conditions
@@ -1457,7 +1470,7 @@ mod tests {
     #[test]
     fn test_sanitize_container_name_basic() {
         assert_eq!(
-            DockerService::sanitize_container_name_component("my-service"),
+            sanitize_container_name_component("my-service"),
             "my-service"
         );
     }
@@ -1465,7 +1478,7 @@ mod tests {
     #[test]
     fn test_sanitize_container_name_special_chars() {
         assert_eq!(
-            DockerService::sanitize_container_name_component("my service@v1.0"),
+            sanitize_container_name_component("my service@v1.0"),
             "my_service_v1.0"
         );
     }
@@ -1475,7 +1488,7 @@ mod tests {
         // Unicode characters should be replaced with underscores
         // "cafe" with accented 'e' becomes "caf_"
         assert_eq!(
-            DockerService::sanitize_container_name_component("caf\u{00e9}"),
+            sanitize_container_name_component("caf\u{00e9}"),
             "caf_"
         );
     }
@@ -1484,7 +1497,7 @@ mod tests {
     fn test_sanitize_container_name_starts_with_dash() {
         // First char replaced with 'x', rest preserved
         assert_eq!(
-            DockerService::sanitize_container_name_component("-myservice"),
+            sanitize_container_name_component("-myservice"),
             "xmyservice"
         );
     }
@@ -1493,7 +1506,7 @@ mod tests {
     fn test_sanitize_container_name_starts_with_underscore() {
         // First char replaced with 'x', rest preserved
         assert_eq!(
-            DockerService::sanitize_container_name_component("_myservice"),
+            sanitize_container_name_component("_myservice"),
             "xmyservice"
         );
     }
@@ -1502,7 +1515,7 @@ mod tests {
     fn test_sanitize_container_name_starts_with_period() {
         // First char replaced with 'x', rest preserved
         assert_eq!(
-            DockerService::sanitize_container_name_component(".myservice"),
+            sanitize_container_name_component(".myservice"),
             "xmyservice"
         );
     }
@@ -1510,14 +1523,14 @@ mod tests {
     #[test]
     fn test_sanitize_container_name_truncation() {
         let long_name = "a".repeat(100);
-        let result = DockerService::sanitize_container_name_component(&long_name);
+        let result = sanitize_container_name_component(&long_name);
         assert_eq!(result.len(), 32);
     }
 
     #[test]
     fn test_sanitize_container_name_empty() {
         assert_eq!(
-            DockerService::sanitize_container_name_component(""),
+            sanitize_container_name_component(""),
             "unnamed"
         );
     }
@@ -1526,16 +1539,39 @@ mod tests {
     fn test_sanitize_container_name_preserves_valid_chars() {
         // Verify all valid characters are preserved
         assert_eq!(
-            DockerService::sanitize_container_name_component("aZ09_.-"),
+            sanitize_container_name_component("aZ09_.-"),
             "aZ09_.-"
         );
     }
 
     #[test]
-    fn test_get_container_name_basic() {
-        // Without FED_SESSION env var
-        std::env::remove_var("FED_SESSION");
-        let name = DockerService::get_container_name("my-service");
-        assert_eq!(name, "fed-my-service");
+    fn test_container_name_without_session() {
+        // Without session, should include work_dir hash
+        let name = docker_container_name("my-service", None, "/tmp/project");
+        let hash = hash_work_dir("/tmp/project");
+        assert_eq!(name, format!("fed-{}-my-service", hash));
+    }
+
+    #[test]
+    fn test_container_name_with_session() {
+        // With session, should use session ID instead of work_dir hash
+        let name = docker_container_name("my-service", Some("abc123"), "/tmp/project");
+        assert_eq!(name, "fed-abc123-my-service");
+    }
+
+    #[test]
+    fn test_container_name_different_work_dirs() {
+        // Different work directories should produce different container names
+        let name_a = docker_container_name("svc", None, "/projects/alpha");
+        let name_b = docker_container_name("svc", None, "/projects/beta");
+        assert_ne!(name_a, name_b, "Different work dirs must produce different names");
+    }
+
+    #[test]
+    fn test_container_name_session_overrides_work_dir() {
+        // Same session ID but different work dirs should produce the same name
+        let name_a = docker_container_name("svc", Some("sess1"), "/projects/alpha");
+        let name_b = docker_container_name("svc", Some("sess1"), "/projects/beta");
+        assert_eq!(name_a, name_b, "Session should override work_dir scoping");
     }
 }

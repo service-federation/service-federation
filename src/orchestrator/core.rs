@@ -442,7 +442,9 @@ impl Orchestrator {
                             // Process/Gradle services: run healthcheck on host
                             if service.image.is_some() {
                                 // Docker service - use docker exec
-                                let container_name = format!("fed-{}", name);
+                                let container_name = crate::service::docker_container_name(
+                                    name, None, &self.work_dir.to_string_lossy()
+                                );
                                 Box::new(DockerCommandChecker::new(
                                     container_name,
                                     cmd.to_string(),

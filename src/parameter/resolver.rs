@@ -334,43 +334,15 @@ impl Resolver {
             } else if param.is_port_type() {
                 // Handle port allocation with session persistence
                 let (port, reason) = if self.isolated_mode {
-                    // Isolated mode: always allocate fresh ports (skip session cache)
-                    // Used by isolated scripts for test isolation
-                    let (fresh_port, reason) = if let Some(env_value) =
-                        param.get_value_for_environment(&self.environment)
-                    {
-                        let default_str = Self::value_to_string(env_value);
-                        if let Ok(default_port) = default_str.parse::<u16>() {
-                            // In isolated mode, auto-resolve conflicts without prompts
-                            if self.port_allocator.try_allocate_port(default_port).is_ok() {
-                                (default_port, PortResolutionReason::DefaultAvailable)
-                            } else {
-                                // Default port taken, allocate random
-                                tracing::debug!(
-                                    "Isolated mode: default port {} for '{}' in use, allocating random",
-                                    default_port,
-                                    name
-                                );
-                                let port = self.port_allocator.allocate_random_port()?;
-                                (port, PortResolutionReason::ConflictAutoResolved {
-                                    default_port,
-                                    conflict_pid: None,
-                                    conflict_process: None,
-                                })
-                            }
-                        } else {
-                            (self.port_allocator.allocate_random_port()?, PortResolutionReason::Random)
-                        }
-                    } else {
-                        (self.port_allocator.allocate_random_port()?, PortResolutionReason::Random)
-                    };
-
+                    // Isolated mode: always allocate random ports for true isolation.
+                    // Never try defaults — the whole point is port independence.
+                    let fresh_port = self.port_allocator.allocate_random_port()?;
                     tracing::debug!(
-                        "Isolated mode: allocated fresh port {} for parameter '{}'",
+                        "Isolated mode: allocated random port {} for parameter '{}'",
                         fresh_port,
                         name
                     );
-                    (fresh_port, reason)
+                    (fresh_port, PortResolutionReason::Random)
                 } else {
                     // Normal mode: check session for cached ports
                     use crate::session::Session;
