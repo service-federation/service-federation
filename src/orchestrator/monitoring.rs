@@ -22,7 +22,8 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 use super::Orchestrator;
 
@@ -567,7 +568,7 @@ async fn run_monitoring_loop(
     services: ServicesMap,
     state_tracker: StateTrackerRef,
     config: Config,
-    shutdown: Arc<Notify>,
+    cancel_token: CancellationToken,
     startup_complete: Arc<std::sync::atomic::AtomicBool>,
 ) {
     use futures::FutureExt;
@@ -577,7 +578,7 @@ async fn run_monitoring_loop(
 
     loop {
         tokio::select! {
-            _ = shutdown.notified() => {
+            _ = cancel_token.cancelled() => {
                 tracing::debug!("Monitoring loop shutting down");
                 break;
             }
@@ -669,14 +670,14 @@ impl Orchestrator {
         let services = Arc::clone(&self.services);
         let config = self.config.clone();
         let state_tracker = Arc::clone(&self.state_tracker);
-        let shutdown = Arc::clone(&self.monitoring_shutdown);
+        let cancel_token = self.child_token();
         let startup_complete = Arc::clone(&self.startup_complete);
 
         let handle = tokio::spawn(run_monitoring_loop(
             services,
             state_tracker,
             config,
-            shutdown,
+            cancel_token,
             startup_complete,
         ));
 

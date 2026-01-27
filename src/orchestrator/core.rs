@@ -93,7 +93,6 @@ pub struct Orchestrator {
     namespace: String,
     /// Output mode for process services.
     pub(super) output_mode: OutputMode,
-    pub monitoring_shutdown: Arc<tokio::sync::Notify>,
     active_profiles: Vec<String>,
     pub(super) monitoring_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub(super) startup_complete: Arc<AtomicBool>,
@@ -154,7 +153,7 @@ impl Orchestrator {
             work_dir,
             namespace: "root".to_string(),
             output_mode: OutputMode::default(),
-            monitoring_shutdown: Arc::new(tokio::sync::Notify::new()),
+
             active_profiles: Vec::new(),
             monitoring_task: Arc::new(tokio::sync::Mutex::new(None)),
             startup_complete: Arc::new(AtomicBool::new(false)),
@@ -183,7 +182,7 @@ impl Orchestrator {
             work_dir,
             namespace,
             output_mode: OutputMode::default(),
-            monitoring_shutdown: Arc::new(tokio::sync::Notify::new()),
+
             active_profiles: Vec::new(),
             monitoring_task: Arc::new(tokio::sync::Mutex::new(None)),
             startup_complete: Arc::new(AtomicBool::new(false)),
@@ -1603,9 +1602,9 @@ impl Orchestrator {
         tracing::debug!("Cleanup: canceling in-progress operations");
         self.cancellation_token.cancel();
 
-        // Signal monitoring loop to shut down
-        tracing::debug!("Cleanup: signaling monitoring shutdown");
-        self.monitoring_shutdown.notify_waiters();
+        // CancellationToken is sticky — the monitoring loop will see it on its
+        // next select! iteration and break, even if it was mid-health-check when
+        // cancel() was called above.
 
         // Wait for monitoring task to finish (with timeout to avoid hanging)
         {
@@ -1647,11 +1646,9 @@ impl Orchestrator {
 
 impl Drop for Orchestrator {
     fn drop(&mut self) {
-        // Signal monitoring task to shut down (best-effort)
-        // Note: This is a synchronous drop, so we can't await the task to finish
-        // For proper cleanup with awaiting monitoring task completion,
-        // call cleanup() explicitly before dropping
-        self.monitoring_shutdown.notify_waiters();
+        // Cancel the token so the monitoring loop breaks on its next select! iteration.
+        // CancellationToken::cancel() is synchronous and sticky — safe to call from Drop.
+        self.cancellation_token.cancel();
     }
 }
 
@@ -1681,7 +1678,6 @@ impl std::fmt::Debug for Orchestrator {
             .field("state_tracker", &"<state_tracker>")
             .field("services", &"<async>")
             .field("health_checkers", &"<async>")
-            .field("monitoring_shutdown", &"<notify>")
             .field("monitoring_task", &"<async>")
             .field("cancellation_token", &"<token>")
             .field("config", &self.config)

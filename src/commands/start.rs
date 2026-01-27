@@ -375,9 +375,9 @@ async fn run_watch_mode(
     let force_quit = Arc::new(AtomicBool::new(false));
     let force_quit_clone = force_quit.clone();
 
-    // Clone state tracker, monitoring shutdown, and services for force quit cleanup
+    // Clone state tracker, cancellation token, and services for force quit cleanup
     let state_tracker_clone = orchestrator.state_tracker.clone();
-    let monitoring_shutdown_clone = orchestrator.monitoring_shutdown.clone();
+    let cancel_token_clone = orchestrator.child_token();
     let services_clone = orchestrator.get_services_arc();
 
     tokio::spawn(async move {
@@ -442,7 +442,7 @@ async fn run_watch_mode(
                         }
 
                         // Signal monitoring task to shut down
-                        monitoring_shutdown_clone.notify_waiters();
+                        cancel_token_clone.cancel();
 
                         std::process::exit(130);
                     }
