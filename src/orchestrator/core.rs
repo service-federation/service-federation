@@ -1016,6 +1016,18 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Returns current service statuses without triggering active health checks.
+    /// Used for the initial post-startup display where containers may still be initializing.
+    pub async fn get_status_passive(&self) -> HashMap<String, Status> {
+        let services = self.services.read().await;
+        let mut result = HashMap::new();
+        for (name, arc) in services.iter() {
+            let manager = arc.lock().await;
+            result.insert(name.clone(), manager.status());
+        }
+        result
+    }
+
     /// Get status of all services
     /// Also triggers health checks for running services to detect exits promptly
     pub async fn get_status(&self) -> HashMap<String, Status> {
@@ -1135,6 +1147,16 @@ impl Orchestrator {
 
         let manager = manager_arc.lock().await;
         manager.logs(tail).await
+    }
+
+    /// Get last error for a service (if any)
+    pub async fn get_last_error(&self, service_name: &str) -> Option<String> {
+        let manager_arc = {
+            let services = self.services.read().await;
+            services.get(service_name).map(Arc::clone)?
+        };
+        let manager = manager_arc.lock().await;
+        manager.get_last_error()
     }
 
     /// Get service PID (if applicable)

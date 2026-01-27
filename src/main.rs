@@ -167,10 +167,35 @@ async fn run() -> anyhow::Result<()> {
     };
 
     // Load config with package resolution (uses cache-only in offline mode)
-    let config = parser
-        .load_config_with_packages_offline(&config_path, cli.offline)
-        .await?;
-    config.validate()?;
+    let config_result = async {
+        let config = parser
+            .load_config_with_packages_offline(&config_path, cli.offline)
+            .await?;
+        config.validate()?;
+        Ok::<_, anyhow::Error>(config)
+    }
+    .await;
+
+    // If config loading fails and we're stopping, fall back to state-tracker-only stop
+    let config = match (&cli.command, config_result) {
+        (Commands::Stop { services }, Err(config_err)) => {
+            eprintln!(
+                "Warning: Config invalid ({}), stopping from state tracker",
+                config_err
+            );
+            let work_dir = cli.workdir.unwrap_or_else(|| {
+                config_path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            });
+            commands::run_stop_from_state(&work_dir, services.clone()).await?;
+            return Ok(());
+        }
+        (_, Err(e)) => return Err(e),
+        (_, Ok(config)) => config,
+    };
 
     // Create orchestrator with profiles
     let mut orchestrator = Orchestrator::new(config.clone(), std::path::PathBuf::from("."))

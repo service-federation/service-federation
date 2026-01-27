@@ -1,4 +1,5 @@
-use service_federation::{config::Config, Orchestrator};
+use service_federation::{config::Config, state::StateTracker, Orchestrator};
+use std::path::Path;
 
 pub async fn run_stop(
     orchestrator: &mut Orchestrator,
@@ -22,6 +23,96 @@ pub async fn run_stop(
         }
         orchestrator.state_tracker.write().await.save().await?;
     }
+    println!("Services stopped");
+
+    Ok(())
+}
+
+/// Stop services using only the state tracker (no config required).
+/// Used when config is invalid but we still need to stop running services.
+pub async fn run_stop_from_state(work_dir: &Path, services: Vec<String>) -> anyhow::Result<()> {
+    let mut tracker = StateTracker::new(work_dir.to_path_buf()).await?;
+    tracker.initialize().await?;
+
+    let all_services = tracker.get_services().await;
+    if all_services.is_empty() {
+        println!("No services found in state tracker.");
+        return Ok(());
+    }
+
+    let services_to_stop: Vec<_> = if services.is_empty() {
+        all_services.into_iter().collect()
+    } else {
+        // No tag expansion in fallback mode — use names directly
+        all_services
+            .into_iter()
+            .filter(|(name, _)| services.contains(name))
+            .collect()
+    };
+
+    println!("Stopping {} service(s) from state tracker...", services_to_stop.len());
+
+    for (name, state) in &services_to_stop {
+        let is_active = matches!(
+            state.status.as_str(),
+            "running" | "healthy" | "starting"
+        );
+        if !is_active {
+            continue;
+        }
+
+        print!("  Stopping {}...", name);
+
+        match state.service_type.as_str() {
+            "Docker" => {
+                if let Some(container_id) = &state.container_id {
+                    match tokio::process::Command::new("docker")
+                        .args(["rm", "-f", container_id])
+                        .output()
+                        .await
+                    {
+                        Ok(output) if output.status.success() => println!(" done"),
+                        Ok(output) => {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            println!(" failed (docker rm: {})", stderr.trim());
+                        }
+                        Err(e) => println!(" failed ({})", e),
+                    }
+                } else {
+                    println!(" skipped (no container ID)");
+                }
+            }
+            _ => {
+                // Process, Gradle, or other PID-based services
+                if let Some(pid) = state.pid {
+                    use nix::sys::signal::{self, Signal};
+                    use nix::unistd::Pid;
+                    let nix_pid = Pid::from_raw(pid as i32);
+                    // Send SIGTERM first
+                    match signal::kill(nix_pid, Signal::SIGTERM) {
+                        Ok(()) => {
+                            // Wait briefly for graceful shutdown
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            // Check if still alive, SIGKILL if needed
+                            if signal::kill(nix_pid, None).is_ok() {
+                                let _ = signal::kill(nix_pid, Signal::SIGKILL);
+                            }
+                            println!(" done");
+                        }
+                        Err(_) => {
+                            // Process already gone
+                            println!(" done (already stopped)");
+                        }
+                    }
+                } else {
+                    println!(" skipped (no PID)");
+                }
+            }
+        }
+    }
+
+    // Clear all stopped services from state
+    tracker.clear().await?;
     println!("Services stopped");
 
     Ok(())

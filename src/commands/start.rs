@@ -197,9 +197,10 @@ pub async fn run_start(
         }
     }
 
-    // Print status and check for failing services
+    // Print status without triggering active health checks — containers may still
+    // be initializing. The background monitoring loop will detect actual failures.
     println!("\nService Status:");
-    let status = orchestrator.get_status().await;
+    let status = orchestrator.get_status_passive().await;
     let params = orchestrator.get_resolved_parameters();
 
     // Collect port conflicts for all port parameters
@@ -327,8 +328,34 @@ pub async fn run_start(
             println!();
             println!("Hint: Run 'fed start --replace' to kill conflicting processes");
             println!("      Or manually stop the external services first");
-        } else {
-            eprintln!("\x1b[31m⚠️  Some services are failing. Check logs with 'fed logs <service>'\x1b[0m");
+        }
+
+        // Show per-service failure details
+        let failing_services: Vec<&String> = status
+            .iter()
+            .filter(|(_, s)| **s == Status::Failing)
+            .map(|(name, _)| name)
+            .collect();
+
+        if !failing_services.is_empty() {
+            eprintln!("\x1b[31m⚠️  Failing services:\x1b[0m");
+            for name in &failing_services {
+                eprintln!("\x1b[31m  ✗ {}\x1b[0m", name);
+                if let Some(error) = orchestrator.get_last_error(name).await {
+                    for line in error.lines() {
+                        eprintln!("    {}", line);
+                    }
+                } else if let Ok(logs) = orchestrator.get_logs(name, Some(5)).await {
+                    if !logs.is_empty() {
+                        eprintln!("    Recent logs:");
+                        for line in &logs {
+                            eprintln!("      {}", line);
+                        }
+                    }
+                }
+            }
+            eprintln!();
+            eprintln!("Use 'fed logs <service>' for full logs");
         }
     }
 
@@ -994,6 +1021,7 @@ fn validate_pid_start_time(pid: u32, expected_start: chrono::DateTime<chrono::Ut
     #[cfg(target_os = "macos")]
     {
         // On macOS, use ps to get process start time
+        use chrono::TimeZone;
         use std::process::Command;
         if let Ok(output) = Command::new("ps")
             .args(["-o", "lstart=", "-p", &pid.to_string()])
@@ -1009,8 +1037,21 @@ fn validate_pid_start_time(pid: u32, expected_start: chrono::DateTime<chrono::Ut
                     if let Ok(process_start) =
                         chrono::NaiveDateTime::parse_from_str(lstart, "%a %b %e %H:%M:%S %Y")
                     {
-                        // Convert to UTC (assuming local time from ps)
-                        let process_start_utc = process_start.and_utc();
+                        // Convert local time to UTC properly
+                        // ps lstart returns local time, not UTC
+                        let process_start_utc = chrono::Local
+                            .from_local_datetime(&process_start)
+                            .earliest()
+                            .map(|dt| dt.with_timezone(&chrono::Utc));
+                        let Some(process_start_utc) = process_start_utc else {
+                            // Ambiguous/nonexistent time (DST transition) — trust the PID
+                            tracing::debug!(
+                                "PID {} start time {:?} is ambiguous during DST, trusting PID",
+                                pid,
+                                process_start
+                            );
+                            return true;
+                        };
                         let time_diff = (process_start_utc - expected_start).num_seconds().abs();
 
                         // Allow 60 seconds tolerance for timing differences
