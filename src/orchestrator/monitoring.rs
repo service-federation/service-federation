@@ -574,6 +574,8 @@ async fn run_monitoring_loop(
     use futures::FutureExt;
     use std::panic::AssertUnwindSafe;
 
+    // Health checks run every 5 seconds. Combined with up to ±500ms jitter,
+    // cancellation may take up to ~5.5s to take effect (worst case: check just started).
     let mut interval = tokio::time::interval(Duration::from_secs(5));
 
     loop {

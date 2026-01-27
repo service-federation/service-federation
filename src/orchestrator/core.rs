@@ -1618,9 +1618,9 @@ impl Orchestrator {
         tracing::debug!("Cleanup: canceling in-progress operations");
         self.cancellation_token.cancel();
 
-        // CancellationToken is sticky — the monitoring loop will see it on its
-        // next select! iteration and break, even if it was mid-health-check when
-        // cancel() was called above.
+        // CancellationToken is permanent — once cancelled, it remains cancelled.
+        // The monitoring loop will see it on its next select! iteration and break,
+        // even if it was mid-health-check when cancel() was called above.
 
         // Wait for monitoring task to finish (with timeout to avoid hanging)
         {

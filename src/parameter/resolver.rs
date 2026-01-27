@@ -359,7 +359,7 @@ impl Resolver {
             } else if param.is_port_type() {
                 // Handle port allocation with session persistence
                 let (port, reason) = if self.isolated_mode {
-                    // Isolated mode: always allocate random ports for true isolation.
+                    // Isolated mode: port isolation — skip defaults, allocate random ports.
                     // Never try defaults — the whole point is port independence.
                     let fresh_port = self.port_allocator.allocate_random_port()?;
                     tracing::debug!(
