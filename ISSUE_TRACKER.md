@@ -1,0 +1,54 @@
+| ID       | Status  | Priority | Complexity | Description |
+|----------|---------|----------|------------|-------------|
+| SF-00001 | Done    | CRITICAL | Medium     | Log from scripts must handle both stderr and stdout. Currently log messages are getting dropped |
+| SF-00002 | Done    | HIGH     | Low        | `fed run ‹script›` should supersede `fed script ‹script›`. Backwards compat not needed. |
+| SF-00003 | Done    | HIGH     | Low        | `fed ‹script›` should be supported for scripts as long as they don't collide with built in commands |
+| SF-00004 | Done    | MEDIUM   | Low        | Silent error suppression: `Session::auto_cleanup_orphaned().ok()` at startup hides cleanup failures (main.rs:53) |
+| SF-00005 | Done    | MEDIUM   | Medium     | TOCTOU race in port allocation without session context - port may be taken between check and use (parameter/resolver.rs:353) |
+| SF-00006 | Done    | MEDIUM   | Medium     | LogCapture tasks may leak if ProcessService dropped without calling shutdown() - no Drop impl (service/log_capture.rs) |
+| SF-00007 | Done    | LOW      | Low        | CPU percentage calculation is a stub with TODO comment (service/resources.rs:138) |
+| SF-00008 | Won't Fix | LOW      | Medium     | Registry package source - decided against implementing; GitHub and Git SSH already work via git clone. Remove dead Registry code. |
+| SF-00009 | Done    | LOW      | Low        | Session deletion errors silently ignored in cleanup paths (session/mod.rs:254, commands/session.rs:66,105) |
+| SF-00010 | Done    | MEDIUM   | Low        | Log buffer silently drops oldest logs when full - no marker or count of dropped lines shown to user (service/log_capture.rs:154-157) |
+| SF-00011 | Done    | MEDIUM   | Low        | Watch mode path matching doesn't resolve symlinks - changes in symlinked dirs won't trigger restart (watch.rs:122) |
+| SF-00012 | Done    | MEDIUM   | Low        | Docker container cleanup stops entirely if one container removal times out - should continue with remaining containers (service/docker.rs:166,177) |
+| SF-00013 | Done    | LOW      | Low        | Gradle service doesn't verify gradle/gradlew exists before spawn - gives unhelpful error on missing gradle (service/gradle.rs:89-94) |
+| SF-00014 | Done    | LOW      | Low        | HTTP healthcheck doesn't validate URL format at construction - invalid URLs fail silently as "unhealthy" (healthcheck/http.rs:47-56) |
+| SF-00015 | Done    | MEDIUM   | Low        | Silent integer overflow in memory limit parsing - f64 to u64 cast can wrap for very large values like "1000000tb" (service/process.rs:1055-1078) |
+| SF-00016 | Done    | LOW      | Low        | Unchecked string slicing in memory parsing - multi-byte UTF-8 characters could cause panic at byte boundary (service/process.rs:1062) |
+| SF-00017 | Done    | LOW      | Low        | Negative memory values silently produce undefined behavior - "-512m" parsed as f64 then cast to u64 (service/process.rs:1066) |
+| SF-00018 | Done    | HIGH     | Low        | Integration tests use non-existent --detach flag - force_quit_recovery_test.rs, session_lifecycle_test.rs, port_allocation_test.rs all broken |
+| SF-00019 | Done    | MEDIUM   | Medium     | StateTracker instances don't share registered services - new instances can't see services registered by others (reproduction_tests.rs:FIXED_atomic_two_concurrent_increments) |
+| SF-00020 | Done    | LOW      | Low        | Flaky integration tests when run in parallel - test_script_with_dependencies fails intermittently due to resource contention |
+| SF-00021 | Done    | MEDIUM   | Low        | Profile filtering includes all services when no profiles active - should only include profileless services (orchestrator/core.rs:343) |
+| SF-00022 | Done    | LOW      | Low        | test_deserialization_sanitizes_invalid_pids needs rewrite for SQLite - still references old JSON lock file format (pid_validation_test.rs:244) |
+| SF-00023 | Done    | LOW      | Low        | Remove dead Registry package source code - parsing and stub fetch logic add complexity for unused feature (package/resolver.rs:135-163,291-305) |
+| SF-00024 | Done    | MEDIUM   | Low        | Package `Latest` version calls git pull on every `fed start` - causes network dependency and silent failures offline (package/resolver.rs:361-370) |
+| SF-00025 | Done    | MEDIUM   | Low        | Package auth broken - SSH keys parsed but unused, tokens embedded in git URLs visible in `ps` output (package/resolver.rs:258-279) |
+| SF-00026 | Done    | MEDIUM   | Medium     | No diamond dependency detection for packages - silently undefined behavior when A→B and A→C both depend on D at different versions |
+| SF-00027 | Done    | LOW      | Low        | No offline mode for packages - add `--offline` flag to skip git operations and use cache only |
+| SF-00028 | Done    | LOW      | Low        | No package cache management - add `fed package refresh` to bust cache and `fed package list` to show cached packages |
+| SF-00029 | Done    | LOW      | Low        | Partial git clone can corrupt package cache - should clone to temp dir first then rename atomically (package/resolver.rs:341-355) |
+| SF-00030 | Done    | LOW      | Low        | Git operations in package resolver use blocking std::process::Command in async context - should use tokio::process::Command (package/resolver.rs:342-354) |
+| SF-00031 | Won't Fix | LOW      | High       | Packages and external dependencies - no clear problem to solve, closing |
+| SF-00032 | Done    | CRITICAL | Medium     | fed start --replace kills itself - detects own process as occupying port and terminates (reported by user) |
+| SF-00033 | Done    | CRITICAL | Low        | Script argument passthrough - `fed test:integration -- -t "session"` passes args to script. External handler ignores args[1..]. ~20 lines. Unlocks targeted tests, watch mode |
+| SF-00034 | Done    | HIGH     | Medium     | `randomize_ports: true` for scripts - Re-allocate all `type: port` params to random values, re-resolve dependent params (so DATABASE_URL={{DB_PORT}} gets new port), start fresh deps on new ports, teardown after. One flag, zero ceremony. The anti-Maven feature |
+| SF-00035 | Done    | MEDIUM   | Medium     | Script-to-script dependencies - Scripts depend on scripts. `test:integration` → `db:migrate` → `postgres`. Uses existing DAG. Nice-to-have since inline scripts work |
+| SF-00036 | Won't Fix | LOW      | Low        | `fed run --param KEY=VALUE` - CLI parameter override for CI |
+| SF-00037 | Won't Fix | LOW      | Low        | Add `test` environment - isolated: true covers this use case |
+| SF-00038 | Done    | LOW      | Low        | Script circular dependency detection - validate script→script cycles at config time to prevent runtime hangs |
+| SF-00039 | Done    | CRITICAL | Medium     | randomize_ports doesn't actually randomize - child orchestrator shares session, resolver reads cached ports from session. Fixed: don't pre-resolve scripts during config resolution; resolve at execution time with child's fresh ports |
+| SF-00040 | Done    | HIGH     | Low        | Script arg passthrough includes `--` separator - `fed script -- arg` passes `["--", "arg"]` instead of just `["arg"]`. Fixed: skip_while to strip leading `--` from extra_args in External handler |
+| SF-00041 | Done    | MEDIUM   | Low        | Docker healthcheck.command runs on host instead of inside container - Fixed: added DockerCommandChecker that uses `docker exec` for command healthchecks on Docker services |
+| SF-00023 | Done    | LOW      | Low        | Flaky test: test_daemon_retry_succeeds_if_healthy times out intermittently on slow systems - Fixed: increased threshold from 3s to 5s to allow for one retry under load |
+| SF-00042 | Done    | CRITICAL | Low        | Port conflict detection finds ALL connections, not just listeners - lsof without `-sTCP:LISTEN` returns ESTABLISHED client connections, causing fed to report its own services as "port conflicts" (port/conflict.rs:71) |
+| SF-00043 | Done    | CRITICAL | Medium     | Docker --replace broken: `docker ps --filter publish=PORT` is invalid filter syntax - returns empty, so containers never found. Should iterate `docker ps --format` and parse port mappings (port/conflict.rs:327-347) |
+| SF-00044 | Done    | LOW      | Low        | Race condition in kill_all_blocking_processes - PID may exit between lsof detection and kill, causing harmless but confusing "No such process" errors (port/conflict.rs:349-403) |
+| SF-00045 | Done    | MEDIUM   | Medium     | --replace doesn't stop fed services from previous sessions - tries to kill instead of graceful stop. Should call fed stop mechanism first for managed services, then kill external processes |
+| SF-00046 | Done    | LOW      | Low        | test_port_help fails - tests nonexistent 'port' subcommand (cli_subcommands_test.rs:985)
+| SF-00047 | Done    | LOW      | Low        | test_dry_run_detects_port_conflicts fails - dry run doesn't detect port conflicts properly (dry_run_test.rs:202)
+| SF-00048 | Pending | HIGH     | Low        | `fed stop` fails if config is invalid - should stop running services from state tracker without requiring valid config. User workflow: services running → edit config (remove service) → fed stop → ERROR. Stop should work regardless of config validity.
+| SF-00049 | Done    | HIGH     | Low        | `register_service` silently swallows SQLite errors as "already registered" — if the SQLite call fails (disk full, corruption, lock contention), it returns `false`, which `start_service_impl` interprets as deduplication and bails with `Ok(())`. Services silently don't start. Should return `Result<bool>` so callers distinguish DB failure from dedup. (state/sqlite.rs:687-689, orchestrator/core.rs:681-690) |
+| SF-00050 | Done    | MEDIUM   | Medium     | Resolver discards port conflict-resolution context that dry-run needs — during resolution, the resolver knows which ports conflicted and what they were auto-resolved to, but throws that info away. Dry-run re-derives it by releasing listeners and re-checking defaults. Resolver should track resolution decisions (e.g. "param X default 8080 occupied by PID 1234, resolved to 9341") for dry-run display and `fed status` debuggability. (parameter/resolver.rs:307-339, commands/start.rs:579-614) |
+| SF-00051 | Done    | MEDIUM   | Low        | `Orchestrator::new()` hardcodes `work_dir: PathBuf::from(".")` — tests that construct an orchestrator share the project root's `.fed/lock.db`, causing stale registrations to leak between runs. Add a constructor or builder that accepts `work_dir` as a parameter. Current workaround is `set_work_dir()` after construction, but this creates the DB twice. (orchestrator/core.rs:141-142) |
