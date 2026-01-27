@@ -37,7 +37,8 @@ async fn test_no_profiles_active_starts_only_profileless_services() {
         .expect("Failed to load config");
 
     // Create orchestrator with no active profiles
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -74,7 +75,8 @@ async fn test_production_profile_filters_services() {
         .expect("Failed to load config");
 
     // Create orchestrator with production profile
-    let mut orchestrator = Orchestrator::new(config)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap()
         .with_profiles(vec!["production".to_string()]);
@@ -123,7 +125,8 @@ async fn test_development_profile_filters_services() {
         .expect("Failed to load config");
 
     // Create orchestrator with development profile
-    let mut orchestrator = Orchestrator::new(config)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap()
         .with_profiles(vec!["development".to_string()]);
@@ -172,7 +175,8 @@ async fn test_multiple_profiles() {
         .expect("Failed to load config");
 
     // Create orchestrator with production AND experimental profiles
-    let mut orchestrator = Orchestrator::new(config)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap()
         .with_profiles(vec!["production".to_string(), "experimental".to_string()]);
@@ -221,7 +225,8 @@ async fn test_staging_profile() {
         .expect("Failed to load config");
 
     // Create orchestrator with staging profile
-    let mut orchestrator = Orchestrator::new(config)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap()
         .with_profiles(vec!["staging".to_string()]);
@@ -258,7 +263,8 @@ async fn test_analytics_profile() {
         .expect("Failed to load config");
 
     // Create orchestrator with analytics profile (testing OR logic)
-    let mut orchestrator = Orchestrator::new(config)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap()
         .with_profiles(vec!["analytics".to_string()]);
@@ -296,7 +302,8 @@ async fn test_dependency_filtering() {
 
     // reporting depends on analytics and monitoring
     // All three have production profile, so all should be included
-    let mut orchestrator = Orchestrator::new(config)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap()
         .with_profiles(vec!["production".to_string()]);
@@ -340,7 +347,8 @@ async fn test_profile_case_sensitivity() {
         .expect("Failed to load config");
 
     // Profiles are case-sensitive, so "Production" should NOT match "production"
-    let mut orchestrator = Orchestrator::new(config)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap()
         .with_profiles(vec!["Production".to_string()]); // Note: capital P
@@ -367,7 +375,8 @@ async fn test_nonexistent_profile() {
         .expect("Failed to load config");
 
     // Use a profile that doesn't exist in any service
-    let mut orchestrator = Orchestrator::new(config)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap()
         .with_profiles(vec!["nonexistent".to_string()]);

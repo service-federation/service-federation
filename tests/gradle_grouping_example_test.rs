@@ -12,7 +12,8 @@ async fn test_gradle_grouping_example() {
 
     config.validate().expect("Config should be valid");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -107,7 +108,8 @@ async fn test_gradle_grouping_example_parallel_groups() {
     // Group 1: auth-service, user-service (grouped)
     // Group 2: notification-service, analytics-service (not grouped - different CWD)
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let temp_dir2 = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir2.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -146,7 +148,8 @@ async fn test_gradle_tasks_command_format() {
         .load_config("examples/gradle-grouping.yaml")
         .expect("Failed to load gradle grouping example");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let temp_dir3 = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir3.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await

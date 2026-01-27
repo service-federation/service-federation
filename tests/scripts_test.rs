@@ -16,7 +16,8 @@ services:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -54,7 +55,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
@@ -97,7 +99,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -128,7 +131,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -158,7 +162,8 @@ services:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -187,7 +192,8 @@ services:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -211,7 +217,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -240,7 +247,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -283,7 +291,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
@@ -322,7 +331,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -347,7 +357,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -381,7 +392,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
@@ -419,7 +431,8 @@ services:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -444,7 +457,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -473,7 +487,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -502,7 +517,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -529,7 +545,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -563,7 +580,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -608,7 +626,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(&yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -658,7 +677,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(&yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .initialize()
         .await
@@ -701,7 +721,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
@@ -758,7 +779,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(&yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
@@ -814,7 +836,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
@@ -876,7 +899,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
@@ -936,7 +960,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
@@ -1019,7 +1044,8 @@ scripts:
     let parser = Parser::new();
     let config = parser.parse_config(&yaml).expect("Failed to parse");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf()).await.unwrap();
     orchestrator
         .set_work_dir(temp_dir.path().to_path_buf())
         .await

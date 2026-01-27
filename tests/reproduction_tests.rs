@@ -47,8 +47,9 @@ services:
     let parser = Parser::new();
     let config = parser.parse_config(config_content).unwrap();
 
+    let _orch_temp = tempfile::tempdir().unwrap();
     let orchestrator = Arc::new(tokio::sync::Mutex::new(
-        Orchestrator::new(config).await.unwrap(),
+        Orchestrator::new(config, _orch_temp.path().to_path_buf()).await.unwrap(),
     ));
 
     // Initialize and start services
@@ -103,7 +104,7 @@ async fn repro_state_tracker_concurrent_failure_increments() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Wrap in Arc<Mutex> for concurrent access
     let tracker_arc = Arc::new(tokio::sync::Mutex::new(tracker));
@@ -188,8 +189,9 @@ services:
 
     let parser = Parser::new();
     let config = parser.parse_config(config_content).unwrap();
+    let _orch_temp = tempfile::tempdir().unwrap();
     let orchestrator = Arc::new(tokio::sync::Mutex::new(
-        Orchestrator::new(config).await.unwrap(),
+        Orchestrator::new(config, _orch_temp.path().to_path_buf()).await.unwrap(),
     ));
 
     orchestrator.lock().await.initialize().await.unwrap();
@@ -255,8 +257,9 @@ async fn repro_unbounded_health_check_task_spawning() {
     let parser = Parser::new();
     let config = parser.parse_config(&config_str).unwrap();
 
+    let _orch_temp = tempfile::tempdir().unwrap();
     let orchestrator = Arc::new(tokio::sync::Mutex::new(
-        Orchestrator::new(config).await.unwrap(),
+        Orchestrator::new(config, _orch_temp.path().to_path_buf()).await.unwrap(),
     ));
     orchestrator.lock().await.initialize().await.unwrap();
 
@@ -324,7 +327,7 @@ async fn repro_concurrent_health_failures_race() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // This simulates the problem: tracker is accessed without proper synchronization
     // across multiple async health check callbacks
@@ -425,7 +428,7 @@ async fn ACTUAL_BUG_file_lock_race_condition() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker1.register_service(service_state).await;
+    tracker1.register_service(service_state).await.unwrap();
     tracker1.save().await.expect("Save 1");
 
     // Now we have two "processes" accessing the same state file
@@ -529,7 +532,7 @@ async fn ACTUAL_BUG_multiple_concurrent_increments() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
     tracker.save().await.expect("Save init");
 
     let dir_path = temp_dir.path().to_path_buf();
@@ -606,8 +609,9 @@ services:
 
     let parser = Parser::new();
     let cfg = parser.parse_config(config).unwrap();
+    let _orch_temp5 = tempfile::tempdir().unwrap();
     let orchestrator = Arc::new(tokio::sync::Mutex::new(
-        Orchestrator::new(cfg).await.unwrap(),
+        Orchestrator::new(cfg, _orch_temp5.path().to_path_buf()).await.unwrap(),
     ));
 
     orchestrator.lock().await.initialize().await.ok();
@@ -682,7 +686,7 @@ async fn FIXED_atomic_increment_prevents_lost_updates() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
     tracker.force_save().await.expect("Save init");
 
     let dir_path = temp_dir.path().to_path_buf();
@@ -756,7 +760,7 @@ async fn FIXED_atomic_two_concurrent_increments() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
     tracker.force_save().await.expect("Save init");
 
     let dir_path = temp_dir.path().to_path_buf();
@@ -958,8 +962,7 @@ entrypoint: app
     let config = parser.parse_config(config_content).unwrap();
 
     // Create orchestrator with the work directory containing stale lock file
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
-    let _ = orchestrator.set_work_dir(work_dir.to_path_buf()).await;
+    let mut orchestrator = Orchestrator::new(config, work_dir.to_path_buf()).await.unwrap();
 
     // Initialize - this will load the stale lock file
     // The monitoring loop will start and find stale services

@@ -758,7 +758,8 @@ fn test_healthcheck_command_string_format() {
 #[tokio::test]
 async fn test_orchestrator_empty_config() {
     let config = Config::default();
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
 
     let result = orchestrator.initialize().await;
     assert!(
@@ -778,7 +779,8 @@ async fn test_orchestrator_service_with_no_type() {
     let service = Service::default();
     config.services.insert("undefined".to_string(), service);
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
     let result = orchestrator.initialize().await;
 
     // Should handle undefined service type
@@ -805,7 +807,8 @@ async fn test_orchestrator_multiple_entrypoints() {
 
     config.validate().expect("Config should be valid");
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
     let result = orchestrator.initialize().await;
 
     assert!(result.is_ok());
@@ -835,7 +838,8 @@ async fn test_gradle_empty_cwd_vs_none() {
     config.services.insert("service2".to_string(), service2);
     config.entrypoint = Some("service1".to_string());
 
-    let mut orchestrator = Orchestrator::new(config).await.unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
     orchestrator.initialize().await.expect("Should initialize");
 
     let services = orchestrator.get_status().await;
@@ -907,17 +911,10 @@ async fn test_multiple_service_failures_returns_aggregated_error() {
 
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
-    let mut orchestrator = match Orchestrator::new(config).await {
+    let mut orchestrator = match Orchestrator::new(config, temp_dir.path().to_path_buf()).await {
         Ok(o) => o,
         Err(_) => return, // Orchestrator creation failure is acceptable
     };
-    if orchestrator
-        .set_work_dir(temp_dir.path().to_path_buf())
-        .await
-        .is_err()
-    {
-        return;
-    }
     if orchestrator.initialize().await.is_err() {
         return;
     }

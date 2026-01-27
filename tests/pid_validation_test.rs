@@ -28,7 +28,7 @@ async fn test_update_service_pid_valid() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Valid PID should succeed
     let result = tracker.update_service_pid("test-service", 12345).await;
@@ -51,7 +51,7 @@ async fn test_update_service_pid_max_valid() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Maximum valid PID (i32::MAX) should succeed
     let max_valid_pid = i32::MAX as u32;
@@ -77,7 +77,7 @@ async fn test_update_service_pid_overflow_rejected() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // PID > i32::MAX should be rejected
     let overflow_pid = (i32::MAX as u32) + 1;
@@ -109,7 +109,7 @@ async fn test_update_service_pid_u32_max_rejected() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // u32::MAX should definitely be rejected
     let result = tracker.update_service_pid("test-service", u32::MAX).await;
@@ -129,7 +129,7 @@ async fn test_update_service_pid_zero_rejected() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // PID 0 should be rejected (invalid/kernel PID)
     let result = tracker.update_service_pid("test-service", 0).await;
@@ -149,7 +149,7 @@ async fn test_update_service_pid_one_accepted() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // PID 1 (init) is technically valid for storage, even if we won't signal it
     // The check for init happens at signal time, not storage time
@@ -186,7 +186,7 @@ async fn test_update_service_pid_boundary_values() {
             "Process".to_string(),
             "default".to_string(),
         );
-        tracker.register_service(service_state).await;
+        tracker.register_service(service_state).await.unwrap();
 
         let result = tracker.update_service_pid(&service_name, pid).await;
         assert_eq!(
@@ -214,7 +214,7 @@ async fn test_pid_validation_preserves_existing_pid_on_failure() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Set a valid PID first
     tracker
@@ -257,7 +257,7 @@ async fn test_deserialization_sanitizes_invalid_pids() {
             "Process".to_string(),
             "default".to_string(),
         );
-        tracker.register_service(service_state).await;
+        tracker.register_service(service_state).await.unwrap();
         tracker
             .update_service_pid("test-service", 12345)
             .await
@@ -313,7 +313,7 @@ async fn test_pid_flow_through_state_tracker() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Valid PID
     tracker
@@ -353,7 +353,7 @@ async fn test_multiple_services_with_pids() {
         let name = format!("service-{}", i);
         let service_state =
             ServiceState::new(name.clone(), "Process".to_string(), "default".to_string());
-        tracker.register_service(service_state).await;
+        tracker.register_service(service_state).await.unwrap();
         tracker
             .update_service_pid(&name, *pid)
             .await
@@ -400,7 +400,7 @@ async fn test_rapid_pid_updates() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Rapidly update PID many times
     for pid in 1000..1100u32 {
@@ -428,7 +428,7 @@ async fn test_pid_validation_error_messages_are_useful() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Test overflow error message
     let overflow_result = tracker.update_service_pid("error-test", u32::MAX).await;

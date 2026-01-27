@@ -19,13 +19,15 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 /// Helper to create and initialize an orchestrator for testing
-async fn create_test_orchestrator(config_content: &str) -> Arc<Orchestrator> {
+/// Returns both the orchestrator and the temp dir (to keep it alive)
+async fn create_test_orchestrator(config_content: &str) -> (Arc<Orchestrator>, tempfile::TempDir) {
     let parser = Parser::new();
     let config = parser
         .parse_config(config_content)
         .expect("Failed to parse config");
 
-    let mut orchestrator = Orchestrator::new(config)
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .expect("Failed to create orchestrator");
 
@@ -38,7 +40,7 @@ async fn create_test_orchestrator(config_content: &str) -> Arc<Orchestrator> {
         .await
         .expect("Failed to initialize");
 
-    Arc::new(orchestrator)
+    (Arc::new(orchestrator), temp_dir)
 }
 
 /// Smoke test: Stop a service while it's still starting
@@ -87,7 +89,7 @@ services:
 entrypoint: slow
 "#;
 
-    let orchestrator = create_test_orchestrator(config_content).await;
+    let (orchestrator, _temp_dir) = create_test_orchestrator(config_content).await;
 
     // Start slow service (has dependencies, takes time)
     // Since methods take &self, we can call concurrently without external locking
@@ -165,7 +167,7 @@ services:
 entrypoint: top
 "#;
 
-    let orchestrator = create_test_orchestrator(config_content).await;
+    let (orchestrator, _temp_dir) = create_test_orchestrator(config_content).await;
 
     // Start entire chain
     let orch1 = Arc::clone(&orchestrator);
@@ -212,7 +214,7 @@ services:
 entrypoint: slow_service
 "#;
 
-    let orchestrator = create_test_orchestrator(config_content).await;
+    let (orchestrator, _temp_dir) = create_test_orchestrator(config_content).await;
 
     // Start the slow service in background
     let orch_clone = Arc::clone(&orchestrator);
@@ -266,7 +268,7 @@ services:
 entrypoint: test_service
 "#;
 
-    let orchestrator = create_test_orchestrator(config_content).await;
+    let (orchestrator, _temp_dir) = create_test_orchestrator(config_content).await;
 
     // Start both operations concurrently
     let orch1 = Arc::clone(&orchestrator);
@@ -314,7 +316,8 @@ entrypoint: hanging_service
         .parse_config(config_content)
         .expect("Failed to parse config");
 
-    let mut orchestrator = Orchestrator::new(config)
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .expect("Failed to create orchestrator");
 

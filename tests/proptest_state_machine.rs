@@ -70,7 +70,7 @@ async fn apply_operation(tracker: &mut StateTracker, op: &Operation) {
             if !tracker.is_service_registered(name).await {
                 let state =
                     ServiceState::new(name.clone(), "Process".to_string(), "default".to_string());
-                tracker.register_service(state).await;
+                tracker.register_service(state).await.unwrap();
             }
             // Transition to Starting
             let _ = tracker.update_service_status(name, "starting").await;
@@ -200,7 +200,7 @@ proptest! {
                     "Process".to_string(),
                     "default".to_string(),
                 );
-                tracker.register_service(state).await;
+                tracker.register_service(state).await.unwrap();
             }
 
             // Apply random start/stop operations
@@ -261,7 +261,7 @@ proptest! {
                 "Process".to_string(),
                 "default".to_string(),
             );
-            tracker.register_service(state).await;
+            tracker.register_service(state).await.unwrap();
 
             let mut expected_failures = 0u32;
 
@@ -350,7 +350,7 @@ proptest! {
                     "Process".to_string(),
                     "default".to_string(),
                 );
-                tracker.register_service(state).await;
+                tracker.register_service(state).await.unwrap();
             }
 
             // Remove some services

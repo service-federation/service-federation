@@ -29,7 +29,7 @@ async fn test_circuit_breaker_opens_after_threshold() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Configure circuit breaker: 3 restarts in 10 seconds
     let threshold = 3u32;
@@ -85,7 +85,7 @@ async fn test_circuit_breaker_cooldown_period() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Open circuit breaker with a short cooldown for testing (2 seconds)
     let cooldown_secs = 2u64;
@@ -133,7 +133,7 @@ async fn test_circuit_breaker_window_sliding() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Configure circuit breaker: 3 restarts in 2 seconds
     let threshold = 3u32;
@@ -193,7 +193,7 @@ async fn test_restart_history_retrieval() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Record several restarts
     let num_restarts = 5;
@@ -243,7 +243,7 @@ async fn test_circuit_breaker_multiple_services() {
             "Process".to_string(),
             "default".to_string(),
         );
-        tracker.register_service(service_state).await;
+        tracker.register_service(service_state).await.unwrap();
     }
 
     // Configure circuit breaker
@@ -302,7 +302,7 @@ async fn test_circuit_breaker_reset_on_unregister() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Record restarts and open circuit breaker
     for _ in 0..3 {
@@ -331,7 +331,7 @@ async fn test_circuit_breaker_reset_on_unregister() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Circuit breaker should be closed for the new registration
     assert!(
@@ -364,7 +364,7 @@ async fn test_consecutive_failures_increment_and_reset() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Increment consecutive failures
     for i in 1..=5 {
@@ -407,7 +407,7 @@ async fn test_circuit_breaker_time_remaining() {
         "Process".to_string(),
         "default".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Open circuit breaker with 5 second cooldown
     let cooldown_secs = 5u64;

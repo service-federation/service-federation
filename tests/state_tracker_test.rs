@@ -45,7 +45,7 @@ async fn test_register_and_get_service() {
         "default".to_string(),
     );
 
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     assert_eq!(tracker.get_services().await.len(), 1);
     assert!(tracker.is_service_registered("test-service").await);
@@ -69,7 +69,7 @@ async fn test_unregister_service() {
         "default".to_string(),
     );
 
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
     assert!(tracker.is_service_registered("test-service").await);
 
     tracker.unregister_service("test-service").await;
@@ -91,7 +91,7 @@ async fn test_update_service_status() {
         "default".to_string(),
     );
 
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     let result = tracker
         .update_service_status("test-service", "running")
@@ -130,7 +130,7 @@ async fn test_update_service_pid() {
         "default".to_string(),
     );
 
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     let result = tracker.update_service_pid("test-service", 12345).await;
     assert!(result.is_ok());
@@ -171,7 +171,7 @@ async fn test_add_service_port() {
         "default".to_string(),
     );
 
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     let result = tracker
         .add_service_port("test-service", "HTTP_PORT".to_string(), 8080)
@@ -199,7 +199,7 @@ async fn test_save_and_load_lock_file() {
             "default".to_string(),
         );
 
-        tracker.register_service(service_state).await;
+        tracker.register_service(service_state).await.unwrap();
         tracker.track_port(8080).await;
         tracker
             .update_service_status("test-service", "running")
@@ -250,7 +250,7 @@ async fn test_clear_lock_file() {
         "default".to_string(),
     );
 
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
     tracker.save().await.expect("Save failed");
 
     assert!(tracker.lock_file_path().exists());
@@ -276,7 +276,7 @@ async fn test_multiple_services() {
             "Process".to_string(),
             "default".to_string(),
         );
-        tracker.register_service(service_state).await;
+        tracker.register_service(service_state).await.unwrap();
     }
 
     assert_eq!(tracker.get_services().await.len(), 5);
@@ -357,7 +357,7 @@ async fn test_service_with_container_id() {
     );
     service_state.container_id = Some("abc123".to_string());
 
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     let service = tracker.get_service("docker-service").await.unwrap();
     assert_eq!(service.container_id, Some("abc123".to_string()));
@@ -383,8 +383,8 @@ async fn test_namespace_handling() {
         "namespace-b".to_string(),
     );
 
-    tracker.register_service(service1).await;
-    tracker.register_service(service2).await;
+    tracker.register_service(service1).await.unwrap();
+    tracker.register_service(service2).await.unwrap();
 
     let s1 = tracker.get_service("service1").await.unwrap();
     let s2 = tracker.get_service("service2").await.unwrap();
@@ -407,7 +407,7 @@ async fn test_update_service_multiple_times() {
         "default".to_string(),
     );
 
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Multiple status updates
     tracker
@@ -441,7 +441,7 @@ async fn test_port_allocations_per_service() {
         "default".to_string(),
     );
 
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     tracker
         .add_service_port("web-service", "HTTP_PORT".to_string(), 8080)
@@ -521,7 +521,7 @@ async fn test_regression_service_stored_by_plain_name() {
         "Docker".to_string(),
         "root".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Lookup should work with plain name
     assert!(tracker.is_service_registered("docker-infra").await);
@@ -546,7 +546,7 @@ async fn test_regression_update_status_requires_plain_name() {
         "Process".to_string(),
         "root".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
 
     // Update with plain name should succeed
     assert!(tracker
@@ -575,7 +575,7 @@ async fn test_regression_unregister_requires_plain_name() {
         "Process".to_string(),
         "root".to_string(),
     );
-    tracker.register_service(service_state).await;
+    tracker.register_service(service_state).await.unwrap();
     assert!(tracker.is_service_registered("temp-service").await);
 
     // Unregister with namespaced ID should do nothing (key not found)
