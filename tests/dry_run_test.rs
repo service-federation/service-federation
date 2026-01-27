@@ -156,18 +156,20 @@ fn test_dry_run_detects_port_conflicts() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
     let port = listener.local_addr().unwrap().port();
 
-    // Use a string parameter (not type: port) so the allocator doesn't reassign it
+    // Use type: port so the resolver detects the conflict and auto-resolves.
+    // The dry-run then checks the default port and reports [CONFLICT].
     let config = format!(
         r#"
 parameters:
   CONFLICT_PORT:
-    default: "{}"
+    type: port
+    default: {}
 
 services:
   conflicting-service:
     process: "echo service"
     environment:
-      PORT: "${{CONFLICT_PORT}}"
+      PORT: "${{{{CONFLICT_PORT}}}}"
 
 entrypoint: conflicting-service
 "#,
@@ -198,14 +200,14 @@ entrypoint: conflicting-service
 
     assert!(output.status.success(), "Dry run should succeed");
 
-    // Check that port conflict is detected - must contain CONFLICT marker
+    // Check that port conflict is detected on the default port
     assert!(
         stdout.contains("[CONFLICT]"),
-        "Should detect port conflict. Output: {}",
+        "Should detect port conflict on default port. Output: {}",
         stdout
     );
 
-    // The port number should appear somewhere in the output
+    // The conflicting port number should appear in the output
     assert!(
         stdout.contains(&port_str),
         "Should mention the conflicting port {}. Output: {}",

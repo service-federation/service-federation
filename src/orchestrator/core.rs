@@ -1061,6 +1061,15 @@ impl Orchestrator {
         self.resolver.get_port_parameter_names()
     }
 
+    /// Release port listeners so that port conflict checks can detect external processes.
+    ///
+    /// In dry-run mode, the resolver holds TcpListeners on resolved ports to prevent TOCTOU races.
+    /// These must be released before checking for conflicts, otherwise the conflict checker
+    /// detects our own listeners as "conflicts".
+    pub fn release_port_listeners(&self) {
+        self.release_port_listeners_once();
+    }
+
     /// Check if any services in the config are Docker-based.
     pub fn has_docker_services(&self) -> bool {
         self.config

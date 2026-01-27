@@ -577,21 +577,47 @@ async fn run_dry_run(
     }
 
     // 4. Check for port conflicts
+    // Release port listeners first so our own listeners don't appear as conflicts.
+    // Safe in dry-run since we never start services.
+    orchestrator.release_port_listeners();
+
     println!("\nPort availability:");
     let mut conflicts_found = false;
     let port_params = orchestrator.get_port_parameter_names();
+
+    // Collect default port values from config to detect conflicts the resolver auto-resolved
+    let mut default_ports: std::collections::HashMap<&str, u16> =
+        std::collections::HashMap::new();
+    for name in port_params {
+        if let Some(param) = config.parameters.get(name.as_str()) {
+            if let Some(default_val) = &param.default {
+                if let Some(port) = default_val
+                    .as_u64()
+                    .and_then(|v| u16::try_from(v).ok())
+                    .or_else(|| {
+                        default_val
+                            .as_str()
+                            .and_then(|s| s.parse::<u16>().ok())
+                    })
+                {
+                    default_ports.insert(name.as_str(), port);
+                }
+            }
+        }
+    }
 
     for name in port_params {
         let Some(value) = params.get(name) else {
             continue;
         };
-        let Ok(port) = value.parse::<u16>() else {
+        let Ok(resolved_port) = value.parse::<u16>() else {
             continue;
         };
 
-        if let Some(conflict) = PortConflict::check(port) {
+        // Check the resolved port
+        if let Some(conflict) = PortConflict::check(resolved_port) {
             conflicts_found = true;
-            println!("  [CONFLICT] Port {} ({}):", port, name);
+            println!("  [CONFLICT] Port {} ({}):", resolved_port, name);
             if conflict.processes.is_empty() {
                 println!("    - Port in use by unknown process");
             } else {
@@ -600,7 +626,27 @@ async fn run_dry_run(
                 }
             }
         } else {
-            println!("  [OK] Port {} ({}) is available", port, name);
+            println!("  [OK] Port {} ({}) is available", resolved_port, name);
+        }
+
+        // If the resolved port differs from the default, check the default too
+        if let Some(&default_port) = default_ports.get(name.as_str()) {
+            if default_port != resolved_port {
+                if let Some(conflict) = PortConflict::check(default_port) {
+                    conflicts_found = true;
+                    println!(
+                        "  [CONFLICT] Default port {} ({}) - resolved to {} instead:",
+                        default_port, name, resolved_port
+                    );
+                    if conflict.processes.is_empty() {
+                        println!("    - Port in use by unknown process");
+                    } else {
+                        for process in &conflict.processes {
+                            println!("    - '{}' (PID {})", process.name, process.pid);
+                        }
+                    }
+                }
+            }
         }
     }
     if !conflicts_found && port_params.is_empty() {
