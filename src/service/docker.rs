@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,11 +13,14 @@ use std::time::{Duration, Instant};
 /// - With session: `fed-{sanitized_session}-{sanitized_service}` (session is already unique)
 /// - Without session: `fed-{work_dir_hash}-{sanitized_service}` (8-hex-char hash of work_dir)
 ///
+/// Max total length is ~69 chars (`fed-` + 32-char component + `-` + 32-char component),
+/// well within Docker's 128-char container name limit.
+///
 /// This prevents container name collisions across different project directories.
 pub(crate) fn docker_container_name(
     service_name: &str,
     session_id: Option<&str>,
-    work_dir: &str,
+    work_dir: &Path,
 ) -> String {
     let sanitized_service = sanitize_container_name_component(service_name);
 
@@ -34,7 +38,7 @@ pub(crate) fn docker_container_name(
 /// Docker container names must match `[a-zA-Z0-9][a-zA-Z0-9_.-]*`.
 /// This function:
 /// - Replaces invalid characters with underscores
-/// - Truncates to 32 characters (to keep total name under Docker's 64 char limit)
+/// - Truncates to 32 characters (to keep total name under Docker's 128 char limit)
 /// - Ensures the result doesn't start with invalid characters
 pub(crate) fn sanitize_container_name_component(input: &str) -> String {
     const MAX_COMPONENT_LEN: usize = 32;
@@ -43,6 +47,8 @@ pub(crate) fn sanitize_container_name_component(input: &str) -> String {
         return "unnamed".to_string();
     }
 
+    // After this map, every char is ASCII (alphanumeric, '_', '.', '-', or replacement '_'),
+    // so char count == byte count, and byte-indexing is safe on the result.
     let sanitized: String = input
         .chars()
         .take(MAX_COMPONENT_LEN)
@@ -57,6 +63,8 @@ pub(crate) fn sanitize_container_name_component(input: &str) -> String {
 
     // Ensure doesn't start with invalid character (dash, period, or underscore)
     // Docker requires first char to be alphanumeric
+    // SAFETY: &sanitized[1..] is a byte-level slice, but all chars are ASCII after
+    // the map above, so slicing at byte offset 1 is always a valid char boundary.
     let sanitized = if sanitized.starts_with(|c: char| !c.is_ascii_alphanumeric()) {
         format!("x{}", &sanitized[1..])
     } else {
@@ -72,13 +80,31 @@ pub(crate) fn sanitize_container_name_component(input: &str) -> String {
 }
 
 /// Hash a work directory path to 8 hex characters for container name scoping.
-fn hash_work_dir(work_dir: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+///
+/// Uses FNV-1a (32-bit) for deterministic, stable hashing across Rust versions.
+/// `DefaultHasher` uses SipHash with randomized seeds, making its output
+/// non-reproducible across process restarts. FNV-1a is simple, fast, and
+/// produces the same hash for the same input regardless of Rust toolchain.
+///
+/// The path is canonicalized first so that `./project` and `/abs/path/project`
+/// produce the same container name.
+fn hash_work_dir(work_dir: &Path) -> String {
+    let canonical = std::fs::canonicalize(work_dir).unwrap_or_else(|_| work_dir.to_path_buf());
+    let bytes = canonical.as_os_str().as_encoded_bytes();
+    let hash = fnv1a_32(bytes);
+    format!("{:08x}", hash)
+}
 
-    let mut hasher = DefaultHasher::new();
-    work_dir.hash(&mut hasher);
-    format!("{:08x}", hasher.finish() as u32)
+/// FNV-1a 32-bit hash — deterministic across Rust versions and platforms.
+pub(crate) fn fnv1a_32(data: &[u8]) -> u32 {
+    const FNV_OFFSET: u32 = 2_166_136_261;
+    const FNV_PRIME: u32 = 16_777_619;
+    let mut hash = FNV_OFFSET;
+    for &byte in data {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 // Docker operation timeouts (normalized for consistency)
@@ -486,7 +512,7 @@ impl ServiceManager for DockerService {
 
         let container_name = {
             let base = self.base.read();
-            docker_container_name(&service_name, self.session_id.as_deref(), &base.work_dir)
+            docker_container_name(&service_name, self.session_id.as_deref(), Path::new(&base.work_dir))
         };
 
         // Remove any existing container with this name unconditionally.
@@ -1537,23 +1563,23 @@ mod tests {
     #[test]
     fn test_container_name_without_session() {
         // Without session, should include work_dir hash
-        let name = docker_container_name("my-service", None, "/tmp/project");
-        let hash = hash_work_dir("/tmp/project");
+        let name = docker_container_name("my-service", None, Path::new("/tmp/project"));
+        let hash = hash_work_dir(Path::new("/tmp/project"));
         assert_eq!(name, format!("fed-{}-my-service", hash));
     }
 
     #[test]
     fn test_container_name_with_session() {
         // With session, should use session ID instead of work_dir hash
-        let name = docker_container_name("my-service", Some("abc123"), "/tmp/project");
+        let name = docker_container_name("my-service", Some("abc123"), Path::new("/tmp/project"));
         assert_eq!(name, "fed-abc123-my-service");
     }
 
     #[test]
     fn test_container_name_different_work_dirs() {
         // Different work directories should produce different container names
-        let name_a = docker_container_name("svc", None, "/projects/alpha");
-        let name_b = docker_container_name("svc", None, "/projects/beta");
+        let name_a = docker_container_name("svc", None, Path::new("/projects/alpha"));
+        let name_b = docker_container_name("svc", None, Path::new("/projects/beta"));
         assert_ne!(
             name_a, name_b,
             "Different work dirs must produce different names"
@@ -1563,8 +1589,8 @@ mod tests {
     #[test]
     fn test_container_name_session_overrides_work_dir() {
         // Same session ID but different work dirs should produce the same name
-        let name_a = docker_container_name("svc", Some("sess1"), "/projects/alpha");
-        let name_b = docker_container_name("svc", Some("sess1"), "/projects/beta");
+        let name_a = docker_container_name("svc", Some("sess1"), Path::new("/projects/alpha"));
+        let name_b = docker_container_name("svc", Some("sess1"), Path::new("/projects/beta"));
         assert_eq!(name_a, name_b, "Session should override work_dir scoping");
     }
 }

@@ -446,10 +446,16 @@ impl Orchestrator {
                             // Process/Gradle services: run healthcheck on host
                             if service.image.is_some() {
                                 // Docker service - use docker exec
+                                let session_id =
+                                    if let Ok(Some(session)) = crate::session::Session::current() {
+                                        Some(session.id().to_string())
+                                    } else {
+                                        None
+                                    };
                                 let container_name = crate::service::docker_container_name(
                                     name,
-                                    None,
-                                    &self.work_dir.to_string_lossy(),
+                                    session_id.as_deref(),
+                                    &self.work_dir,
                                 );
                                 Box::new(DockerCommandChecker::new(
                                     container_name,

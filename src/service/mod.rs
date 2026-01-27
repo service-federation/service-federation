@@ -31,6 +31,7 @@ mod types;
 
 pub use compose::*;
 pub(crate) use docker::docker_container_name;
+pub(crate) use docker::fnv1a_32;
 pub use docker::*;
 pub use external::*;
 pub use gradle::*;

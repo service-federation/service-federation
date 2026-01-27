@@ -148,14 +148,16 @@ impl DockerComposeService {
         })
     }
 
-    /// Generate a short hash of the compose file path for project naming
+    /// Generate a short hash of the compose file path for project naming.
+    ///
+    /// Uses FNV-1a (32-bit) for deterministic, stable hashing across Rust versions.
+    /// The path is canonicalized first so that relative and absolute paths to the
+    /// same file produce the same project name.
     fn hash_path(path: &Path) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        path.to_string_lossy().hash(&mut hasher);
-        format!("{:x}", hasher.finish() & 0xFFFF) // 4 hex chars
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let bytes = canonical.as_os_str().as_encoded_bytes();
+        let hash = super::fnv1a_32(bytes);
+        format!("{:04x}", hash & 0xFFFF) // 4 hex chars
     }
 
     /// Get project name with session scoping if FED_SESSION is set.
