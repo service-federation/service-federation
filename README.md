@@ -232,6 +232,32 @@ services:
       DATABASE_URL: 'postgres://localhost:{{DB_PORT}}/db'
 ```
 
+### Startup Messages
+
+Show where to access services after startup using template-resolved messages:
+
+```yaml
+services:
+  api:
+    process: npm start
+    startup_message: "API docs: http://localhost:{{API_PORT}}/docs"
+  next:
+    process: npm run dev
+    startup_message: "Application running on http://localhost:{{NEXT_PORT}}"
+```
+
+After all services start, messages are printed in a box. Entrypoint services sort last so the primary URL is always the visual punchline:
+
+```
+╭──────────────────────────────────────────────────╮
+│ API docs: http://localhost:8081/docs              │
+├──────────────────────────────────────────────────┤
+│ Application running on http://localhost:3000      │
+╰──────────────────────────────────────────────────╯
+```
+
+With `--isolated` mode (randomized ports), this is the easiest way to find the assigned URLs. A warning is emitted if an entrypoint service has no `startup_message`.
+
 ### Dependency Management
 
 ```yaml
