@@ -54,6 +54,10 @@ pub enum Commands {
         /// Preview what would happen without actually starting services
         #[arg(long)]
         dry_run: bool,
+
+        /// Allocate fresh random ports instead of using configured defaults
+        #[arg(long)]
+        randomize_ports: bool,
     },
     /// Stop services
     Stop {

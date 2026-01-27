@@ -239,6 +239,11 @@ async fn run() -> anyhow::Result<()> {
     };
     orchestrator.set_output_mode(output_mode);
 
+    // Handle --randomize-ports on start: fresh random ports, skip session cache
+    if matches!(&cli.command, Commands::Start { randomize_ports: true, .. }) {
+        orchestrator.set_randomize_ports(true);
+    }
+
     // For script commands, check if the script has isolated: true
     // If so, set auto_resolve_conflicts to avoid prompts for ports that will be re-allocated anyway
     let is_isolated_script = match &cli.command {
@@ -268,6 +273,7 @@ async fn run() -> anyhow::Result<()> {
             replace,
             output: _,
             dry_run,
+            randomize_ports: _,
         } => {
             commands::run_start(
                 &mut orchestrator,
