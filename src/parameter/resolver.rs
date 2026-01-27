@@ -54,6 +54,28 @@ pub enum PortResolutionReason {
     Random,
 }
 
+impl std::fmt::Display for PortResolutionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DefaultAvailable => write!(f, "default port available"),
+            Self::ConflictAutoResolved {
+                default_port,
+                conflict_pid,
+                conflict_process,
+            } => {
+                write!(f, "default port {} conflicted", default_port)?;
+                match (conflict_pid, conflict_process) {
+                    (Some(pid), Some(name)) => write!(f, " with '{}' (PID {})", name, pid),
+                    (Some(pid), None) => write!(f, " with PID {}", pid),
+                    _ => write!(f, " with unknown process"),
+                }
+            }
+            Self::SessionCached => write!(f, "restored from session cache"),
+            Self::Random => write!(f, "randomly allocated"),
+        }
+    }
+}
+
 /// Record of how a port parameter was resolved
 #[derive(Debug, Clone)]
 pub struct PortResolution {
@@ -296,6 +318,9 @@ impl Resolver {
 
     /// Resolve just the parameters (first pass, before external service expansion)
     pub fn resolve_parameters(&mut self, config: &mut Config) -> Result<()> {
+        // Clear any stale resolutions from a previous call (e.g. dry-run then real start)
+        self.port_resolutions.clear();
+
         // First, apply .env file values to parameters (strict mode: must be declared)
         self.apply_env_file_to_parameters(config)?;
 
@@ -370,15 +395,16 @@ impl Resolver {
                                         port,
                                         name
                                     );
-                                    let new_port =
+                                    let (new_port, conflict) =
                                         self.handle_port_conflict_interactive(port, name)?;
                                     session.save_port(name.clone(), new_port)?;
+                                    let first = conflict.as_ref().and_then(|c| c.processes.first());
                                     Some((
                                         new_port,
                                         PortResolutionReason::ConflictAutoResolved {
                                             default_port: port,
-                                            conflict_pid: None,
-                                            conflict_process: None,
+                                            conflict_pid: first.map(|p| p.pid),
+                                            conflict_process: first.map(|p| p.name.clone()),
                                         },
                                     ))
                                 }
@@ -397,16 +423,21 @@ impl Resolver {
                                         {
                                             (default_port, PortResolutionReason::DefaultAvailable)
                                         } else {
-                                            let p = self.handle_port_conflict_interactive(
-                                                default_port,
-                                                name,
-                                            )?;
+                                            let (p, conflict) = self
+                                                .handle_port_conflict_interactive(
+                                                    default_port,
+                                                    name,
+                                                )?;
+                                            let first = conflict
+                                                .as_ref()
+                                                .and_then(|c| c.processes.first());
                                             (
                                                 p,
                                                 PortResolutionReason::ConflictAutoResolved {
                                                     default_port,
-                                                    conflict_pid: None,
-                                                    conflict_process: None,
+                                                    conflict_pid: first.map(|p| p.pid),
+                                                    conflict_process: first
+                                                        .map(|p| p.name.clone()),
                                                 },
                                             )
                                         }
@@ -445,14 +476,16 @@ impl Resolver {
                                 if self.port_allocator.try_allocate_port(default_port).is_ok() {
                                     (default_port, PortResolutionReason::DefaultAvailable)
                                 } else {
-                                    let p =
+                                    let (p, conflict) =
                                         self.handle_port_conflict_interactive(default_port, name)?;
+                                    let first =
+                                        conflict.as_ref().and_then(|c| c.processes.first());
                                     (
                                         p,
                                         PortResolutionReason::ConflictAutoResolved {
                                             default_port,
-                                            conflict_pid: None,
-                                            conflict_process: None,
+                                            conflict_pid: first.map(|p| p.pid),
+                                            conflict_process: first.map(|p| p.name.clone()),
                                         },
                                     )
                                 }
@@ -750,16 +783,23 @@ impl Resolver {
     ///
     /// This method uses interior mutability in the port allocator to allow
     /// calling with `&self`, enabling concurrent start operations.
-    pub fn release_port_listeners(&self) {
+    pub(crate) fn release_port_listeners(&self) {
         self.port_allocator.release_listeners();
     }
 
-    /// Handle port conflict with interactive prompt or error
-    fn handle_port_conflict_interactive(&mut self, port: u16, param_name: &str) -> Result<u16> {
+    /// Handle port conflict with interactive prompt or error.
+    ///
+    /// Returns `(resolved_port, Option<PortConflict>)` — the conflict is `Some` when the
+    /// port was reassigned due to a conflict, carrying pid/process info for display.
+    fn handle_port_conflict_interactive(
+        &mut self,
+        port: u16,
+        param_name: &str,
+    ) -> Result<(u16, Option<PortConflict>)> {
         // Check for conflict
         let Some(conflict) = PortConflict::check(port) else {
             // Port is actually available, just allocate it
-            return Ok(port);
+            return Ok((port, None));
         };
 
         // Allocate alternative port
@@ -773,7 +813,7 @@ impl Resolver {
                 param_name,
                 alternative_port
             );
-            return Ok(alternative_port);
+            return Ok((alternative_port, Some(conflict)));
         }
 
         // Handle conflict (interactive or error)
@@ -787,11 +827,11 @@ impl Resolver {
                 match std::net::TcpListener::bind(("127.0.0.1", port)) {
                     Ok(listener) => {
                         self.port_allocator.register_port(port, listener);
-                        Ok(port)
+                        Ok((port, None))
                     }
                     Err(_) => {
                         // Still not available, use alternative
-                        Ok(alternative_port)
+                        Ok((alternative_port, Some(conflict)))
                     }
                 }
             }
@@ -800,17 +840,17 @@ impl Resolver {
                 match std::net::TcpListener::bind(("127.0.0.1", port)) {
                     Ok(listener) => {
                         self.port_allocator.register_port(port, listener);
-                        Ok(port)
+                        Ok((port, None))
                     }
                     Err(_) => {
                         // Still not available, use alternative
-                        Ok(alternative_port)
+                        Ok((alternative_port, Some(conflict)))
                     }
                 }
             }
             PortConflictAction::Ignore => {
                 // Use alternative port
-                Ok(alternative_port)
+                Ok((alternative_port, Some(conflict)))
             }
             PortConflictAction::Abort => Err(Error::Aborted),
         }
