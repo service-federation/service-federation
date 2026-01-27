@@ -88,7 +88,7 @@ pub(crate) fn sanitize_container_name_component(input: &str) -> String {
 ///
 /// The path is canonicalized first so that `./project` and `/abs/path/project`
 /// produce the same container name.
-fn hash_work_dir(work_dir: &Path) -> String {
+pub(crate) fn hash_work_dir(work_dir: &Path) -> String {
     let canonical = std::fs::canonicalize(work_dir).unwrap_or_else(|_| work_dir.to_path_buf());
     let bytes = canonical.as_os_str().as_encoded_bytes();
     let hash = fnv1a_32(bytes);
@@ -612,11 +612,13 @@ impl ServiceManager for DockerService {
         for volume in &self.config.volumes {
             Self::validate_volume_spec(volume)?;
             args.push("-v".to_string());
-            // Scope named volumes with session ID for isolation
+            // Scope named volumes for isolation (session ID or work_dir hash)
             let scoped_volume = if let Some(ref sid) = self.session_id {
                 Self::scope_volume_with_session(volume, sid)
             } else {
-                volume.clone()
+                let base = self.base.read();
+                let hash = hash_work_dir(Path::new(&base.work_dir));
+                Self::scope_volume_with_session(volume, &hash)
             };
             args.push(scoped_volume);
         }

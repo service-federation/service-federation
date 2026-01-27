@@ -399,32 +399,32 @@ impl<'a> ServiceLifecycleCommands<'a> {
     /// It's designed to be resilient - if some volumes can't be removed, it continues
     /// attempting to remove the rest.
     async fn clean_docker_volumes(&self, service_name: &str, volumes: &[String]) -> Result<()> {
-        // Extract all named volumes first
+        // Extract all named volumes from config (unscoped names like "postgres_data")
         let all_named_volumes: Vec<String> = volumes
             .iter()
             .filter_map(|v| Self::extract_named_volume(v))
             .collect();
 
-        // Filter to only fed- prefixed volumes for safety
+        if all_named_volumes.is_empty() {
+            tracing::debug!(
+                "No named volumes found for service '{}' to clean",
+                service_name
+            );
+            return Ok(());
+        }
+
+        // Scope volumes the same way docker.rs does at startup:
+        // session ID if active, otherwise work_dir hash
+        let scope_id = if let Some(session) = crate::session::Session::current()? {
+            session.id().to_string()
+        } else {
+            crate::service::hash_work_dir(self.work_dir)
+        };
+
         let fed_volumes: Vec<String> = all_named_volumes
             .iter()
-            .filter(|v| v.starts_with("fed-"))
-            .cloned()
+            .map(|v| format!("fed-{}-{}", scope_id, v))
             .collect();
-
-        // Log skipped volumes for transparency
-        let skipped_volumes: Vec<&String> = all_named_volumes
-            .iter()
-            .filter(|v| !v.starts_with("fed-"))
-            .collect();
-
-        if !skipped_volumes.is_empty() {
-            tracing::info!(
-                "Skipping non-fed volumes for service '{}': {:?} (only fed-* volumes are auto-cleaned)",
-                service_name,
-                skipped_volumes
-            );
-        }
 
         if fed_volumes.is_empty() {
             tracing::debug!(

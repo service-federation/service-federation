@@ -1,8 +1,22 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use tempfile::TempDir;
+
+/// Compute work_dir hash matching docker.rs hash_work_dir (FNV-1a 32-bit).
+fn hash_work_dir(work_dir: &Path) -> String {
+    let canonical = std::fs::canonicalize(work_dir).unwrap_or_else(|_| work_dir.to_path_buf());
+    let bytes = canonical.as_os_str().as_encoded_bytes();
+    const FNV_OFFSET: u32 = 2_166_136_261;
+    const FNV_PRIME: u32 = 16_777_619;
+    let mut hash = FNV_OFFSET;
+    for &byte in bytes {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{:08x}", hash)
+}
 
 fn fed_binary() -> String {
     env!("CARGO_BIN_EXE_fed").to_string()
@@ -358,7 +372,8 @@ fn test_clean_with_docker_volumes() {
         return;
     }
 
-    let volume_name = format!("fed-test-volume-{}", std::process::id());
+    // Config uses unscoped volume name; fed will scope it with work_dir hash
+    let raw_volume = format!("testvolume{}", std::process::id());
     let config_content = format!(
         r#"
 services:
@@ -367,20 +382,24 @@ services:
     volumes:
       - "{}:/data"
 "#,
-        volume_name
+        raw_volume
     );
 
     let (temp_dir, config_path) = create_clean_test_config(&config_content);
     let workdir = temp_dir.path().to_str().unwrap();
 
-    // Create the volume manually
+    // Compute the scoped volume name (same as docker.rs does)
+    let hash = hash_work_dir(temp_dir.path());
+    let scoped_volume = format!("fed-{}-{}", hash, raw_volume);
+
+    // Create the scoped volume manually (simulating what fed start would create)
     let _ = Command::new("docker")
-        .args(["volume", "create", &volume_name])
+        .args(["volume", "create", &scoped_volume])
         .output();
 
     // Verify volume exists
     let volume_check = Command::new("docker")
-        .args(["volume", "inspect", &volume_name])
+        .args(["volume", "inspect", &scoped_volume])
         .output()
         .expect("Failed to inspect volume");
 
@@ -404,7 +423,7 @@ services:
     // Verify volume is removed
     std::thread::sleep(Duration::from_millis(500));
     let volume_check_after = Command::new("docker")
-        .args(["volume", "inspect", &volume_name])
+        .args(["volume", "inspect", &scoped_volume])
         .output()
         .expect("Failed to inspect volume");
 
@@ -415,7 +434,7 @@ services:
 
     // Cleanup (in case test failed)
     let _ = Command::new("docker")
-        .args(["volume", "rm", "-f", &volume_name])
+        .args(["volume", "rm", "-f", &scoped_volume])
         .output();
 }
 
@@ -462,15 +481,15 @@ services:
 }
 
 #[test]
-fn test_clean_only_removes_fed_prefixed_volumes() {
+fn test_clean_only_removes_scoped_volumes() {
     if !is_docker_available() {
         eprintln!("Skipping Docker volume test - Docker not available");
         return;
     }
 
-    // Create a fed- prefixed volume and a non-fed volume
-    let fed_volume = format!("fed-test-clean-{}", std::process::id());
-    let non_fed_volume = format!("user-data-{}", std::process::id());
+    // Config has two named volumes; fed clean scopes them with work_dir hash
+    let vol_a = format!("dbdata{}", std::process::id());
+    let unrelated_volume = format!("unrelated-volume-{}", std::process::id());
 
     let config_content = format!(
         r#"
@@ -478,46 +497,48 @@ services:
   docker-service:
     image: alpine:latest
     volumes:
-      - "{}:/fed-data"
-      - "{}:/user-data"
+      - "{}:/data"
 "#,
-        fed_volume, non_fed_volume
+        vol_a
     );
 
     let (temp_dir, config_path) = create_clean_test_config(&config_content);
     let workdir = temp_dir.path().to_str().unwrap();
 
-    // Create both volumes manually
-    let fed_create = Command::new("docker")
-        .args(["volume", "create", &fed_volume])
+    // Compute scoped volume name
+    let hash = hash_work_dir(temp_dir.path());
+    let scoped_vol_a = format!("fed-{}-{}", hash, vol_a);
+
+    // Create the scoped volume and an unrelated volume
+    let scoped_create = Command::new("docker")
+        .args(["volume", "create", &scoped_vol_a])
         .output();
-    let non_fed_create = Command::new("docker")
-        .args(["volume", "create", &non_fed_volume])
+    let unrelated_create = Command::new("docker")
+        .args(["volume", "create", &unrelated_volume])
         .output();
 
-    if fed_create.is_err() || non_fed_create.is_err() {
+    if scoped_create.is_err() || unrelated_create.is_err() {
         eprintln!("Could not create test volumes, skipping test");
         return;
     }
 
     // Verify both exist
-    let fed_check = Command::new("docker")
-        .args(["volume", "inspect", &fed_volume])
+    let scoped_check = Command::new("docker")
+        .args(["volume", "inspect", &scoped_vol_a])
         .output()
-        .expect("Failed to inspect fed volume");
-    let non_fed_check = Command::new("docker")
-        .args(["volume", "inspect", &non_fed_volume])
+        .expect("Failed to inspect scoped volume");
+    let unrelated_check = Command::new("docker")
+        .args(["volume", "inspect", &unrelated_volume])
         .output()
-        .expect("Failed to inspect non-fed volume");
+        .expect("Failed to inspect unrelated volume");
 
-    if !fed_check.status.success() || !non_fed_check.status.success() {
+    if !scoped_check.status.success() || !unrelated_check.status.success() {
         eprintln!("Could not verify test volumes exist, skipping test");
-        // Cleanup
         let _ = Command::new("docker")
-            .args(["volume", "rm", "-f", &fed_volume])
+            .args(["volume", "rm", "-f", &scoped_vol_a])
             .output();
         let _ = Command::new("docker")
-            .args(["volume", "rm", "-f", &non_fed_volume])
+            .args(["volume", "rm", "-f", &unrelated_volume])
             .output();
         return;
     }
@@ -536,30 +557,30 @@ services:
 
     std::thread::sleep(Duration::from_millis(500));
 
-    // Verify fed- volume is removed
-    let fed_check_after = Command::new("docker")
-        .args(["volume", "inspect", &fed_volume])
+    // Verify scoped volume is removed
+    let scoped_check_after = Command::new("docker")
+        .args(["volume", "inspect", &scoped_vol_a])
         .output()
-        .expect("Failed to inspect fed volume after clean");
+        .expect("Failed to inspect scoped volume after clean");
 
     assert!(
-        !fed_check_after.status.success(),
-        "fed- prefixed volume should be removed after clean"
+        !scoped_check_after.status.success(),
+        "Scoped volume should be removed after clean"
     );
 
-    // Verify non-fed volume still exists
-    let non_fed_check_after = Command::new("docker")
-        .args(["volume", "inspect", &non_fed_volume])
+    // Verify unrelated volume still exists
+    let unrelated_check_after = Command::new("docker")
+        .args(["volume", "inspect", &unrelated_volume])
         .output()
-        .expect("Failed to inspect non-fed volume after clean");
+        .expect("Failed to inspect unrelated volume after clean");
 
     assert!(
-        non_fed_check_after.status.success(),
-        "Non-fed volume should NOT be removed by clean"
+        unrelated_check_after.status.success(),
+        "Unrelated volume should NOT be removed by clean"
     );
 
-    // Cleanup the non-fed volume
+    // Cleanup the unrelated volume
     let _ = Command::new("docker")
-        .args(["volume", "rm", "-f", &non_fed_volume])
+        .args(["volume", "rm", "-f", &unrelated_volume])
         .output();
 }
