@@ -157,7 +157,9 @@ impl SqliteStateTracker {
     ///
     /// This static method allows fetching services without borrowing `&self`,
     /// enabling the caller to release any outer locks before the async query.
-    pub async fn fetch_services_from_connection(conn: &Connection) -> HashMap<String, ServiceState> {
+    pub async fn fetch_services_from_connection(
+        conn: &Connection,
+    ) -> HashMap<String, ServiceState> {
         match conn
             .call(|conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(

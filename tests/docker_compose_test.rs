@@ -111,7 +111,9 @@ services:
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
     let orch_temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     let result = orchestrator.initialize().await;
 
     // Should fail because compose file doesn't exist
@@ -139,7 +141,9 @@ services:
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
     let orch_temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator.initialize().await.expect("Init failed");
 
     let result = orchestrator.start("test").await;
@@ -177,7 +181,9 @@ services:
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
     let orch_temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator.initialize().await.expect("Init failed");
 
     // Start service
@@ -239,7 +245,9 @@ services:
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
     let orch_temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator.initialize().await.expect("Init failed");
 
     orchestrator.start("busybox").await.expect("Start failed");
@@ -295,7 +303,9 @@ services:
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
     let orch_temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator.initialize().await.expect("Init failed");
 
     // Start app - should start redis first
@@ -383,7 +393,9 @@ services:
     std::env::set_var("FED_SESSION", "test-isolation-1");
     let config1 = parser.parse_config(&yaml1).expect("Failed to parse 1");
     let orch1_temp = tempfile::tempdir().unwrap();
-    let mut orch1 = Orchestrator::new(config1, orch1_temp.path().to_path_buf()).await.unwrap();
+    let mut orch1 = Orchestrator::new(config1, orch1_temp.path().to_path_buf())
+        .await
+        .unwrap();
     orch1.initialize().await.expect("Init 1 failed");
     orch1.start("nginx1").await.expect("Start 1 failed");
 
@@ -391,7 +403,9 @@ services:
     std::env::set_var("FED_SESSION", "test-isolation-2");
     let config2 = parser.parse_config(&yaml2).expect("Failed to parse 2");
     let orch2_temp = tempfile::tempdir().unwrap();
-    let mut orch2 = Orchestrator::new(config2, orch2_temp.path().to_path_buf()).await.unwrap();
+    let mut orch2 = Orchestrator::new(config2, orch2_temp.path().to_path_buf())
+        .await
+        .unwrap();
     orch2.initialize().await.expect("Init 2 failed");
     orch2.start("nginx2").await.expect("Start 2 failed");
 
@@ -445,7 +459,9 @@ services:
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
     let orch_temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator.initialize().await.expect("Init failed");
 
     // Start once
@@ -486,7 +502,9 @@ services:
     let config = parser.parse_config(yaml).expect("Failed to parse");
 
     let orch_temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator.initialize().await.expect("Init failed");
 
     orchestrator.start("nginx").await.expect("Start failed");
@@ -534,7 +552,9 @@ services:
     let config1 = parser.parse_config(yaml1).expect("Failed to parse");
 
     let orch1_temp = tempfile::tempdir().unwrap();
-    let mut orch1 = Orchestrator::new(config1, orch1_temp.path().to_path_buf()).await.unwrap();
+    let mut orch1 = Orchestrator::new(config1, orch1_temp.path().to_path_buf())
+        .await
+        .unwrap();
     orch1.initialize().await.expect("Init failed");
     orch1.start("nginx1").await.expect("Start 1 failed");
 
@@ -543,7 +563,9 @@ services:
     // Try to start another service on the same port
     let config2 = parser.parse_config(yaml1).expect("Failed to parse");
     let orch2_temp = tempfile::tempdir().unwrap();
-    let mut orch2 = Orchestrator::new(config2, orch2_temp.path().to_path_buf()).await.unwrap();
+    let mut orch2 = Orchestrator::new(config2, orch2_temp.path().to_path_buf())
+        .await
+        .unwrap();
     orch2.initialize().await.expect("Init 2 failed");
 
     let result = orch2.start("nginx1").await;
@@ -604,7 +626,9 @@ services:
     let config = parser.parse_config(&yaml).expect("Failed to parse");
 
     let orch_temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator.initialize().await.expect("Init failed");
     orchestrator
         .start("compose-process")

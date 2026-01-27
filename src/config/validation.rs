@@ -51,7 +51,8 @@ impl Config {
                 // They will be validated when external configs are loaded
                 if dep.is_simple() && !self.services.contains_key(dep_name) {
                     // Build a dynamically-sized hint box
-                    let hint_text = format!("Did you remove '{}'? Update the depends_on list:", dep_name);
+                    let hint_text =
+                        format!("Did you remove '{}'? Update the depends_on list:", dep_name);
                     let box_width = hint_text.len() + 2; // +2 for padding
                     let border = "─".repeat(box_width);
 
@@ -90,7 +91,8 @@ impl Config {
         for (script_name, script) in &self.scripts {
             for dep in &script.depends_on {
                 if !self.services.contains_key(dep) && !self.scripts.contains_key(dep) {
-                    let hint_text = format!("Did you remove '{}'? Update the depends_on list:", dep);
+                    let hint_text =
+                        format!("Did you remove '{}'? Update the depends_on list:", dep);
                     let box_width = hint_text.len() + 2;
                     let border = "─".repeat(box_width);
 

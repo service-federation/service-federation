@@ -38,7 +38,9 @@ async fn test_no_profiles_active_starts_only_profileless_services() {
 
     // Create orchestrator with no active profiles
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator
         .initialize()
         .await

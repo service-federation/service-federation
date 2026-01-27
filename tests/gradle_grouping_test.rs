@@ -54,7 +54,9 @@ async fn test_gradle_services_same_cwd_no_dependencies_are_grouped() {
     config.entrypoint = Some("service1".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator
         .initialize()
         .await
@@ -104,7 +106,9 @@ async fn test_gradle_services_with_dependencies_are_grouped() {
     config.entrypoint = Some("service2".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator
         .initialize()
         .await
@@ -143,7 +147,9 @@ async fn test_gradle_services_different_cwd_are_not_grouped() {
     config.entrypoint = Some("service1".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator
         .initialize()
         .await
@@ -182,7 +188,9 @@ async fn test_three_services_same_cwd_all_grouped() {
     config.entrypoint = Some("service1".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator
         .initialize()
         .await
@@ -250,7 +258,9 @@ async fn test_complex_dependency_chain_grouping() {
     config.entrypoint = Some("service4".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator
         .initialize()
         .await
@@ -301,7 +311,9 @@ async fn test_mixed_service_types_in_parallel_group() {
     config.entrypoint = Some("gradle1".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator
         .initialize()
         .await
@@ -356,7 +368,9 @@ async fn test_gradle_grouping_with_absolute_and_relative_paths() {
     config.entrypoint = Some("service1".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator
         .initialize()
         .await
@@ -390,7 +404,9 @@ async fn test_single_gradle_service_not_grouped() {
     config.entrypoint = Some("service1".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator
         .initialize()
         .await
@@ -441,7 +457,9 @@ async fn test_environment_merging_in_grouped_services() {
     config.entrypoint = Some("service1".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     let result = orchestrator.initialize().await;
 
     assert!(

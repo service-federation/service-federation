@@ -128,7 +128,6 @@ impl DockerService {
         base.set_status(Status::Running);
     }
 
-
     /// Scope a volume specification with a session ID.
     ///
     /// Transforms named volumes to include the session prefix for isolation:
@@ -1487,10 +1486,7 @@ mod tests {
     fn test_sanitize_container_name_unicode() {
         // Unicode characters should be replaced with underscores
         // "cafe" with accented 'e' becomes "caf_"
-        assert_eq!(
-            sanitize_container_name_component("caf\u{00e9}"),
-            "caf_"
-        );
+        assert_eq!(sanitize_container_name_component("caf\u{00e9}"), "caf_");
     }
 
     #[test]
@@ -1529,19 +1525,13 @@ mod tests {
 
     #[test]
     fn test_sanitize_container_name_empty() {
-        assert_eq!(
-            sanitize_container_name_component(""),
-            "unnamed"
-        );
+        assert_eq!(sanitize_container_name_component(""), "unnamed");
     }
 
     #[test]
     fn test_sanitize_container_name_preserves_valid_chars() {
         // Verify all valid characters are preserved
-        assert_eq!(
-            sanitize_container_name_component("aZ09_.-"),
-            "aZ09_.-"
-        );
+        assert_eq!(sanitize_container_name_component("aZ09_.-"), "aZ09_.-");
     }
 
     #[test]
@@ -1564,7 +1554,10 @@ mod tests {
         // Different work directories should produce different container names
         let name_a = docker_container_name("svc", None, "/projects/alpha");
         let name_b = docker_container_name("svc", None, "/projects/beta");
-        assert_ne!(name_a, name_b, "Different work dirs must produce different names");
+        assert_ne!(
+            name_a, name_b,
+            "Different work dirs must produce different names"
+        );
     }
 
     #[test]

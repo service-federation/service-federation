@@ -240,7 +240,13 @@ async fn run() -> anyhow::Result<()> {
     orchestrator.set_output_mode(output_mode);
 
     // Handle --randomize-ports on start: fresh random ports, skip session cache
-    if matches!(&cli.command, Commands::Start { randomize_ports: true, .. }) {
+    if matches!(
+        &cli.command,
+        Commands::Start {
+            randomize_ports: true,
+            ..
+        }
+    ) {
         orchestrator.set_randomize_ports(true);
     }
 

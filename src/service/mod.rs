@@ -30,8 +30,8 @@ mod resources;
 mod types;
 
 pub use compose::*;
-pub use docker::*;
 pub(crate) use docker::docker_container_name;
+pub use docker::*;
 pub use external::*;
 pub use gradle::*;
 pub use log_capture::*;

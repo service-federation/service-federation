@@ -913,8 +913,8 @@ fn validate_pid_start_time(pid: u32, expected_start: chrono::DateTime<chrono::Ut
                                 if let Ok(uptime_secs) = uptime_secs_str.parse::<f64>() {
                                     // Assume 100 jiffies per second (common default)
                                     let jiffies_per_sec: u64 = 100;
-                                    let process_age_secs =
-                                        uptime_secs - (starttime_jiffies as f64 / jiffies_per_sec as f64);
+                                    let process_age_secs = uptime_secs
+                                        - (starttime_jiffies as f64 / jiffies_per_sec as f64);
 
                                     // If process started more than 60 seconds before our expected time,
                                     // it's likely a different process that reused the PID
@@ -963,7 +963,9 @@ fn validate_pid_start_time(pid: u32, expected_start: chrono::DateTime<chrono::Ut
                         if time_diff > 60 {
                             tracing::warn!(
                                 "PID {} appears to be reused: process started at {} vs expected {}",
-                                pid, process_start_utc, expected_start
+                                pid,
+                                process_start_utc,
+                                expected_start
                             );
                             return false;
                         }

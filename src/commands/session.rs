@@ -86,9 +86,10 @@ pub async fn run_session(
             let config = parser.load_config(&config_path)?;
 
             // Create orchestrator to stop services
-            let mut orchestrator = Orchestrator::new(config.clone(), session.workspace().to_path_buf())
-                .await?
-                .with_profiles(profiles);
+            let mut orchestrator =
+                Orchestrator::new(config.clone(), session.workspace().to_path_buf())
+                    .await?
+                    .with_profiles(profiles);
             orchestrator.initialize().await?;
 
             // Stop all services

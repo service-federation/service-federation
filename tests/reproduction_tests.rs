@@ -49,7 +49,9 @@ services:
 
     let _orch_temp = tempfile::tempdir().unwrap();
     let orchestrator = Arc::new(tokio::sync::Mutex::new(
-        Orchestrator::new(config, _orch_temp.path().to_path_buf()).await.unwrap(),
+        Orchestrator::new(config, _orch_temp.path().to_path_buf())
+            .await
+            .unwrap(),
     ));
 
     // Initialize and start services
@@ -191,7 +193,9 @@ services:
     let config = parser.parse_config(config_content).unwrap();
     let _orch_temp = tempfile::tempdir().unwrap();
     let orchestrator = Arc::new(tokio::sync::Mutex::new(
-        Orchestrator::new(config, _orch_temp.path().to_path_buf()).await.unwrap(),
+        Orchestrator::new(config, _orch_temp.path().to_path_buf())
+            .await
+            .unwrap(),
     ));
 
     orchestrator.lock().await.initialize().await.unwrap();
@@ -259,7 +263,9 @@ async fn repro_unbounded_health_check_task_spawning() {
 
     let _orch_temp = tempfile::tempdir().unwrap();
     let orchestrator = Arc::new(tokio::sync::Mutex::new(
-        Orchestrator::new(config, _orch_temp.path().to_path_buf()).await.unwrap(),
+        Orchestrator::new(config, _orch_temp.path().to_path_buf())
+            .await
+            .unwrap(),
     ));
     orchestrator.lock().await.initialize().await.unwrap();
 
@@ -611,7 +617,9 @@ services:
     let cfg = parser.parse_config(config).unwrap();
     let _orch_temp5 = tempfile::tempdir().unwrap();
     let orchestrator = Arc::new(tokio::sync::Mutex::new(
-        Orchestrator::new(cfg, _orch_temp5.path().to_path_buf()).await.unwrap(),
+        Orchestrator::new(cfg, _orch_temp5.path().to_path_buf())
+            .await
+            .unwrap(),
     ));
 
     orchestrator.lock().await.initialize().await.ok();
@@ -962,7 +970,9 @@ entrypoint: app
     let config = parser.parse_config(config_content).unwrap();
 
     // Create orchestrator with the work directory containing stale lock file
-    let mut orchestrator = Orchestrator::new(config, work_dir.to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, work_dir.to_path_buf())
+        .await
+        .unwrap();
 
     // Initialize - this will load the stale lock file
     // The monitoring loop will start and find stale services

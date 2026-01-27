@@ -166,7 +166,11 @@ impl Orchestrator {
     }
 
     /// Create a nested orchestrator with a namespace (for external services)
-    pub async fn new_with_namespace(config: Config, namespace: String, work_dir: PathBuf) -> Result<Self> {
+    pub async fn new_with_namespace(
+        config: Config,
+        namespace: String,
+        work_dir: PathBuf,
+    ) -> Result<Self> {
         // Store original config for isolated child orchestrators
         let original_config = Some(config.clone());
         Ok(Self {
@@ -443,7 +447,9 @@ impl Orchestrator {
                             if service.image.is_some() {
                                 // Docker service - use docker exec
                                 let container_name = crate::service::docker_container_name(
-                                    name, None, &self.work_dir.to_string_lossy()
+                                    name,
+                                    None,
+                                    &self.work_dir.to_string_lossy(),
                                 );
                                 Box::new(DockerCommandChecker::new(
                                     container_name,
@@ -1076,10 +1082,7 @@ impl Orchestrator {
 
     /// Check if any services in the config are Docker-based.
     pub fn has_docker_services(&self) -> bool {
-        self.config
-            .services
-            .values()
-            .any(|svc| svc.image.is_some())
+        self.config.services.values().any(|svc| svc.image.is_some())
     }
 
     /// Check if a specific service is Docker-based (has an image).
@@ -1703,7 +1706,9 @@ mod tests {
     async fn test_concurrent_cleanup_guard() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = Config::default();
-        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
 
         // Verify cleanup_started is initially false
         assert!(!orchestrator.cleanup_started.load(Ordering::SeqCst));
@@ -1728,7 +1733,9 @@ mod tests {
     async fn test_cleanup_runs_once() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = Config::default();
-        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
         let orch = Arc::new(orchestrator);
 
         // First cleanup should execute
@@ -1747,7 +1754,9 @@ mod tests {
     async fn test_cleanup_does_not_hang() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = Config::default();
-        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
         let orch = Arc::new(orchestrator);
 
         // Cleanup should complete within 10 seconds even in worst case
@@ -1762,7 +1771,9 @@ mod tests {
     async fn test_cleanup_cancels_operations() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = Config::default();
-        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
 
         // Before cleanup, cancellation should not be set
         assert!(!orchestrator.is_cancelled());

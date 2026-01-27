@@ -759,7 +759,9 @@ fn test_healthcheck_command_string_format() {
 async fn test_orchestrator_empty_config() {
     let config = Config::default();
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
 
     let result = orchestrator.initialize().await;
     assert!(
@@ -780,7 +782,9 @@ async fn test_orchestrator_service_with_no_type() {
     config.services.insert("undefined".to_string(), service);
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     let result = orchestrator.initialize().await;
 
     // Should handle undefined service type
@@ -808,7 +812,9 @@ async fn test_orchestrator_multiple_entrypoints() {
     config.validate().expect("Config should be valid");
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     let result = orchestrator.initialize().await;
 
     assert!(result.is_ok());
@@ -839,7 +845,9 @@ async fn test_gradle_empty_cwd_vs_none() {
     config.entrypoint = Some("service1".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf()).await.unwrap();
+    let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+        .await
+        .unwrap();
     orchestrator.initialize().await.expect("Should initialize");
 
     let services = orchestrator.get_status().await;

@@ -977,7 +977,6 @@ fn test_completions_fish() {
     );
 }
 
-
 // ============================================================================
 // doctor subcommand
 // ============================================================================
@@ -1240,9 +1239,9 @@ fn parse_resolved_param(stdout: &str, param_name: &str) -> u16 {
                 .strip_prefix(&format!("{}:", param_name))
                 .unwrap()
                 .trim();
-            return value
-                .parse::<u16>()
-                .unwrap_or_else(|_| panic!("Failed to parse '{}' as u16 for {}", value, param_name));
+            return value.parse::<u16>().unwrap_or_else(|_| {
+                panic!("Failed to parse '{}' as u16 for {}", value, param_name)
+            });
         }
     }
     panic!("Parameter {} not found in stdout:\n{}", param_name, stdout);
@@ -1287,20 +1286,9 @@ fn test_start_randomize_ports_dry_run() {
         api_port, 18080,
         "API port should differ from occupied default 18080"
     );
-    assert!(
-        api_port > 1024,
-        "API port {} out of valid range",
-        api_port
-    );
-    assert!(
-        db_port > 1024,
-        "DB port {} out of valid range",
-        db_port
-    );
-    assert_ne!(
-        api_port, db_port,
-        "Ports should differ from each other"
-    );
+    assert!(api_port > 1024, "API port {} out of valid range", api_port);
+    assert!(db_port > 1024, "DB port {} out of valid range", db_port);
+    assert_ne!(api_port, db_port, "Ports should differ from each other");
 
     drop(listener);
 }
@@ -1344,20 +1332,9 @@ fn test_start_isolated_alias_dry_run() {
         api_port, 18180,
         "API port should differ from occupied default 18180 (--isolated alias)"
     );
-    assert!(
-        api_port > 1024,
-        "API port {} out of valid range",
-        api_port
-    );
-    assert!(
-        db_port > 1024,
-        "DB port {} out of valid range",
-        db_port
-    );
-    assert_ne!(
-        api_port, db_port,
-        "Ports should differ from each other"
-    );
+    assert!(api_port > 1024, "API port {} out of valid range", api_port);
+    assert!(db_port > 1024, "DB port {} out of valid range", db_port);
+    assert_ne!(api_port, db_port, "Ports should differ from each other");
 
     drop(listener);
 }
