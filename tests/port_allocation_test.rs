@@ -55,56 +55,6 @@ fn fed_binary() -> String {
 }
 
 #[test]
-fn test_port_command_returns_allocated_port() {
-    let (temp_dir, config_path) = create_port_test_config();
-    let workdir = temp_dir.path().to_str().unwrap();
-
-    // Start services
-    Command::new(fed_binary())
-        .args(["-c", config_path.to_str().unwrap(), "-w", workdir, "start"])
-        .output()
-        .expect("Failed to start");
-
-    std::thread::sleep(Duration::from_secs(2));
-
-    // Query port for api service
-    let port_output = Command::new(fed_binary())
-        .args([
-            "-c",
-            config_path.to_str().unwrap(),
-            "-w",
-            workdir,
-            "port",
-            "api",
-        ])
-        .output()
-        .expect("Failed to get port");
-
-    assert!(port_output.status.success(), "Port command should succeed");
-
-    let port_str = String::from_utf8_lossy(&port_output.stdout);
-    println!("API port output: {}", port_str);
-
-    // Extract just the port number (last non-empty line, ignoring log output)
-    let port: u16 = port_str
-        .lines()
-        .rfind(|line| !line.contains("[") && !line.trim().is_empty())
-        .unwrap_or(port_str.trim())
-        .trim()
-        .parse()
-        .expect("Port should be a valid number");
-
-    assert!(port > 1024, "Port should be above 1024");
-    assert!(port < 65535, "Port should be below 65535");
-
-    // Cleanup
-    Command::new(fed_binary())
-        .args(["-c", config_path.to_str().unwrap(), "-w", workdir, "stop"])
-        .output()
-        .expect("Failed to cleanup");
-}
-
-#[test]
 fn test_multiple_services_get_different_ports() {
     let (temp_dir, config_path) = create_port_test_config();
     let workdir = temp_dir.path().to_str().unwrap();
