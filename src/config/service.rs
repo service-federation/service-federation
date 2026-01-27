@@ -109,6 +109,10 @@ pub struct Service {
     /// temporarily disables restarts if a service is crash looping.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub circuit_breaker: Option<CircuitBreakerConfig>,
+
+    /// Template string printed after all services start (supports `{{PARAM}}` syntax).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_message: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {

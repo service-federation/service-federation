@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 const FED_DIR: &str = ".fed";
 const DB_FILE_NAME: &str = "lock.db";
 const LOCK_FILE_NAME: &str = ".lock";
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 /// SQLite-backed state tracker for persistent service state management
 /// Provides ACID transactions and crash recovery via WAL mode.
@@ -163,7 +163,7 @@ impl SqliteStateTracker {
         match conn
             .call(|conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(
-                    "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures FROM services"
+                    "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures, startup_message FROM services"
                 )?;
 
                 let services_iter = stmt.query_map([], |row| {
@@ -189,6 +189,7 @@ impl SqliteStateTracker {
                                 .and_then(|s| s.parse::<DateTime<Utc>>().ok()),
                             consecutive_failures: row.get(10)?,
                             port_allocations: HashMap::new(),
+                            startup_message: row.get(11)?,
                         },
                     ))
                 })?;
@@ -325,6 +326,11 @@ impl SqliteStateTracker {
             self.migrate_v1_to_v2().await?;
         }
 
+        // Migration from v2 to v3: Add startup_message column
+        if current_version < 3 {
+            self.migrate_v2_to_v3().await?;
+        }
+
         Ok(())
     }
 
@@ -398,6 +404,55 @@ impl SqliteStateTracker {
         Ok(())
     }
 
+    /// Migration v2 -> v3: Add startup_message column to services table
+    async fn migrate_v2_to_v3(&self) -> Result<()> {
+        debug!("Running migration v2 -> v3: Adding startup_message column");
+
+        self.conn
+            .call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                let tx = conn.transaction()?;
+
+                let already_applied: bool = tx
+                    .query_row(
+                        "SELECT COUNT(*) > 0 FROM schema_version WHERE version = 3",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+
+                if already_applied {
+                    return Ok(());
+                }
+
+                let has_column: bool = tx
+                    .query_row(
+                        "SELECT COUNT(*) > 0 FROM pragma_table_info('services') WHERE name = 'startup_message'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+
+                if !has_column {
+                    tx.execute(
+                        "ALTER TABLE services ADD COLUMN startup_message TEXT",
+                        [],
+                    )?;
+                }
+
+                tx.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (3, datetime('now'))",
+                    [],
+                )?;
+
+                tx.commit()?;
+                Ok(())
+            })
+            .await?;
+
+        info!("Migration v2 -> v3 completed successfully");
+        Ok(())
+    }
+
     /// Create database schema
     async fn create_schema(&self) -> Result<()> {
         self.conn.call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
@@ -431,7 +486,8 @@ impl SqliteStateTracker {
                     restart_count INTEGER NOT NULL DEFAULT 0,
                     last_restart_at TEXT,
                     consecutive_failures INTEGER NOT NULL DEFAULT 0,
-                    circuit_breaker_open_until TEXT
+                    circuit_breaker_open_until TEXT,
+                    startup_message TEXT
                 );
 
                 -- Indexes for services
@@ -633,6 +689,7 @@ impl SqliteStateTracker {
         let restart_count = service_state.restart_count;
         let last_restart_at = service_state.last_restart_at.map(|dt| dt.to_rfc3339());
         let consecutive_failures = service_state.consecutive_failures;
+        let startup_message = service_state.startup_message.clone();
 
         self.conn.call(move |conn: &mut rusqlite::Connection| {
             let tx = conn.transaction()?;
@@ -647,20 +704,21 @@ impl SqliteStateTracker {
             if exists {
                 // Update existing
                 tx.execute(
-                    "UPDATE services SET status = ?1, service_type = ?2, namespace = ?3, started_at = ?4 WHERE id = ?5",
+                    "UPDATE services SET status = ?1, service_type = ?2, namespace = ?3, started_at = ?4, startup_message = ?5 WHERE id = ?6",
                     rusqlite::params![
                         &status,
                         &service_type,
                         &namespace,
                         &started_at,
+                        startup_message.as_deref(),
                         &id,
                     ],
                 )?;
             } else {
                 // Insert new
                 tx.execute(
-                    "INSERT INTO services (id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    "INSERT INTO services (id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures, startup_message)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     rusqlite::params![
                         &id,
                         &status,
@@ -673,6 +731,7 @@ impl SqliteStateTracker {
                         restart_count,
                         last_restart_at,
                         consecutive_failures,
+                        startup_message.as_deref(),
                     ],
                 )?;
             }
@@ -1460,7 +1519,7 @@ impl SqliteStateTracker {
     pub async fn get_services(&self) -> HashMap<String, ServiceState> {
         match self.conn.call(|conn: &mut rusqlite::Connection| {
             let mut stmt = conn.prepare(
-                "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures FROM services"
+                "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures, startup_message FROM services"
             )?;
 
             let services_iter = stmt.query_map([], |row| {
@@ -1485,6 +1544,7 @@ impl SqliteStateTracker {
                         last_restart_at: last_restart_str.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
                         consecutive_failures: row.get(10)?,
                         port_allocations: HashMap::new(), // Will be populated below
+                        startup_message: row.get(11)?,
                     },
                 ))
             })?;
@@ -1547,7 +1607,7 @@ impl SqliteStateTracker {
 
         self.conn.call(move |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<Option<ServiceState>> {
             let service = match conn.query_row(
-                "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures FROM services WHERE id = ?1",
+                "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures, startup_message FROM services WHERE id = ?1",
                 rusqlite::params![&service_id],
                 |row| {
                     let id: String = row.get(0)?;
@@ -1567,6 +1627,7 @@ impl SqliteStateTracker {
                         last_restart_at: last_restart_str.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
                         consecutive_failures: row.get(10)?,
                         port_allocations: HashMap::new(),
+                        startup_message: row.get(11)?,
                     })
                 }
             ) {
@@ -1779,6 +1840,7 @@ mod tests {
             last_restart_at: None,
             consecutive_failures: 0,
             port_allocations: HashMap::new(),
+            startup_message: None,
         };
         tracker.register_service(state).await.unwrap();
     }

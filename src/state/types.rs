@@ -74,6 +74,10 @@ pub struct ServiceState {
     /// Number of consecutive failures (resets on successful health check)
     #[serde(default)]
     pub consecutive_failures: u32,
+
+    /// Resolved startup message template (for display after start and in status)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_message: Option<String>,
 }
 
 impl ServiceState {
@@ -91,6 +95,7 @@ impl ServiceState {
             restart_count: 0,
             last_restart_at: None,
             consecutive_failures: 0,
+            startup_message: None,
         }
     }
 

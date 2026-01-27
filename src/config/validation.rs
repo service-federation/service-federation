@@ -31,6 +31,26 @@ impl Config {
             }
         }
 
+        // Warn if entrypoint services lack startup_message
+        let mut entrypoint_names: Vec<&str> = Vec::new();
+        if let Some(ref ep) = self.entrypoint {
+            entrypoint_names.push(ep);
+        }
+        for ep in &self.entrypoints {
+            entrypoint_names.push(ep);
+        }
+        for ep_name in &entrypoint_names {
+            if let Some(service) = self.services.get(*ep_name) {
+                if service.startup_message.is_none() {
+                    eprintln!(
+                        "\x1b[33mWarning: Entrypoint service '{}' has no startup_message.\n\
+                         \x1b[33m         Without this, isolated mode won't show where to access the application.\n\
+                         \x1b[33m         Add: startup_message: \"http://localhost:{{{{PORT}}}}\"\x1b[0m"
+                        , ep_name);
+                }
+            }
+        }
+
         // Validate external service dependencies
         for (name, service) in &self.services {
             if service.service_type() == ServiceType::External {

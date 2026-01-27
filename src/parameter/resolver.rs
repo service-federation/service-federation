@@ -731,6 +731,18 @@ impl Resolver {
                 }
                 service.parameters = resolved_params;
             }
+
+            // Resolve startup_message template (display string, not shell-escaped)
+            if let Some(ref msg) = service.startup_message {
+                service.startup_message = Some(
+                    self.resolve_template(msg, &parameters).map_err(|e| {
+                        Error::Config(format!(
+                            "Failed to resolve startup_message for service '{}': {}",
+                            name, e
+                        ))
+                    })?,
+                );
+            }
         }
 
         // NOTE: Scripts are NOT resolved here. Script environments and commands are

@@ -182,6 +182,9 @@ pub async fn run_start(
 
     println!("\nAll services started successfully!");
 
+    // Print startup messages in a box
+    print_startup_messages(config, &started);
+
     // Mark startup complete - enables monitoring to clean up dead services
     orchestrator.mark_startup_complete();
 
@@ -338,6 +341,57 @@ pub async fn run_start(
     }
 
     Ok(())
+}
+
+/// Print startup messages from services in a Unicode box.
+///
+/// Collects `startup_message` from started services, sorts entrypoint messages
+/// last, and renders them in a bordered box.
+fn print_startup_messages(config: &Config, started: &std::collections::HashSet<String>) {
+    // Collect (service_name, message) pairs for started services
+    let mut messages: Vec<(&str, &str)> = Vec::new();
+    for (name, service) in &config.services {
+        if started.contains(name) {
+            if let Some(ref msg) = service.startup_message {
+                messages.push((name, msg));
+            }
+        }
+    }
+
+    if messages.is_empty() {
+        return;
+    }
+
+    // Determine which services are entrypoints
+    let entrypoints: std::collections::HashSet<&str> = {
+        let mut set = std::collections::HashSet::new();
+        if let Some(ref ep) = config.entrypoint {
+            set.insert(ep.as_str());
+        }
+        for ep in &config.entrypoints {
+            set.insert(ep.as_str());
+        }
+        set
+    };
+
+    // Stable sort: non-entrypoints first (preserve insertion order), entrypoints last
+    messages.sort_by_key(|(name, _)| entrypoints.contains(name));
+
+    // Calculate box width (max message length + 2 for padding)
+    let max_len = messages.iter().map(|(_, msg)| msg.len()).max().unwrap_or(0);
+    let box_width = max_len + 2; // 1 space padding on each side
+
+    let horizontal = "─".repeat(box_width);
+
+    println!();
+    println!("╭{}╮", horizontal);
+    for (i, (_, msg)) in messages.iter().enumerate() {
+        if i > 0 {
+            println!("├{}┤", horizontal);
+        }
+        println!("│ {:width$} │", msg, width = max_len);
+    }
+    println!("╰{}╯", horizontal);
 }
 
 async fn run_watch_mode(

@@ -686,8 +686,11 @@ impl Orchestrator {
         // Note: The state tracker lock is released before actual service startup.
         // This is intentional - we use SQLite's atomic INSERT OR IGNORE pattern
         // for concurrency control, not the lock itself.
-        let service_state =
+        let mut service_state =
             ServiceState::new(name.to_string(), service_type, self.namespace.clone());
+        if let Some(service_config) = self.config.services.get(name) {
+            service_state.startup_message = service_config.startup_message.clone();
+        }
 
         if !self
             .state_tracker
