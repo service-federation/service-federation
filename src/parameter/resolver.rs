@@ -861,6 +861,7 @@ mod tests {
         use crate::config::{Config, Parameter};
 
         let mut resolver = Resolver::new();
+        resolver.set_isolated_mode(true);
         let mut config = Config::default();
 
         // Occupy a port
