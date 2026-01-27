@@ -681,7 +681,7 @@ impl Orchestrator {
             .write()
             .await
             .register_service(service_state)
-            .await
+            .await?
         {
             // Service was already registered by another thread, bail out
             return Ok(());

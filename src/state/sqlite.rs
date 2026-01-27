@@ -614,9 +614,10 @@ impl SqliteStateTracker {
         matches!(status, "running" | "healthy" | "failing")
     }
 
-    /// Register a new service in the state
-    /// Returns true if newly registered, false if already existed
-    pub async fn register_service(&mut self, service_state: ServiceState) -> bool {
+    /// Register a new service in the state.
+    /// Returns Ok(true) if newly registered, Ok(false) if already existed.
+    /// Returns Err on database failures instead of silently swallowing them.
+    pub async fn register_service(&mut self, service_state: ServiceState) -> Result<bool> {
         debug!("Registering service: {}", service_state.id);
 
         let id = service_state.id.clone();
@@ -631,7 +632,7 @@ impl SqliteStateTracker {
         let last_restart_at = service_state.last_restart_at.map(|dt| dt.to_rfc3339());
         let consecutive_failures = service_state.consecutive_failures;
 
-        match self.conn.call(move |conn: &mut rusqlite::Connection| {
+        self.conn.call(move |conn: &mut rusqlite::Connection| {
             let tx = conn.transaction()?;
 
             // Check if exists
@@ -682,13 +683,7 @@ impl SqliteStateTracker {
 
             tx.commit()?;
             Ok(!exists)
-        }).await {
-            Ok(newly_registered) => newly_registered,
-            Err(e) => {
-                warn!("Failed to register service: {}", e);
-                false
-            }
-        }
+        }).await.map_err(Error::from)
     }
 
     /// Update service status
@@ -1783,7 +1778,7 @@ mod tests {
             consecutive_failures: 0,
             port_allocations: HashMap::new(),
         };
-        tracker.register_service(state).await;
+        tracker.register_service(state).await.unwrap();
     }
 
     #[tokio::test]
