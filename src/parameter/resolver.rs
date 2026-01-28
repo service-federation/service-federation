@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::port::{handle_port_conflict, PortConflict, PortConflictAction};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -130,6 +130,9 @@ pub struct Resolver {
     isolated_mode: bool,
     /// Tracks how each port parameter was resolved (for dry-run display and debuggability)
     port_resolutions: Vec<PortResolution>,
+    /// Ports owned by already-running managed services.
+    /// These are trusted without bind-checking during resolution because we manage the processes.
+    managed_ports: HashSet<u16>,
 }
 
 impl Resolver {
@@ -143,6 +146,7 @@ impl Resolver {
             work_dir: None,
             isolated_mode: false,
             port_resolutions: Vec::new(),
+            managed_ports: HashSet::new(),
         }
     }
 
@@ -157,6 +161,7 @@ impl Resolver {
             work_dir: None,
             isolated_mode: false,
             port_resolutions: Vec::new(),
+            managed_ports: HashSet::new(),
         }
     }
 
@@ -169,6 +174,15 @@ impl Resolver {
     /// Enable auto-resolve mode for port conflicts (use in TUI mode to avoid interactive prompts)
     pub fn set_auto_resolve_conflicts(&mut self, auto_resolve: bool) {
         self.auto_resolve_conflicts = auto_resolve;
+    }
+
+    /// Register ports owned by already-running managed services.
+    ///
+    /// These ports are trusted during resolution without bind-checking, because
+    /// the port is held by a service we manage. This prevents `fed start` from
+    /// prompting to kill our own services when they're already running.
+    pub fn set_managed_ports(&mut self, ports: HashSet<u16>) {
+        self.managed_ports = ports;
     }
 
     /// Set the environment for resolution
@@ -377,9 +391,17 @@ impl Resolver {
                             Session::current_for_workdir(self.work_dir.as_deref())
                         {
                             if let Some(port) = session.get_port(name) {
-                                // BUGFIX: Validate that cached port is still available
-                                // Use try_allocate_port to keep listener alive and prevent TOCTOU
-                                if self.port_allocator.try_allocate_port(port).is_ok() {
+                                // If this port is held by one of our managed services,
+                                // trust it without bind-checking — we own the process.
+                                if self.managed_ports.contains(&port) {
+                                    tracing::debug!(
+                                        "Reusing managed port {} for parameter '{}' (owned by running service)",
+                                        port,
+                                        name
+                                    );
+                                    self.port_allocator.mark_allocated(port);
+                                    Some((port, PortResolutionReason::SessionCached))
+                                } else if self.port_allocator.try_allocate_port(port).is_ok() {
                                     tracing::debug!(
                                         "Reusing cached port {} for parameter '{}'",
                                         port,
@@ -415,8 +437,11 @@ impl Resolver {
                                 {
                                     let default_str = Self::value_to_string(env_value);
                                     if let Ok(default_port) = default_str.parse::<u16>() {
-                                        // Try the default port, use allocator to keep listener alive
-                                        if self
+                                        // Skip bind check if port is managed by a running service
+                                        if self.managed_ports.contains(&default_port) {
+                                            self.port_allocator.mark_allocated(default_port);
+                                            (default_port, PortResolutionReason::DefaultAvailable)
+                                        } else if self
                                             .port_allocator
                                             .try_allocate_port(default_port)
                                             .is_ok()
@@ -471,9 +496,11 @@ impl Resolver {
                         {
                             let default_str = Self::value_to_string(env_value);
                             if let Ok(default_port) = default_str.parse::<u16>() {
-                                // Try the default port, use allocator to keep listener alive
-                                // This prevents TOCTOU race - port stays reserved until services start
-                                if self.port_allocator.try_allocate_port(default_port).is_ok() {
+                                // Skip bind check if port is managed by a running service
+                                if self.managed_ports.contains(&default_port) {
+                                    self.port_allocator.mark_allocated(default_port);
+                                    (default_port, PortResolutionReason::DefaultAvailable)
+                                } else if self.port_allocator.try_allocate_port(default_port).is_ok() {
                                     (default_port, PortResolutionReason::DefaultAvailable)
                                 } else {
                                     let (p, conflict) =

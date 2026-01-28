@@ -351,6 +351,33 @@ impl Orchestrator {
             }
         }
 
+        // Collect ports owned by already-running managed services so the resolver
+        // can skip bind-checking them (they're ours, not external conflicts).
+        {
+            let state = self.state_tracker.read().await;
+            let services = state.get_services().await;
+            let mut managed_ports = std::collections::HashSet::new();
+            for (_id, svc) in &services {
+                if svc.status == "running" || svc.status == "healthy" {
+                    // Only trust if the service still has a live PID or container
+                    let has_live_process = svc.pid.is_some() || svc.container_id.is_some();
+                    if has_live_process {
+                        for (_param, &port) in &svc.port_allocations {
+                            managed_ports.insert(port);
+                        }
+                    }
+                }
+            }
+            if !managed_ports.is_empty() {
+                tracing::debug!(
+                    "Found {} managed port(s) from running services: {:?}",
+                    managed_ports.len(),
+                    managed_ports
+                );
+            }
+            self.resolver.set_managed_ports(managed_ports);
+        }
+
         // First pass: resolve parent parameters only (not services yet)
         // This allows us to use resolved parameter values when expanding external services
         self.resolver.resolve_parameters(&mut self.config)?;

@@ -122,6 +122,14 @@ impl PortAllocator {
         Ok(port)
     }
 
+    /// Mark a port as allocated without binding a listener.
+    ///
+    /// Used for ports already held by managed services — we trust the port is
+    /// occupied by us and don't need to bind-check it.
+    pub fn mark_allocated(&mut self, port: u16) {
+        self.allocated_ports.lock().insert(port);
+    }
+
     /// Manually register a port as allocated with a listener
     ///
     /// Thread-safe: Uses interior mutability to allow concurrent registration.
