@@ -421,6 +421,11 @@ impl Session {
         self.ports.get(parameter_name).copied()
     }
 
+    /// Get all cached port allocations.
+    pub fn get_all_ports(&self) -> &HashMap<String, u16> {
+        &self.ports
+    }
+
     /// Allocate and save a port
     pub fn save_port(&mut self, parameter_name: String, port: u16) -> Result<()> {
         self.ports.insert(parameter_name, port);

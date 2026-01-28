@@ -293,15 +293,22 @@ impl Orchestrator {
         self
     }
 
-    /// Collect ports owned by running managed services from the state tracker.
+    /// Collect ports owned by running managed services.
     ///
     /// Must be called BEFORE `state_tracker.initialize()` because that runs
     /// `cleanup_dead_services()` which deletes stale records and their port_allocations.
-    /// We need the port snapshot before cleanup so the resolver knows which ports are ours.
+    ///
+    /// Uses two sources:
+    /// 1. State tracker `port_allocations` table (per-service, populated for Docker)
+    /// 2. Session port cache (`ports.json`) — global port→parameter mapping
+    ///
+    /// If ANY service is alive, all session-cached ports are trusted as managed.
+    /// This handles process services which don't write to `port_allocations`.
     async fn collect_managed_ports(&mut self) {
         let state = self.state_tracker.read().await;
         let services = state.get_services().await;
         let mut managed_ports = std::collections::HashSet::new();
+        let mut has_live_service = false;
 
         for (_id, svc) in &services {
             if svc.status != "running" && svc.status != "healthy" {
@@ -320,7 +327,21 @@ impl Orchestrator {
             };
 
             if is_alive {
+                has_live_service = true;
                 for (_param, &port) in &svc.port_allocations {
+                    managed_ports.insert(port);
+                }
+            }
+        }
+
+        // If any service is alive, also trust session-cached ports.
+        // Process services don't write to port_allocations, but their ports
+        // ARE stored in the session port cache (ports.json).
+        if has_live_service {
+            if let Ok(Some(session)) =
+                crate::session::Session::current_for_workdir(Some(self.work_dir.as_path()))
+            {
+                for (_param, &port) in session.get_all_ports() {
                     managed_ports.insert(port);
                 }
             }

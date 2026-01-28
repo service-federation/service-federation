@@ -275,6 +275,18 @@ async fn run() -> anyhow::Result<()> {
         orchestrator.set_randomize_ports(true);
     }
 
+    // --replace should auto-resolve port conflicts during initialization
+    // (the actual process killing happens later in run_start)
+    if matches!(
+        &cli.command,
+        Commands::Start {
+            replace: true,
+            ..
+        }
+    ) {
+        orchestrator.set_auto_resolve_conflicts(true);
+    }
+
     // For script commands, check if the script has isolated: true
     // If so, set auto_resolve_conflicts to avoid prompts for ports that will be re-allocated anyway
     let is_isolated_script = match &cli.command {
