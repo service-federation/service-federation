@@ -295,8 +295,9 @@ impl Orchestrator {
 
     /// Collect ports owned by running managed services.
     ///
-    /// Must be called BEFORE `state_tracker.initialize()` because that runs
-    /// `cleanup_dead_services()` which deletes stale records and their port_allocations.
+    /// Safe to call after `state_tracker.initialize()` because dead services are
+    /// marked as `stale` (not deleted) — their port_allocations remain readable.
+    /// Call `purge_stale_services()` after this method to clean up.
     ///
     /// Uses two sources:
     /// 1. State tracker `port_allocations` table (per-service, populated for Docker)
@@ -320,7 +321,7 @@ impl Orchestrator {
                 Self::is_pid_alive(pid)
             } else if svc.container_id.is_some() {
                 // Can't cheaply verify container without Docker — trust the status.
-                // If Docker is down, cleanup_dead_services will skip container checks anyway.
+                // If Docker is down, mark_dead_services will skip container checks anyway.
                 true
             } else {
                 false
@@ -418,13 +419,16 @@ impl Orchestrator {
     /// - Circular dependencies are detected
     /// - Service configuration is invalid
     pub async fn initialize(&mut self) -> Result<()> {
-        // Collect ports owned by already-running managed services BEFORE cleanup.
-        // cleanup_dead_services (inside initialize) deletes stale records and their
-        // port_allocations, so we must snapshot managed ports first.
+        // Initialize state tracker (marks dead services as stale, doesn't delete)
+        self.state_tracker.write().await.initialize().await?;
+
+        // Collect ports owned by running managed services.
+        // Safe to call after initialize because dead services are marked stale
+        // (not deleted), so port_allocations for live services remain intact.
         self.collect_managed_ports().await;
 
-        // Initialize state tracker (loads existing lock file, cleans dead services)
-        self.state_tracker.write().await.initialize().await?;
+        // Now purge stale services — managed ports have been collected
+        self.state_tracker.write().await.purge_stale_services().await?;
 
         // Cleanup orphaned Docker containers from dead sessions
         match crate::service::DockerService::cleanup_orphaned_containers().await {

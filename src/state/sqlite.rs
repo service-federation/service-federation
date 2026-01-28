@@ -584,8 +584,8 @@ impl SqliteStateTracker {
             );
         }
 
-        // Always check for stale services (processes/containers that died)
-        self.cleanup_dead_services().await?;
+        // Mark dead services as stale (does not delete — purge_stale_services does that)
+        self.mark_dead_services().await?;
 
         // Update to current PID
         let pid = std::process::id();
@@ -670,6 +670,11 @@ impl SqliteStateTracker {
     /// that are legitimately in the process of starting.
     fn status_indicates_should_be_running(status: &str) -> bool {
         matches!(status, "running" | "healthy" | "failing")
+    }
+
+    /// Check if a status indicates the service is stale (marked for cleanup).
+    fn status_is_stale(status: &str) -> bool {
+        status == "stale"
     }
 
     /// Register a new service in the state.
@@ -1707,8 +1712,12 @@ impl SqliteStateTracker {
         Ok(())
     }
 
-    /// Clean up dead/stale services from state
-    pub async fn cleanup_dead_services(&mut self) -> Result<usize> {
+    /// Mark dead/stale services in state without deleting them.
+    ///
+    /// Sets status to `stale` so that port_allocations remain readable
+    /// until [`purge_stale_services`] is called. This enables callers to
+    /// collect managed port information before data is deleted.
+    pub async fn mark_dead_services(&mut self) -> Result<usize> {
         let services = self.get_services().await;
         let mut stale_services = Vec::new();
 
@@ -1721,6 +1730,11 @@ impl SqliteStateTracker {
         }
 
         for (service_id, service_state) in &services {
+            // Skip already-stale services
+            if Self::status_is_stale(&service_state.status) {
+                continue;
+            }
+
             let is_stale = if let Some(pid) = service_state.pid {
                 !Self::is_process_running(pid).await
             } else if let Some(ref container_id) = service_state.container_id {
@@ -1744,35 +1758,65 @@ impl SqliteStateTracker {
             }
         }
 
-        let removed = stale_services.len();
+        let marked = stale_services.len();
 
-        if removed > 0 {
-            // Log once with summary instead of per-service warnings
+        if marked > 0 {
             debug!(
-                "Cleaning up {} stale service(s): {}",
-                removed,
+                "Marking {} stale service(s): {}",
+                marked,
                 stale_services.join(", ")
             );
             self.with_transaction(move |tx| {
                 for service_id in &stale_services {
                     tx.execute(
-                        "DELETE FROM services WHERE id = ?1",
+                        "UPDATE services SET status = 'stale' WHERE id = ?1",
                         rusqlite::params![service_id],
                     )?;
                 }
-                // Clean up orphaned ports
-                tx.execute(
-                    "DELETE FROM allocated_ports WHERE port NOT IN (SELECT DISTINCT port FROM port_allocations)",
-                    [],
-                )?;
                 Ok(())
             })
             .await?;
 
-            info!("Cleaned up {} dead service(s) from state", removed);
+            info!("Marked {} dead service(s) as stale", marked);
         }
 
-        Ok(removed)
+        Ok(marked)
+    }
+
+    /// Purge services previously marked as stale by [`mark_dead_services`].
+    ///
+    /// Deletes stale service records and their associated port_allocations
+    /// (via CASCADE). Call this after managed port information has been collected.
+    pub async fn purge_stale_services(&mut self) -> Result<usize> {
+        let count: usize = self
+            .conn
+            .call(
+                |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<usize> {
+                    let tx = conn.transaction()?;
+                    let removed = tx.execute(
+                        "DELETE FROM services WHERE status = 'stale'",
+                        [],
+                    )?;
+                    // Clean up orphaned ports
+                    tx.execute(
+                        "DELETE FROM allocated_ports WHERE port NOT IN (SELECT DISTINCT port FROM port_allocations)",
+                        [],
+                    )?;
+                    tx.execute(
+                        "UPDATE lock_file SET updated_at = datetime('now') WHERE id = 1",
+                        [],
+                    )?;
+                    tx.commit()?;
+                    Ok(removed)
+                },
+            )
+            .await?;
+
+        if count > 0 {
+            info!("Purged {} stale service(s) from state", count);
+        }
+
+        Ok(count)
     }
 
     /// Get the database file path
