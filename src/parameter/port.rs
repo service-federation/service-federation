@@ -35,61 +35,91 @@ impl PortAllocator {
     /// Thread-safe: Uses interior mutability to allow concurrent allocation.
     pub fn allocate_random_port(&mut self) -> Result<u16> {
         // Bind to port 0 to let the OS assign an available port
-        let listener = TcpListener::bind("127.0.0.1:0")
+        let listener_v4 = TcpListener::bind("127.0.0.1:0")
             .map_err(|e| Error::PortAllocation(format!("Failed to bind to random port: {}", e)))?;
 
-        let port = listener
+        let port = listener_v4
             .local_addr()
             .map_err(|e| Error::PortAllocation(format!("Failed to get local address: {}", e)))?
             .port();
 
-        // Keep the listener alive to prevent port reuse
-        self.listeners.lock().push(listener);
+        // Also bind 0.0.0.0 on the same port to prevent dual-stack conflicts
+        let listener_any = TcpListener::bind(("0.0.0.0", port)).map_err(|e| {
+            Error::PortAllocation(format!(
+                "Random port {} not available on 0.0.0.0: {}",
+                port, e
+            ))
+        })?;
+
+        // Keep both listeners alive to prevent port reuse
+        let mut listeners = self.listeners.lock();
+        listeners.push(listener_v4);
+        listeners.push(listener_any);
         self.allocated_ports.lock().insert(port);
 
         Ok(port)
     }
 
-    /// Allocate a port, preferring the default port if available, otherwise allocating a random port
+    /// Allocate a port, preferring the default port if available, otherwise allocating a random port.
+    ///
+    /// Checks both 127.0.0.1 and 0.0.0.0 to detect dual-stack conflicts.
     ///
     /// Thread-safe: Uses interior mutability to allow concurrent allocation.
     pub fn allocate_port_with_default(&mut self, default_port: u16) -> Result<u16> {
-        // Try to bind to the default port first
-        match TcpListener::bind(("127.0.0.1", default_port)) {
-            Ok(listener) => {
-                // Default port is available
-                self.listeners.lock().push(listener);
-                self.allocated_ports.lock().insert(default_port);
-                Ok(default_port)
-            }
+        // Try to bind to the default port on both interfaces
+        let listener_v4 = match TcpListener::bind(("127.0.0.1", default_port)) {
+            Ok(l) => l,
+            Err(_) => return self.allocate_random_port(),
+        };
+        let listener_any = match TcpListener::bind(("0.0.0.0", default_port)) {
+            Ok(l) => l,
             Err(_) => {
-                // Default port is in use, allocate a random port
-                self.allocate_random_port()
+                drop(listener_v4);
+                return self.allocate_random_port();
             }
-        }
+        };
+
+        let mut listeners = self.listeners.lock();
+        listeners.push(listener_v4);
+        listeners.push(listener_any);
+        self.allocated_ports.lock().insert(default_port);
+        Ok(default_port)
     }
 
-    /// Check if a port is available
+    /// Check if a port is available (checks both IPv4 loopback and all-interfaces)
     pub fn is_port_available(port: u16) -> bool {
         TcpListener::bind(("127.0.0.1", port)).is_ok()
+            && TcpListener::bind(("0.0.0.0", port)).is_ok()
     }
 
-    /// Try to allocate a specific port, keeping the listener alive to prevent TOCTOU races
-    /// Returns Ok(port) if successful, Err if port is unavailable
+    /// Try to allocate a specific port, keeping listeners alive to prevent TOCTOU races.
+    /// Returns Ok(port) if successful, Err if port is unavailable.
+    ///
+    /// Checks both 127.0.0.1 and 0.0.0.0 to detect IPv6/dual-stack conflicts.
+    /// A process binding `:::PORT` (IPv6 all interfaces) won't conflict with an
+    /// IPv4-only check, so we must check both to match `PortConflict::check` behavior.
     ///
     /// Thread-safe: Uses interior mutability to allow concurrent allocation.
     pub fn try_allocate_port(&mut self, port: u16) -> Result<u16> {
-        match TcpListener::bind(("127.0.0.1", port)) {
-            Ok(listener) => {
-                self.listeners.lock().push(listener);
-                self.allocated_ports.lock().insert(port);
-                Ok(port)
+        let listener_v4 = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
+            Error::PortAllocation(format!("Port {} not available (127.0.0.1): {}", port, e))
+        })?;
+        let listener_any = match TcpListener::bind(("0.0.0.0", port)) {
+            Ok(l) => l,
+            Err(e) => {
+                drop(listener_v4);
+                return Err(Error::PortAllocation(format!(
+                    "Port {} not available (0.0.0.0): {}",
+                    port, e
+                )));
             }
-            Err(e) => Err(Error::PortAllocation(format!(
-                "Port {} is not available: {}",
-                port, e
-            ))),
-        }
+        };
+
+        let mut listeners = self.listeners.lock();
+        listeners.push(listener_v4);
+        listeners.push(listener_any);
+        self.allocated_ports.lock().insert(port);
+        Ok(port)
     }
 
     /// Manually register a port as allocated with a listener

@@ -23,6 +23,8 @@ pub struct GradleService {
     tasks: Vec<String>, // Multiple tasks for grouped execution
     process: Arc<Mutex<Option<Child>>>,
     logs: Arc<Mutex<VecDeque<String>>>,
+    /// Process ID for state persistence and restore.
+    pid: parking_lot::Mutex<Option<u32>>,
 }
 
 impl GradleService {
@@ -40,6 +42,7 @@ impl GradleService {
             tasks,
             process: Arc::new(Mutex::new(None)),
             logs: Arc::new(Mutex::new(VecDeque::new())),
+            pid: parking_lot::Mutex::new(None),
         }
     }
 
@@ -65,7 +68,16 @@ impl GradleService {
             tasks,
             process: Arc::new(Mutex::new(None)),
             logs: Arc::new(Mutex::new(VecDeque::new())),
+            pid: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Set the PID for a restored Gradle service.
+    /// Called during state restoration to reconnect to a running Gradle process.
+    pub fn set_pid(&self, pid: u32) {
+        *self.pid.lock() = Some(pid);
+        let mut base = self.base.write();
+        base.set_status(Status::Running);
     }
 
     async fn spawn_gradle_process(&self) -> Result<Child> {
@@ -176,6 +188,9 @@ impl ServiceManager for GradleService {
 
         // Start the gradle task
         let child = self.spawn_gradle_process().await?;
+        if let Some(raw_pid) = child.id() {
+            *self.pid.lock() = Some(raw_pid);
+        }
         *self.process.lock().await = Some(child);
 
         {
@@ -290,6 +305,10 @@ impl ServiceManager for GradleService {
             Ok(logs.iter().cloned().collect())
         }
     }
+    fn get_pid(&self) -> Option<u32> {
+        *self.pid.lock()
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

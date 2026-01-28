@@ -197,10 +197,11 @@ pub async fn run_start(
         }
     }
 
-    // Print status without triggering active health checks — containers may still
-    // be initializing. The background monitoring loop will detect actual failures.
+    // Brief delay to let processes bind ports and potentially fail with EADDRINUSE.
+    // Then use active status check to detect processes that crashed after spawn.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     println!("\nService Status:");
-    let status = orchestrator.get_status_passive().await;
+    let status = orchestrator.get_status().await;
     let params = orchestrator.get_resolved_parameters();
 
     // Collect port conflicts for all port parameters

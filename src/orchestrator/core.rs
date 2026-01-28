@@ -293,6 +293,27 @@ impl Orchestrator {
         self
     }
 
+    /// Lightweight initialization for read-only commands (status, logs).
+    ///
+    /// Unlike [`initialize`], this skips parameter resolution, Docker orphan cleanup,
+    /// external service expansion, and profile filtering. It only loads state,
+    /// builds the dependency graph, and creates+restores service managers.
+    ///
+    /// This prevents `fed status` from hanging on interactive port prompts or
+    /// from showing all services as Stopped due to re-creating managers from scratch.
+    pub async fn initialize_readonly(&mut self) -> Result<()> {
+        // Initialize state tracker (loads existing DB)
+        self.state_tracker.write().await.initialize().await?;
+
+        // Build dependency graph from unresolved config
+        self.build_dependency_graph()?;
+
+        // Create service managers and restore state (PIDs, container IDs)
+        self.create_services().await?;
+
+        Ok(())
+    }
+
     /// Initialize the orchestrator for service management.
     ///
     /// This must be called after creating the orchestrator and before starting any services.

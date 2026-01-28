@@ -28,6 +28,9 @@ pub fn handle_port_conflict(
 /// Check if running in interactive TTY
 fn is_interactive() -> bool {
     use std::io::IsTerminal;
+    if std::env::var_os("FED_NON_INTERACTIVE").is_some() {
+        return false;
+    }
     stdin().is_terminal() && stdout().is_terminal()
 }
 

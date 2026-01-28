@@ -302,9 +302,11 @@ impl Orchestrator {
             if let Some(manager_arc) = services.get_mut(service_name) {
                 let mut manager = manager_arc.lock().await;
 
-                // Restore PID for process services
+                // Restore PID for process and gradle services
                 if let Some(pid) = service_state.pid {
                     self.restore_process_pid(&mut manager, service_name, pid)
+                        .await;
+                    self.restore_gradle_pid(&mut manager, service_name, pid)
                         .await;
                 }
 
@@ -372,6 +374,63 @@ impl Orchestrator {
                     pid
                 );
                 process_service.set_pid(pid);
+            }
+        }
+    }
+
+    /// Restore a Gradle service PID if the process is still running
+    async fn restore_gradle_pid(
+        &self,
+        manager: &mut Box<dyn ServiceManager>,
+        service_name: &str,
+        pid: u32,
+    ) {
+        if let Some(gradle_service) = manager.as_any_mut().downcast_mut::<GradleService>() {
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::kill;
+
+                if let Some(nix_pid) = validate_pid_for_check(pid) {
+                    if kill(nix_pid, None).is_ok() {
+                        tracing::debug!(
+                            "Restoring PID {} for gradle service '{}'",
+                            pid,
+                            service_name
+                        );
+                        gradle_service.set_pid(pid);
+                    } else {
+                        tracing::warn!(
+                            "Skipping PID {} for gradle service '{}' - process no longer exists",
+                            pid,
+                            service_name
+                        );
+                        self.state_tracker
+                            .write()
+                            .await
+                            .unregister_service(service_name)
+                            .await;
+                    }
+                } else {
+                    tracing::error!(
+                        "Cannot restore PID {} for gradle service '{}' - invalid PID",
+                        pid,
+                        service_name
+                    );
+                    self.state_tracker
+                        .write()
+                        .await
+                        .unregister_service(service_name)
+                        .await;
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                tracing::warn!(
+                    "Process validation not available on this platform, restoring PID {}",
+                    pid
+                );
+                gradle_service.set_pid(pid);
             }
         }
     }

@@ -719,6 +719,11 @@ impl SessionContext {
         Ok(Self { session })
     }
 
+    /// Get the session ID, if in a session.
+    pub fn session_id(&self) -> Option<&str> {
+        self.session.as_ref().map(|s| s.id())
+    }
+
     /// Check if a service has been installed.
     ///
     /// Uses session-scoped tracking if in a session, otherwise uses global tracking.
