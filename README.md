@@ -253,9 +253,9 @@ After all services start, messages are printed in a box. Entrypoint services sor
 
 ```
 ╭──────────────────────────────────────────────────╮
-│ API docs: http://localhost:8081/docs              │
+│ API docs: http://localhost:8081/docs             │
 ├──────────────────────────────────────────────────┤
-│ App running on http://localhost:3000              │
+│ App running on http://localhost:3000             │
 ╰──────────────────────────────────────────────────╯
 ```
 
@@ -355,6 +355,32 @@ fed start -p worker              # Starts api + worker
 fed start -p worker -p debug     # Starts api + worker + debug-tools
 ```
 
+### Packages
+
+Import and reuse service configurations across projects:
+
+```yaml
+packages:
+  - source: "./packages/database"    # Local path
+    as: "db-pkg"
+  - source: "github:org/repo@v1.0"   # GitHub (tag, branch, or commit)
+    as: "infra"
+  - source: "git+ssh://host/path"    # Git SSH
+    as: "shared"
+
+services:
+  database:
+    extends: "db-pkg.postgres"       # Inherit from package service
+    environment:
+      POSTGRES_DB: "myapp"           # Override specific fields
+    ports:
+      - "5433:5432"
+```
+
+Packages are cached locally. Use `fed package refresh` to re-fetch and `fed --offline start` to skip all git operations.
+
+See [`examples/service-merging/`](./examples/service-merging) for a complete example.
+
 ### Resource Limits
 
 Limit memory, CPU, and processes:
@@ -399,8 +425,9 @@ services:
     process: ./might-crash.sh
     restart: always
     circuit_breaker:
-      threshold: 5     # Max restarts before tripping
-      cooldown: 60s    # Wait before allowing restarts again
+      restart_threshold: 5  # Max restarts within window before tripping (default: 5)
+      window_secs: 60       # Rolling window in seconds (default: 60)
+      cooldown_secs: 300    # Seconds before allowing retry (default: 300)
 ```
 
 ### Graceful Shutdown
@@ -452,6 +479,14 @@ fed logs backend --tail 50   # View service logs
 fed logs backend --follow    # Stream logs (Ctrl+C to stop)
 fed top                      # Show resource usage (CPU, memory, PID)
 
+# Port management
+fed ports list               # Show current port allocations
+fed ports list --json        # JSON output for scripting
+fed ports randomize          # Allocate fresh random ports for all port parameters
+fed ports randomize -f       # Skip confirmation, auto-stop running services
+fed ports reset              # Clear allocations (next start uses defaults)
+fed ports reset -f           # Skip confirmation, auto-stop running services
+
 # Build lifecycle
 fed install                  # Run install commands for all services
 fed install backend          # Run install for specific service
@@ -464,7 +499,6 @@ fed clean backend            # Clean specific service
 fed init                     # Create starter service-federation.yaml
 fed validate                 # Validate config without starting
 fed doctor                   # Check system requirements (Docker, Gradle, Java, etc.)
-fed port backend             # Show port for a service
 
 # Sessions
 fed session start --id dev   # Start named session
@@ -472,13 +506,27 @@ fed session list             # List all sessions
 fed session end              # End current session
 fed session cleanup          # Clean up orphaned sessions
 
+# Packages
+fed package list             # List cached packages
+fed package list --json      # JSON output
+fed package refresh          # Re-fetch all packages used in current config
+fed package refresh <source> # Re-fetch a specific package
+fed package clear            # Remove entire package cache
+fed package clear -f         # Skip confirmation
+
 # Scripts & shell
 fed run test                 # Run script from config
 fed test                     # Shorthand (if no command collision)
 fed test -- -t "specific"    # Pass arguments to script
 fed completions bash         # Generate shell completions (bash/zsh/fish)
 fed tui                      # Interactive TUI (beta)
+
+# Global flags
 fed --config dev.yaml start  # Use specific config file
+fed --offline start          # Skip git operations, use cached packages only
+fed --workdir ./project start # Set working directory
+fed --env staging start      # Set environment (default: development)
+fed --profile worker start   # Activate a profile (repeatable)
 ```
 
 ## Examples
@@ -494,6 +542,7 @@ See the [`examples/`](./examples) directory:
 - [`gradle-grouping.yaml`](./examples/gradle-grouping.yaml) — Gradle task batching
 - [`complex-dependencies/`](./examples/complex-dependencies) — Multi-level dependency graph
 - [`profiles-example.yaml`](./examples/profiles-example.yaml) — Environment-specific configs
+- [`service-merging/`](./examples/service-merging) — Importing and extending package services
 
 ## Troubleshooting
 
