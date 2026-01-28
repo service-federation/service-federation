@@ -13,9 +13,7 @@ pub async fn run_ports(
 
     match cmd {
         PortsCommands::List { json } => list_ports(&work_dir, *json).await,
-        PortsCommands::Randomize { force } => {
-            randomize_ports(&work_dir, config_path, *force).await
-        }
+        PortsCommands::Randomize { force } => randomize_ports(&work_dir, config_path, *force).await,
         PortsCommands::Reset { force } => reset_ports(&work_dir, *force).await,
     }
 }
@@ -108,9 +106,7 @@ async fn randomize_ports(
         println!("  {:>5}  {}", port, param);
     }
     println!();
-    println!(
-        "Ports persisted. Next `fed start` will use these allocations."
-    );
+    println!("Ports persisted. Next `fed start` will use these allocations.");
     println!("Use `fed ports reset` to clear and return to defaults.\n");
 
     Ok(())
@@ -130,21 +126,13 @@ async fn reset_ports(work_dir: &std::path::Path, force: bool) -> anyhow::Result<
 
 /// Ensure no services are running. With --force, auto-stop them.
 /// Without --force, prompt the user.
-async fn ensure_services_stopped(
-    work_dir: &std::path::Path,
-    force: bool,
-) -> anyhow::Result<()> {
+async fn ensure_services_stopped(work_dir: &std::path::Path, force: bool) -> anyhow::Result<()> {
     let tracker = StateTracker::new(work_dir.to_path_buf()).await?;
     let services = tracker.get_services().await;
 
     let running: Vec<_> = services
         .iter()
-        .filter(|(_, state)| {
-            matches!(
-                state.status.as_str(),
-                "running" | "healthy" | "starting"
-            )
-        })
+        .filter(|(_, state)| matches!(state.status.as_str(), "running" | "healthy" | "starting"))
         .map(|(name, _)| name.clone())
         .collect();
 
@@ -157,10 +145,7 @@ async fn ensure_services_stopped(
         // Use the state-tracker-based stop (no config needed)
         super::run_stop_from_state(work_dir, vec![]).await?;
     } else {
-        println!(
-            "The following services are running: {}",
-            running.join(", ")
-        );
+        println!("The following services are running: {}", running.join(", "));
         print!("Stop them to continue? [y/N] ");
         std::io::stdout().flush()?;
 

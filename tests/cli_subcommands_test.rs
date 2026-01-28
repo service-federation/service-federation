@@ -1383,7 +1383,10 @@ fn test_ports_reset_clears_allocations() {
     let ports: std::collections::HashMap<String, u16> =
         serde_json::from_str(&list_stdout).expect("Failed to parse ports JSON");
 
-    assert!(ports.is_empty(), "After reset, no ports should be allocated");
+    assert!(
+        ports.is_empty(),
+        "After reset, no ports should be allocated"
+    );
 }
 
 #[test]

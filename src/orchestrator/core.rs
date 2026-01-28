@@ -771,12 +771,16 @@ impl Orchestrator {
             // Docker services: check container is still running
             if let Some(ref container_id) = container_id {
                 let output = tokio::process::Command::new("docker")
-                    .args(["ps", "-q", "--no-trunc", "-f", &format!("id={}", container_id)])
+                    .args([
+                        "ps",
+                        "-q",
+                        "--no-trunc",
+                        "-f",
+                        &format!("id={}", container_id),
+                    ])
                     .output()
                     .await;
-                let is_running = output
-                    .map(|o| !o.stdout.is_empty())
-                    .unwrap_or(true); // assume running if docker cmd fails
+                let is_running = output.map(|o| !o.stdout.is_empty()).unwrap_or(true); // assume running if docker cmd fails
                 if !is_running {
                     tracing::warn!(
                         "Service '{}' container {} stopped during healthcheck wait",
@@ -788,7 +792,10 @@ impl Orchestrator {
                     tracker.save().await?;
                     return Err(Error::ServiceStartFailed(
                         name.to_string(),
-                        format!("Service '{}' container stopped during healthcheck wait", name),
+                        format!(
+                            "Service '{}' container stopped during healthcheck wait",
+                            name
+                        ),
                     ));
                 }
             }
@@ -806,11 +813,7 @@ impl Orchestrator {
                     tracing::debug!("Service '{}' not healthy yet, waiting...", name);
                 }
                 Err(e) => {
-                    tracing::debug!(
-                        "Service '{}' health check error: {}, retrying...",
-                        name,
-                        e
-                    );
+                    tracing::debug!("Service '{}' health check error: {}, retrying...", name, e);
                 }
             }
 

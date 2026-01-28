@@ -77,13 +77,7 @@ services:
 
     // Check status immediately
     let status_output = Command::new(fed_binary())
-        .args([
-            "-c",
-            config_path.to_str().unwrap(),
-            "-w",
-            workdir,
-            "status",
-        ])
+        .args(["-c", config_path.to_str().unwrap(), "-w", workdir, "status"])
         .env("FED_NON_INTERACTIVE", "1")
         .output()
         .expect("Failed to run fed status");
@@ -228,13 +222,7 @@ services:
 
     // Check status immediately - should show Healthy since we waited
     let status_output = Command::new(fed_binary())
-        .args([
-            "-c",
-            config_path.to_str().unwrap(),
-            "-w",
-            workdir,
-            "status",
-        ])
+        .args(["-c", config_path.to_str().unwrap(), "-w", workdir, "status"])
         .env("FED_NON_INTERACTIVE", "1")
         .output()
         .expect("Failed to run fed status");

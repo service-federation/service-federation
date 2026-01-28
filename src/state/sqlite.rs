@@ -1906,17 +1906,19 @@ impl SqliteStateTracker {
     /// and allocated_ports). Used by `fed ports reset`.
     pub async fn clear_port_resolutions(&mut self) -> Result<()> {
         self.conn
-            .call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                let tx = conn.transaction()?;
-                tx.execute(
-                    "DELETE FROM port_allocations WHERE service_id = '_ports'",
-                    [],
-                )?;
-                tx.execute("DELETE FROM services WHERE id = '_ports'", [])?;
-                tx.execute("DELETE FROM allocated_ports", [])?;
-                tx.commit()?;
-                Ok(())
-            })
+            .call(
+                |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                    let tx = conn.transaction()?;
+                    tx.execute(
+                        "DELETE FROM port_allocations WHERE service_id = '_ports'",
+                        [],
+                    )?;
+                    tx.execute("DELETE FROM services WHERE id = '_ports'", [])?;
+                    tx.execute("DELETE FROM allocated_ports", [])?;
+                    tx.commit()?;
+                    Ok(())
+                },
+            )
             .await?;
         info!("Cleared all port resolutions");
         Ok(())
