@@ -1524,7 +1524,7 @@ impl SqliteStateTracker {
     pub async fn get_services(&self) -> HashMap<String, ServiceState> {
         match self.conn.call(|conn: &mut rusqlite::Connection| {
             let mut stmt = conn.prepare(
-                "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures, startup_message FROM services"
+                "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures, startup_message FROM services WHERE id NOT LIKE '\\_%' ESCAPE '\\'"
             )?;
 
             let services_iter = stmt.query_map([], |row| {
@@ -1730,11 +1730,6 @@ impl SqliteStateTracker {
         }
 
         for (service_id, service_state) in &services {
-            // Skip synthetic entries (e.g. _ports used for global port tracking)
-            if service_id.starts_with('_') {
-                continue;
-            }
-
             // Skip already-stale services
             if Self::status_is_stale(&service_state.status) {
                 continue;

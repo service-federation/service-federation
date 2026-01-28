@@ -311,12 +311,7 @@ impl Orchestrator {
         let mut managed_ports = std::collections::HashSet::new();
         let mut has_live_service = false;
 
-        for (id, svc) in &services {
-            // Skip the synthetic _ports entry — handled separately below
-            if id == "_ports" {
-                continue;
-            }
-
+        for (_id, svc) in &services {
             if svc.status != "running" && svc.status != "healthy" {
                 continue;
             }
