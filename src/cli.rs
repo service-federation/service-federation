@@ -54,10 +54,6 @@ pub enum Commands {
         /// Preview what would happen without actually starting services
         #[arg(long)]
         dry_run: bool,
-
-        /// Allocate fresh random ports instead of using configured defaults
-        #[arg(long, alias = "isolated")]
-        randomize_ports: bool,
     },
     /// Stop services
     Stop {
@@ -125,6 +121,9 @@ pub enum Commands {
     /// Manage package cache
     #[command(subcommand)]
     Package(PackageCommands),
+    /// Manage port allocations
+    #[command(subcommand)]
+    Ports(PortsCommands),
     /// Initialize a new service-federation.yaml config
     Init {
         /// Output file path
@@ -223,4 +222,33 @@ pub enum PackageCommands {
         #[arg(long, short)]
         force: bool,
     },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum PortsCommands {
+    /// List current port allocations [default when no subcommand given]
+    #[command(alias = "ls")]
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Allocate fresh random ports for all port parameters
+    Randomize {
+        /// Skip confirmation, auto-stop running services
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Clear port allocations (next start uses defaults)
+    Reset {
+        /// Skip confirmation, auto-stop running services
+        #[arg(long, short)]
+        force: bool,
+    },
+}
+
+impl Default for PortsCommands {
+    fn default() -> Self {
+        PortsCommands::List { json: false }
+    }
 }

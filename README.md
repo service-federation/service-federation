@@ -56,7 +56,8 @@ entrypoint: frontend
 
 ```bash
 fed start            # Start all services (follows dependencies)
-fed start --isolated # Start all services with ports randomized
+fed ports randomize  # Allocate fresh random ports
+fed ports reset      # Clear allocations, use defaults
 fed status           # Check status
 fed logs backend     # View logs
 fed stop             # Stop all
@@ -258,7 +259,7 @@ After all services start, messages are printed in a box. Entrypoint services sor
 ╰──────────────────────────────────────────────────╯
 ```
 
-Especially useful with `--isolated` mode where ports are randomized. A warning is emitted if an entrypoint service has no `startup_message`.
+Especially useful with `fed ports randomize` where ports are randomized. A warning is emitted if an entrypoint service has no `startup_message`.
 
 ### Isolated Test Execution
 

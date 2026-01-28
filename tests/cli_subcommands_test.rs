@@ -1199,7 +1199,7 @@ fn test_invalid_flag() {
 }
 
 // ============================================================================
-// --randomize-ports / --isolated tests
+// `fed ports` command tests
 // ============================================================================
 
 fn create_port_test_config(temp_dir: &TempDir, api_port: u16, db_port: u16) -> String {
@@ -1248,11 +1248,11 @@ fn parse_resolved_param(stdout: &str, param_name: &str) -> u16 {
 }
 
 #[test]
-fn test_start_randomize_ports_dry_run() {
+fn test_ports_randomize_allocates_different_ports() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = create_port_test_config(&temp_dir, 18080, 15432);
 
-    // Occupy port 18080 so isolated mode is forced to allocate a different port
+    // Occupy port 18080 so randomize is forced to allocate a different port
     let listener =
         std::net::TcpListener::bind(("127.0.0.1", 18080)).expect("Failed to bind port 18080");
 
@@ -1262,9 +1262,9 @@ fn test_start_randomize_ports_dry_run() {
             &config_path,
             "-w",
             temp_dir.path().to_str().unwrap(),
-            "start",
-            "--randomize-ports",
-            "--dry-run",
+            "ports",
+            "randomize",
+            "-f",
         ])
         .output()
         .expect("Failed to run fed");
@@ -1273,44 +1273,85 @@ fn test_start_randomize_ports_dry_run() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "start --randomize-ports --dry-run failed.\nstdout: {}\nstderr: {}",
+        "ports randomize failed.\nstdout: {}\nstderr: {}",
         stdout,
         stderr
     );
 
-    let api_port = parse_resolved_param(&stdout, "TEST_API_PORT");
-    let db_port = parse_resolved_param(&stdout, "TEST_DB_PORT");
+    // Verify via `fed ports list --json`
+    let list_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "ports",
+            "list",
+            "--json",
+        ])
+        .output()
+        .expect("Failed to run fed ports list");
 
-    // Port 18080 is occupied, so isolated mode must allocate a different one
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        list_output.status.success(),
+        "ports list --json failed.\nstdout: {}\nstderr: {}",
+        list_stdout,
+        String::from_utf8_lossy(&list_output.stderr)
+    );
+
+    let ports: std::collections::HashMap<String, u16> =
+        serde_json::from_str(&list_stdout).expect("Failed to parse ports JSON");
+
+    let api_port = ports
+        .get("TEST_API_PORT")
+        .expect("TEST_API_PORT not in ports");
+    let db_port = ports
+        .get("TEST_DB_PORT")
+        .expect("TEST_DB_PORT not in ports");
+
+    // Port 18080 is occupied, so randomize must allocate a different one
     assert_ne!(
-        api_port, 18080,
+        *api_port, 18080,
         "API port should differ from occupied default 18080"
     );
-    assert!(api_port > 1024, "API port {} out of valid range", api_port);
-    assert!(db_port > 1024, "DB port {} out of valid range", db_port);
+    assert!(*api_port > 1024, "API port {} out of valid range", api_port);
+    assert!(*db_port > 1024, "DB port {} out of valid range", db_port);
     assert_ne!(api_port, db_port, "Ports should differ from each other");
 
     drop(listener);
 }
 
 #[test]
-fn test_start_isolated_alias_dry_run() {
+fn test_ports_reset_clears_allocations() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = create_port_test_config(&temp_dir, 18180, 15532);
 
-    // Occupy port 18180 so isolated mode is forced to allocate a different port
-    let listener =
-        std::net::TcpListener::bind(("127.0.0.1", 18180)).expect("Failed to bind port 18180");
-
+    // First randomize
     let output = Command::new(fed_binary())
         .args([
             "-c",
             &config_path,
             "-w",
             temp_dir.path().to_str().unwrap(),
-            "start",
-            "--isolated",
-            "--dry-run",
+            "ports",
+            "randomize",
+            "-f",
+        ])
+        .output()
+        .expect("Failed to run fed");
+    assert!(output.status.success(), "ports randomize failed");
+
+    // Then reset
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "ports",
+            "reset",
+            "-f",
         ])
         .output()
         .expect("Failed to run fed");
@@ -1319,24 +1360,30 @@ fn test_start_isolated_alias_dry_run() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "start --isolated --dry-run failed.\nstdout: {}\nstderr: {}",
+        "ports reset failed.\nstdout: {}\nstderr: {}",
         stdout,
         stderr
     );
 
-    let api_port = parse_resolved_param(&stdout, "TEST_API_PORT");
-    let db_port = parse_resolved_param(&stdout, "TEST_DB_PORT");
+    // Verify ports are empty via list --json
+    let list_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "ports",
+            "list",
+            "--json",
+        ])
+        .output()
+        .expect("Failed to run fed ports list");
 
-    // Port 18180 is occupied, so --isolated must allocate a different one
-    assert_ne!(
-        api_port, 18180,
-        "API port should differ from occupied default 18180 (--isolated alias)"
-    );
-    assert!(api_port > 1024, "API port {} out of valid range", api_port);
-    assert!(db_port > 1024, "DB port {} out of valid range", db_port);
-    assert_ne!(api_port, db_port, "Ports should differ from each other");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    let ports: std::collections::HashMap<String, u16> =
+        serde_json::from_str(&list_stdout).expect("Failed to parse ports JSON");
 
-    drop(listener);
+    assert!(ports.is_empty(), "After reset, no ports should be allocated");
 }
 
 #[test]
@@ -1370,10 +1417,10 @@ fn test_start_without_randomize_uses_defaults() {
 
     assert_eq!(
         api_port, 18280,
-        "Without --randomize-ports, API port should be the default 18280"
+        "Without port randomization, API port should be the default 18280"
     );
     assert_eq!(
         db_port, 15632,
-        "Without --randomize-ports, DB port should be the default 15632"
+        "Without port randomization, DB port should be the default 15632"
     );
 }

@@ -110,6 +110,9 @@ async fn run() -> anyhow::Result<()> {
                 .await
                 .map_err(|e| anyhow::anyhow!(e));
         }
+        Commands::Ports(ref ports_cmd) => {
+            return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone()).await;
+        }
         Commands::Debug(debug_cmd) => {
             // Debug commands only need config and work_dir
             let parser = ConfigParser::new();
@@ -264,17 +267,6 @@ async fn run() -> anyhow::Result<()> {
     };
     orchestrator.set_output_mode(output_mode);
 
-    // Handle --randomize-ports on start: fresh random ports, skip session cache
-    if matches!(
-        &cli.command,
-        Commands::Start {
-            randomize_ports: true,
-            ..
-        }
-    ) {
-        orchestrator.set_randomize_ports(true);
-    }
-
     // --replace should auto-resolve port conflicts during initialization
     // (the actual process killing happens later in run_start)
     if matches!(&cli.command, Commands::Start { replace: true, .. }) {
@@ -319,7 +311,6 @@ async fn run() -> anyhow::Result<()> {
             replace,
             output: _,
             dry_run,
-            randomize_ports: _,
         } => {
             commands::run_start(
                 &mut orchestrator,
@@ -402,6 +393,7 @@ async fn run() -> anyhow::Result<()> {
         // These are handled earlier
         Commands::Session(_)
         | Commands::Package(_)
+        | Commands::Ports(_)
         | Commands::Init { .. }
         | Commands::Validate
         | Commands::Completions { .. }
