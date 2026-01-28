@@ -130,14 +130,6 @@ impl PortAllocator {
         self.allocated_ports.lock().insert(port);
     }
 
-    /// Manually register a port as allocated with a listener
-    ///
-    /// Thread-safe: Uses interior mutability to allow concurrent registration.
-    pub fn register_port(&mut self, port: u16, listener: TcpListener) {
-        self.listeners.lock().push(listener);
-        self.allocated_ports.lock().insert(port);
-    }
-
     /// Release all listeners but keep ports marked as allocated.
     ///
     /// This method uses interior mutability (via Mutex) to allow calling with `&self`,

@@ -862,29 +862,17 @@ impl Resolver {
                 if let Err(e) = conflict.kill_and_verify(3) {
                     return Err(Error::Config(e));
                 }
-                // Try to allocate the original port again
-                match std::net::TcpListener::bind(("127.0.0.1", port)) {
-                    Ok(listener) => {
-                        self.port_allocator.register_port(port, listener);
-                        Ok((port, None))
-                    }
-                    Err(_) => {
-                        // Still not available, use alternative
-                        Ok((alternative_port, Some(conflict)))
-                    }
+                // Try to allocate the original port again (dual-stack: checks both IPv4 and 0.0.0.0)
+                match self.port_allocator.try_allocate_port(port) {
+                    Ok(_) => Ok((port, None)),
+                    Err(_) => Ok((alternative_port, Some(conflict))),
                 }
             }
             PortConflictAction::Retry => {
-                // Try to allocate the original port again
-                match std::net::TcpListener::bind(("127.0.0.1", port)) {
-                    Ok(listener) => {
-                        self.port_allocator.register_port(port, listener);
-                        Ok((port, None))
-                    }
-                    Err(_) => {
-                        // Still not available, use alternative
-                        Ok((alternative_port, Some(conflict)))
-                    }
+                // Try to allocate the original port again (dual-stack: checks both IPv4 and 0.0.0.0)
+                match self.port_allocator.try_allocate_port(port) {
+                    Ok(_) => Ok((port, None)),
+                    Err(_) => Ok((alternative_port, Some(conflict))),
                 }
             }
             PortConflictAction::Ignore => {
