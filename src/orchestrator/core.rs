@@ -311,7 +311,12 @@ impl Orchestrator {
         let mut managed_ports = std::collections::HashSet::new();
         let mut has_live_service = false;
 
-        for (_id, svc) in &services {
+        for (id, svc) in &services {
+            // Skip the synthetic _ports entry — handled separately below
+            if id == "_ports" {
+                continue;
+            }
+
             if svc.status != "running" && svc.status != "healthy" {
                 continue;
             }
@@ -335,15 +340,23 @@ impl Orchestrator {
             }
         }
 
-        // If any service is alive, also trust session-cached ports.
-        // Process services don't write to port_allocations, but their ports
-        // ARE stored in the session port cache (ports.json).
+        // If any real service is alive, trust globally persisted port resolutions.
+        // These cover all port parameters including process/Gradle services.
         if has_live_service {
-            if let Ok(Some(session)) =
-                crate::session::Session::current_for_workdir(Some(self.work_dir.as_path()))
-            {
-                for (_param, &port) in session.get_all_ports() {
-                    managed_ports.insert(port);
+            let global_ports = state.get_global_port_allocations().await;
+            for (_param, port) in &global_ports {
+                managed_ports.insert(*port);
+            }
+
+            // Fallback: also check session port cache for backwards compatibility
+            // with sessions that predate global port persistence.
+            if global_ports.is_empty() {
+                if let Ok(Some(session)) =
+                    crate::session::Session::current_for_workdir(Some(self.work_dir.as_path()))
+                {
+                    for (_param, &port) in session.get_all_ports() {
+                        managed_ports.insert(port);
+                    }
                 }
             }
         }
@@ -461,6 +474,23 @@ impl Orchestrator {
         // Track allocated ports in state
         for port in self.resolver.get_allocated_ports() {
             self.state_tracker.write().await.track_port(port).await;
+        }
+
+        // Persist resolved port parameters globally so that on next `fed start`,
+        // collect_managed_ports can detect ports owned by process/Gradle services
+        // (not just Docker). This eliminates the need for session cache fallback.
+        let port_resolutions: Vec<(String, u16)> = self
+            .resolver
+            .get_port_resolutions()
+            .iter()
+            .map(|r| (r.param_name.clone(), r.resolved_port))
+            .collect();
+        if !port_resolutions.is_empty() {
+            self.state_tracker
+                .write()
+                .await
+                .save_port_resolutions(&port_resolutions)
+                .await?;
         }
 
         // NOTE: Port listeners are held until services actually start.

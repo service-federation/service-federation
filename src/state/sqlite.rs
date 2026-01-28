@@ -1730,6 +1730,11 @@ impl SqliteStateTracker {
         }
 
         for (service_id, service_state) in &services {
+            // Skip synthetic entries (e.g. _ports used for global port tracking)
+            if service_id.starts_with('_') {
+                continue;
+            }
+
             // Skip already-stale services
             if Self::status_is_stale(&service_state.status) {
                 continue;
@@ -1817,6 +1822,83 @@ impl SqliteStateTracker {
         }
 
         Ok(count)
+    }
+
+    /// Save resolved port parameters globally.
+    ///
+    /// Creates a synthetic `_ports` service entry and stores all resolved port
+    /// parameters against it. This ensures process/Gradle services have their
+    /// ports persisted in SQLite (previously only Docker services did).
+    ///
+    /// On subsequent `fed start`, `collect_managed_ports` can read these to
+    /// detect ports owned by managed services without relying on the session
+    /// port cache file.
+    pub async fn save_port_resolutions(&mut self, resolutions: &[(String, u16)]) -> Result<()> {
+        let count = resolutions.len();
+        let resolutions = resolutions.to_vec();
+        let now = Utc::now().to_rfc3339();
+
+        self.conn
+            .call(move |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                let tx = conn.transaction()?;
+
+                // Ensure the synthetic _ports service exists
+                tx.execute(
+                    "INSERT OR REPLACE INTO services (id, status, service_type, namespace, started_at) VALUES ('_ports', 'system', 'system', '', ?1)",
+                    rusqlite::params![&now],
+                )?;
+
+                // Clear previous port resolutions for _ports
+                tx.execute(
+                    "DELETE FROM port_allocations WHERE service_id = '_ports'",
+                    [],
+                )?;
+
+                // Insert all resolved port parameters
+                for (param_name, port) in &resolutions {
+                    tx.execute(
+                        "INSERT INTO port_allocations (service_id, parameter_name, port) VALUES ('_ports', ?1, ?2)",
+                        rusqlite::params![param_name, port],
+                    )?;
+                    tx.execute(
+                        "INSERT OR IGNORE INTO allocated_ports (port, allocated_at) VALUES (?1, ?2)",
+                        rusqlite::params![port, &now],
+                    )?;
+                }
+
+                tx.execute(
+                    "UPDATE lock_file SET updated_at = datetime('now') WHERE id = 1",
+                    [],
+                )?;
+                tx.commit()?;
+                Ok(())
+            })
+            .await?;
+
+        debug!("Saved {} port resolution(s) to state tracker", count);
+        Ok(())
+    }
+
+    /// Get globally persisted port resolutions (from `_ports` synthetic service).
+    pub async fn get_global_port_allocations(&self) -> HashMap<String, u16> {
+        match self.conn.call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<HashMap<String, u16>> {
+            let mut stmt = conn.prepare(
+                "SELECT parameter_name, port FROM port_allocations WHERE service_id = '_ports'"
+            )?;
+            let ports: HashMap<String, u16> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u16>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(ports)
+        }).await {
+            Ok(ports) => ports,
+            Err(e) => {
+                warn!("Failed to read global port allocations: {}", e);
+                HashMap::new()
+            }
+        }
     }
 
     /// Get the database file path
