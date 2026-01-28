@@ -293,6 +293,67 @@ impl Orchestrator {
         self
     }
 
+    /// Collect ports owned by running managed services from the state tracker.
+    ///
+    /// Must be called BEFORE `state_tracker.initialize()` because that runs
+    /// `cleanup_dead_services()` which deletes stale records and their port_allocations.
+    /// We need the port snapshot before cleanup so the resolver knows which ports are ours.
+    async fn collect_managed_ports(&mut self) {
+        let state = self.state_tracker.read().await;
+        let services = state.get_services().await;
+        let mut managed_ports = std::collections::HashSet::new();
+
+        for (_id, svc) in &services {
+            if svc.status != "running" && svc.status != "healthy" {
+                continue;
+            }
+
+            // Verify the process/container is actually alive before trusting the port
+            let is_alive = if let Some(pid) = svc.pid {
+                Self::is_pid_alive(pid)
+            } else if svc.container_id.is_some() {
+                // Can't cheaply verify container without Docker — trust the status.
+                // If Docker is down, cleanup_dead_services will skip container checks anyway.
+                true
+            } else {
+                false
+            };
+
+            if is_alive {
+                for (_param, &port) in &svc.port_allocations {
+                    managed_ports.insert(port);
+                }
+            }
+        }
+
+        if !managed_ports.is_empty() {
+            tracing::debug!(
+                "Found {} managed port(s) from running services: {:?}",
+                managed_ports.len(),
+                managed_ports
+            );
+        }
+        self.resolver.set_managed_ports(managed_ports);
+    }
+
+    /// Check if a PID is alive (signal 0 check).
+    fn is_pid_alive(pid: u32) -> bool {
+        #[cfg(unix)]
+        {
+            use crate::error::validate_pid_for_check;
+            use nix::sys::signal::kill;
+            if let Some(nix_pid) = validate_pid_for_check(pid) {
+                return kill(nix_pid, None).is_ok();
+            }
+            false
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            true // Can't check on non-unix, assume alive
+        }
+    }
+
     /// Lightweight initialization for read-only commands (status, logs).
     ///
     /// Unlike [`initialize`], this skips parameter resolution, Docker orphan cleanup,
@@ -336,7 +397,12 @@ impl Orchestrator {
     /// - Circular dependencies are detected
     /// - Service configuration is invalid
     pub async fn initialize(&mut self) -> Result<()> {
-        // Initialize state tracker (loads existing lock file if present)
+        // Collect ports owned by already-running managed services BEFORE cleanup.
+        // cleanup_dead_services (inside initialize) deletes stale records and their
+        // port_allocations, so we must snapshot managed ports first.
+        self.collect_managed_ports().await;
+
+        // Initialize state tracker (loads existing lock file, cleans dead services)
         self.state_tracker.write().await.initialize().await?;
 
         // Cleanup orphaned Docker containers from dead sessions
@@ -349,33 +415,6 @@ impl Orchestrator {
                 tracing::warn!("Failed to cleanup orphaned containers: {}", e);
                 // Continue initialization even if cleanup fails
             }
-        }
-
-        // Collect ports owned by already-running managed services so the resolver
-        // can skip bind-checking them (they're ours, not external conflicts).
-        {
-            let state = self.state_tracker.read().await;
-            let services = state.get_services().await;
-            let mut managed_ports = std::collections::HashSet::new();
-            for (_id, svc) in &services {
-                if svc.status == "running" || svc.status == "healthy" {
-                    // Only trust if the service still has a live PID or container
-                    let has_live_process = svc.pid.is_some() || svc.container_id.is_some();
-                    if has_live_process {
-                        for (_param, &port) in &svc.port_allocations {
-                            managed_ports.insert(port);
-                        }
-                    }
-                }
-            }
-            if !managed_ports.is_empty() {
-                tracing::debug!(
-                    "Found {} managed port(s) from running services: {:?}",
-                    managed_ports.len(),
-                    managed_ports
-                );
-            }
-            self.resolver.set_managed_ports(managed_ports);
         }
 
         // First pass: resolve parent parameters only (not services yet)

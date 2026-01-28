@@ -294,11 +294,11 @@ async fn run() -> anyhow::Result<()> {
         orchestrator.set_auto_resolve_conflicts(true);
     }
 
-    // Read-only commands skip parameter resolution and Docker cleanup
+    // Read-only commands and stop skip parameter resolution and Docker cleanup
     // to avoid interactive prompts and stale service recreation.
     let readonly = matches!(
         cli.command,
-        Commands::Status { .. } | Commands::Logs { .. }
+        Commands::Status { .. } | Commands::Logs { .. } | Commands::Stop { .. }
     );
     if readonly {
         orchestrator.initialize_readonly().await?;
