@@ -399,90 +399,80 @@ impl Resolver {
                     // Normal mode: check session for cached ports
                     use crate::session::Session;
 
-                    let cached_result: Option<(u16, PortResolutionReason)> =
-                        if let Ok(Some(mut session)) =
-                            Session::current_for_workdir(self.work_dir.as_deref())
-                        {
-                            if let Some(port) = session.get_port(name) {
-                                // If this port is held by one of our managed services,
-                                // trust it without bind-checking — we own the process.
-                                if self.managed_ports.contains(&port) {
-                                    tracing::debug!(
+                    let cached_result: Option<(u16, PortResolutionReason)> = if let Ok(Some(
+                        mut session,
+                    )) =
+                        Session::current_for_workdir(self.work_dir.as_deref())
+                    {
+                        if let Some(port) = session.get_port(name) {
+                            // If this port is held by one of our managed services,
+                            // trust it without bind-checking — we own the process.
+                            if self.managed_ports.contains(&port) {
+                                tracing::debug!(
                                         "Reusing managed port {} for parameter '{}' (owned by running service)",
                                         port,
                                         name
                                     );
-                                    self.port_allocator.mark_allocated(port);
-                                    Some((port, PortResolutionReason::SessionCached))
-                                } else if self.port_allocator.try_allocate_port(port).is_ok() {
-                                    tracing::debug!(
-                                        "Reusing cached port {} for parameter '{}'",
-                                        port,
-                                        name
-                                    );
-                                    Some((port, PortResolutionReason::SessionCached))
-                                } else {
-                                    // Port is taken - this is a cache invalidation scenario
-                                    // The port was available in a previous session but is now in use
-                                    tracing::warn!(
-                                        "Cached port {} for parameter '{}' is no longer available \
-                                     (taken by another process). Resolving conflict...",
-                                        port,
-                                        name
-                                    );
-                                    let (new_port, conflict) =
-                                        self.handle_port_conflict_interactive(port, name)?;
-                                    session.save_port(name.clone(), new_port)?;
-                                    let first = conflict.as_ref().and_then(|c| c.processes.first());
-                                    Some((
-                                        new_port,
-                                        PortResolutionReason::ConflictAutoResolved {
-                                            default_port: port,
-                                            conflict_pid: first.map(|p| p.pid),
-                                            conflict_process: first.map(|p| p.name.clone()),
-                                        },
-                                    ))
-                                }
+                                self.port_allocator.mark_allocated(port);
+                                Some((port, PortResolutionReason::SessionCached))
+                            } else if self.port_allocator.try_allocate_port(port).is_ok() {
+                                tracing::debug!(
+                                    "Reusing cached port {} for parameter '{}'",
+                                    port,
+                                    name
+                                );
+                                Some((port, PortResolutionReason::SessionCached))
                             } else {
-                                // Allocate new port and save to session
-                                let (new_port, reason) = if let Some(env_value) =
-                                    param.get_value_for_environment(&self.environment)
-                                {
-                                    let default_str = Self::value_to_string(env_value);
-                                    if let Ok(default_port) = default_str.parse::<u16>() {
-                                        // Skip bind check if port is managed by a running service
-                                        if self.managed_ports.contains(&default_port) {
-                                            self.port_allocator.mark_allocated(default_port);
-                                            (default_port, PortResolutionReason::DefaultAvailable)
-                                        } else if self
-                                            .port_allocator
-                                            .try_allocate_port(default_port)
-                                            .is_ok()
-                                        {
-                                            (default_port, PortResolutionReason::DefaultAvailable)
-                                        } else {
-                                            let (p, conflict) = self
-                                                .handle_port_conflict_interactive(
-                                                    default_port,
-                                                    name,
-                                                )?;
-                                            let first = conflict
-                                                .as_ref()
-                                                .and_then(|c| c.processes.first());
-                                            (
-                                                p,
-                                                PortResolutionReason::ConflictAutoResolved {
-                                                    default_port,
-                                                    conflict_pid: first.map(|p| p.pid),
-                                                    conflict_process: first
-                                                        .map(|p| p.name.clone()),
-                                                },
-                                            )
-                                        }
+                                // Port is taken - this is a cache invalidation scenario
+                                // The port was available in a previous session but is now in use
+                                tracing::warn!(
+                                    "Cached port {} for parameter '{}' is no longer available \
+                                     (taken by another process). Resolving conflict...",
+                                    port,
+                                    name
+                                );
+                                let (new_port, conflict) =
+                                    self.handle_port_conflict_interactive(port, name)?;
+                                session.save_port(name.clone(), new_port)?;
+                                let first = conflict.as_ref().and_then(|c| c.processes.first());
+                                Some((
+                                    new_port,
+                                    PortResolutionReason::ConflictAutoResolved {
+                                        default_port: port,
+                                        conflict_pid: first.map(|p| p.pid),
+                                        conflict_process: first.map(|p| p.name.clone()),
+                                    },
+                                ))
+                            }
+                        } else {
+                            // Allocate new port and save to session
+                            let (new_port, reason) = if let Some(env_value) =
+                                param.get_value_for_environment(&self.environment)
+                            {
+                                let default_str = Self::value_to_string(env_value);
+                                if let Ok(default_port) = default_str.parse::<u16>() {
+                                    // Skip bind check if port is managed by a running service
+                                    if self.managed_ports.contains(&default_port) {
+                                        self.port_allocator.mark_allocated(default_port);
+                                        (default_port, PortResolutionReason::DefaultAvailable)
+                                    } else if self
+                                        .port_allocator
+                                        .try_allocate_port(default_port)
+                                        .is_ok()
+                                    {
+                                        (default_port, PortResolutionReason::DefaultAvailable)
                                     } else {
+                                        let (p, conflict) = self
+                                            .handle_port_conflict_interactive(default_port, name)?;
+                                        let first =
+                                            conflict.as_ref().and_then(|c| c.processes.first());
                                         (
-                                            self.port_allocator.allocate_random_port()?,
-                                            PortResolutionReason::Random,
+                                            p,
+                                            PortResolutionReason::ConflictAutoResolved {
+                                                default_port,
+                                                conflict_pid: first.map(|p| p.pid),
+                                                conflict_process: first.map(|p| p.name.clone()),
+                                            },
                                         )
                                     }
                                 } else {
@@ -490,15 +480,21 @@ impl Resolver {
                                         self.port_allocator.allocate_random_port()?,
                                         PortResolutionReason::Random,
                                     )
-                                };
+                                }
+                            } else {
+                                (
+                                    self.port_allocator.allocate_random_port()?,
+                                    PortResolutionReason::Random,
+                                )
+                            };
 
-                                // Save to session for reuse
-                                session.save_port(name.clone(), new_port)?;
-                                Some((new_port, reason))
-                            }
-                        } else {
-                            None
-                        };
+                            // Save to session for reuse
+                            session.save_port(name.clone(), new_port)?;
+                            Some((new_port, reason))
+                        }
+                    } else {
+                        None
+                    };
 
                     // Use cached port if available, otherwise allocate
                     if let Some((p, reason)) = cached_result {
@@ -513,7 +509,11 @@ impl Resolver {
                             );
                             self.port_allocator.mark_allocated(persisted_port);
                             (persisted_port, PortResolutionReason::SessionCached)
-                        } else if self.port_allocator.try_allocate_port(persisted_port).is_ok() {
+                        } else if self
+                            .port_allocator
+                            .try_allocate_port(persisted_port)
+                            .is_ok()
+                        {
                             tracing::debug!(
                                 "Reusing persisted port {} for parameter '{}' (port is free)",
                                 persisted_port,
@@ -548,13 +548,16 @@ impl Resolver {
                                 if self.managed_ports.contains(&default_port) {
                                     self.port_allocator.mark_allocated(default_port);
                                     (default_port, PortResolutionReason::DefaultAvailable)
-                                } else if self.port_allocator.try_allocate_port(default_port).is_ok() {
+                                } else if self
+                                    .port_allocator
+                                    .try_allocate_port(default_port)
+                                    .is_ok()
+                                {
                                     (default_port, PortResolutionReason::DefaultAvailable)
                                 } else {
                                     let (p, conflict) =
                                         self.handle_port_conflict_interactive(default_port, name)?;
-                                    let first =
-                                        conflict.as_ref().and_then(|c| c.processes.first());
+                                    let first = conflict.as_ref().and_then(|c| c.processes.first());
                                     (
                                         p,
                                         PortResolutionReason::ConflictAutoResolved {
@@ -809,14 +812,13 @@ impl Resolver {
 
             // Resolve startup_message template (display string, not shell-escaped)
             if let Some(ref msg) = service.startup_message {
-                service.startup_message = Some(
-                    self.resolve_template(msg, &parameters).map_err(|e| {
+                service.startup_message =
+                    Some(self.resolve_template(msg, &parameters).map_err(|e| {
                         Error::Config(format!(
                             "Failed to resolve startup_message for service '{}': {}",
                             name, e
                         ))
-                    })?,
-                );
+                    })?);
             }
         }
 

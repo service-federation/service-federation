@@ -277,13 +277,7 @@ async fn run() -> anyhow::Result<()> {
 
     // --replace should auto-resolve port conflicts during initialization
     // (the actual process killing happens later in run_start)
-    if matches!(
-        &cli.command,
-        Commands::Start {
-            replace: true,
-            ..
-        }
-    ) {
+    if matches!(&cli.command, Commands::Start { replace: true, .. }) {
         orchestrator.set_auto_resolve_conflicts(true);
     }
 

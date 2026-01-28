@@ -50,13 +50,13 @@ pub async fn run_stop_from_state(work_dir: &Path, services: Vec<String>) -> anyh
             .collect()
     };
 
-    println!("Stopping {} service(s) from state tracker...", services_to_stop.len());
+    println!(
+        "Stopping {} service(s) from state tracker...",
+        services_to_stop.len()
+    );
 
     for (name, state) in &services_to_stop {
-        let is_active = matches!(
-            state.status.as_str(),
-            "running" | "healthy" | "starting"
-        );
+        let is_active = matches!(state.status.as_str(), "running" | "healthy" | "starting");
         if !is_active {
             continue;
         }

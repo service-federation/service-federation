@@ -512,7 +512,11 @@ impl ServiceManager for DockerService {
 
         let container_name = {
             let base = self.base.read();
-            docker_container_name(&service_name, self.session_id.as_deref(), Path::new(&base.work_dir))
+            docker_container_name(
+                &service_name,
+                self.session_id.as_deref(),
+                Path::new(&base.work_dir),
+            )
         };
 
         // Remove any existing container with this name unconditionally.

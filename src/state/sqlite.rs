@@ -1881,18 +1881,24 @@ impl SqliteStateTracker {
 
     /// Get globally persisted port resolutions (from `_ports` synthetic service).
     pub async fn get_global_port_allocations(&self) -> HashMap<String, u16> {
-        match self.conn.call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<HashMap<String, u16>> {
-            let mut stmt = conn.prepare(
+        match self
+            .conn
+            .call(
+                |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<HashMap<String, u16>> {
+                    let mut stmt = conn.prepare(
                 "SELECT parameter_name, port FROM port_allocations WHERE service_id = '_ports'"
             )?;
-            let ports: HashMap<String, u16> = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, u16>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            Ok(ports)
-        }).await {
+                    let ports: HashMap<String, u16> = stmt
+                        .query_map([], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, u16>(1)?))
+                        })?
+                        .filter_map(|r| r.ok())
+                        .collect();
+                    Ok(ports)
+                },
+            )
+            .await
+        {
             Ok(ports) => ports,
             Err(e) => {
                 warn!("Failed to read global port allocations: {}", e);

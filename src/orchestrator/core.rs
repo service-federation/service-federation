@@ -441,7 +441,11 @@ impl Orchestrator {
         self.collect_managed_ports().await;
 
         // Now purge stale services — managed ports have been collected
-        self.state_tracker.write().await.purge_stale_services().await?;
+        self.state_tracker
+            .write()
+            .await
+            .purge_stale_services()
+            .await?;
 
         // Cleanup orphaned Docker containers from dead sessions
         match crate::service::DockerService::cleanup_orphaned_containers().await {
@@ -457,8 +461,12 @@ impl Orchestrator {
 
         // Load persisted port allocations from previous `fed start` so the
         // resolver can reuse ports across invocations without an explicit session.
-        let persisted_ports = self.state_tracker.read().await
-            .get_global_port_allocations().await;
+        let persisted_ports = self
+            .state_tracker
+            .read()
+            .await
+            .get_global_port_allocations()
+            .await;
         if !persisted_ports.is_empty() {
             tracing::debug!(
                 "Loaded {} persisted port allocation(s) from state",

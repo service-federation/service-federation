@@ -652,7 +652,11 @@ services:
         let names: Vec<String> = orch.config.services.keys().cloned().collect();
         let (gradle_groups, _) = orch.group_gradle_services(&names);
 
-        assert_eq!(gradle_groups.len(), 2, "different cwds must produce separate groups");
+        assert_eq!(
+            gradle_groups.len(),
+            2,
+            "different cwds must produce separate groups"
+        );
         for group in &gradle_groups {
             assert_eq!(group.len(), 1);
         }
