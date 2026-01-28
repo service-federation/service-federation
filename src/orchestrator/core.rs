@@ -739,52 +739,57 @@ impl Orchestrator {
                 return Err(Error::Cancelled(name.to_string()));
             }
 
-            // Check if the service died while we were waiting
-            {
+            // Check if the service died while we were waiting.
+            // Read PID/container info under manager lock, then drop it before
+            // acquiring state_tracker write lock (preserves lock ordering:
+            // state_tracker → manager, never the reverse).
+            let (pid, container_id) = {
                 let manager = manager_arc.lock().await;
+                (manager.get_pid(), manager.get_container_id())
+            };
+            // manager lock released here
 
-                // Process/Gradle services: check PID liveness via signal 0
-                if let Some(pid) = manager.get_pid() {
-                    let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
-                    if nix::sys::signal::kill(nix_pid, None).is_err() {
-                        tracing::warn!(
-                            "Service '{}' (PID {}) died during healthcheck wait",
-                            name,
-                            pid
-                        );
-                        let mut tracker = self.state_tracker.write().await;
-                        tracker.update_service_status(name, "stopped").await?;
-                        tracker.save().await?;
-                        return Err(Error::ServiceStartFailed(
-                            name.to_string(),
-                            format!("Service '{}' crashed during healthcheck wait", name),
-                        ));
-                    }
+            // Process/Gradle services: check PID liveness via signal 0
+            if let Some(pid) = pid {
+                let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+                if nix::sys::signal::kill(nix_pid, None).is_err() {
+                    tracing::warn!(
+                        "Service '{}' (PID {}) died during healthcheck wait",
+                        name,
+                        pid
+                    );
+                    let mut tracker = self.state_tracker.write().await;
+                    tracker.update_service_status(name, "stopped").await?;
+                    tracker.save().await?;
+                    return Err(Error::ServiceStartFailed(
+                        name.to_string(),
+                        format!("Service '{}' crashed during healthcheck wait", name),
+                    ));
                 }
+            }
 
-                // Docker services: check container is still running
-                if let Some(ref container_id) = manager.get_container_id() {
-                    let output = tokio::process::Command::new("docker")
-                        .args(["ps", "-q", "--no-trunc", "-f", &format!("id={}", container_id)])
-                        .output()
-                        .await;
-                    let is_running = output
-                        .map(|o| !o.stdout.is_empty())
-                        .unwrap_or(true); // assume running if docker cmd fails
-                    if !is_running {
-                        tracing::warn!(
-                            "Service '{}' container {} stopped during healthcheck wait",
-                            name,
-                            container_id
-                        );
-                        let mut tracker = self.state_tracker.write().await;
-                        tracker.update_service_status(name, "stopped").await?;
-                        tracker.save().await?;
-                        return Err(Error::ServiceStartFailed(
-                            name.to_string(),
-                            format!("Service '{}' container stopped during healthcheck wait", name),
-                        ));
-                    }
+            // Docker services: check container is still running
+            if let Some(ref container_id) = container_id {
+                let output = tokio::process::Command::new("docker")
+                    .args(["ps", "-q", "--no-trunc", "-f", &format!("id={}", container_id)])
+                    .output()
+                    .await;
+                let is_running = output
+                    .map(|o| !o.stdout.is_empty())
+                    .unwrap_or(true); // assume running if docker cmd fails
+                if !is_running {
+                    tracing::warn!(
+                        "Service '{}' container {} stopped during healthcheck wait",
+                        name,
+                        container_id
+                    );
+                    let mut tracker = self.state_tracker.write().await;
+                    tracker.update_service_status(name, "stopped").await?;
+                    tracker.save().await?;
+                    return Err(Error::ServiceStartFailed(
+                        name.to_string(),
+                        format!("Service '{}' container stopped during healthcheck wait", name),
+                    ));
                 }
             }
 
