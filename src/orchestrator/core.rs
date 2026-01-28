@@ -687,6 +687,96 @@ impl Orchestrator {
         }
     }
 
+    /// Await a service's healthcheck during startup.
+    ///
+    /// If the service has a registered healthcheck, polls it until healthy or timeout.
+    /// Also monitors PID liveness to detect early crashes without waiting for the
+    /// full timeout. If no healthcheck is registered, returns immediately.
+    async fn await_healthcheck(
+        &self,
+        name: &str,
+        manager_arc: &Arc<tokio::sync::Mutex<Box<dyn ServiceManager>>>,
+    ) -> Result<()> {
+        let health_checkers = self.health_checkers.read().await;
+        let checker = match health_checkers.get(name) {
+            Some(c) => c,
+            None => return Ok(()), // No healthcheck configured — nothing to wait for
+        };
+
+        let timeout = checker.timeout();
+        let start = std::time::Instant::now();
+        let check_interval = Duration::from_millis(500);
+
+        tracing::info!(
+            "Waiting for healthcheck on '{}' (timeout: {:?})",
+            name,
+            timeout
+        );
+
+        loop {
+            if start.elapsed() > timeout {
+                tracing::warn!(
+                    "Service '{}' did not become healthy within {:?}",
+                    name,
+                    timeout
+                );
+                // Update status to reflect the timeout but don't fail the start —
+                // the service is running, just not healthy yet. The TUI/status
+                // command will show the accurate state.
+                return Ok(());
+            }
+
+            // Check if the process died while we were waiting
+            {
+                let manager = manager_arc.lock().await;
+                let pid = manager.get_pid();
+                if let Some(pid) = pid {
+                    // Signal 0 checks if process exists without sending a signal
+                    let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
+                    if nix::sys::signal::kill(nix_pid, None).is_err() {
+                        tracing::warn!(
+                            "Service '{}' (PID {}) died during healthcheck wait",
+                            name,
+                            pid
+                        );
+                        // Update state to stopped
+                        let mut tracker = self.state_tracker.write().await;
+                        tracker.update_service_status(name, "stopped").await?;
+                        tracker.save().await?;
+                        return Err(Error::ServiceStartFailed(
+                            name.to_string(),
+                            format!("Service '{}' crashed during healthcheck wait", name),
+                        ));
+                    }
+                }
+            }
+
+            // Poll the healthcheck
+            match checker.check().await {
+                Ok(true) => {
+                    tracing::info!("Service '{}' is healthy", name);
+                    // Update status to healthy
+                    let mut tracker = self.state_tracker.write().await;
+                    tracker.update_service_status(name, "healthy").await?;
+                    tracker.save().await?;
+                    return Ok(());
+                }
+                Ok(false) => {
+                    tracing::debug!("Service '{}' not healthy yet, waiting...", name);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "Service '{}' health check error: {}, retrying...",
+                        name,
+                        e
+                    );
+                }
+            }
+
+            tokio::time::sleep(check_interval).await;
+        }
+    }
+
     /// Force run install command for a service (clears install state first).
     pub async fn run_install(&self, service_name: &str) -> Result<()> {
         let lifecycle =
@@ -943,6 +1033,13 @@ impl Orchestrator {
         }
         .instrument(tracing::info_span!("update_state"))
         .await?;
+
+        // If a healthcheck is registered, poll it before declaring the service ready.
+        // This ensures services that crash immediately or need warmup time are detected
+        // during startup rather than appearing as "Running" when they're actually dead.
+        self.await_healthcheck(name, &manager_arc)
+            .instrument(tracing::info_span!("await_healthcheck"))
+            .await?;
 
         Ok(())
     }
