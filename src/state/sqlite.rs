@@ -1697,13 +1697,28 @@ impl SqliteStateTracker {
         Ok(())
     }
 
-    /// Clear the database (when all services stopped)
+    /// Clear runtime state (when all services stopped).
+    ///
+    /// Preserves the `_ports` synthetic entry so that port allocations from
+    /// `fed ports randomize` survive stop/start cycles and error cleanup.
+    /// Use `clear_port_resolutions()` to explicitly clear port allocations.
     #[must_use = "ignoring this result may leave stale state in the database"]
     pub async fn clear(&mut self) -> Result<()> {
         self.with_transaction(|tx| {
-            tx.execute("DELETE FROM services", [])?;
-            tx.execute("DELETE FROM port_allocations", [])?;
-            tx.execute("DELETE FROM allocated_ports", [])?;
+            tx.execute(
+                "DELETE FROM services WHERE id NOT LIKE '\\_%' ESCAPE '\\'",
+                [],
+            )?;
+            tx.execute(
+                "DELETE FROM port_allocations WHERE service_id NOT LIKE '\\_%' ESCAPE '\\'",
+                [],
+            )?;
+            // allocated_ports tracks bind reservations — clear those since services stopped,
+            // but keep the _ports allocations intact via port_allocations table
+            tx.execute(
+                "DELETE FROM allocated_ports WHERE port NOT IN (SELECT port FROM port_allocations)",
+                [],
+            )?;
             Ok(())
         })
         .await?;
