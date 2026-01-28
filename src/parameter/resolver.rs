@@ -133,6 +133,9 @@ pub struct Resolver {
     /// Ports owned by already-running managed services.
     /// These are trusted without bind-checking during resolution because we manage the processes.
     managed_ports: HashSet<u16>,
+    /// Port allocations persisted from a previous `fed start` (from SQLite `_ports` entry).
+    /// Used to reuse ports across invocations without requiring an explicit session.
+    persisted_ports: HashMap<String, u16>,
 }
 
 impl Resolver {
@@ -147,6 +150,7 @@ impl Resolver {
             isolated_mode: false,
             port_resolutions: Vec::new(),
             managed_ports: HashSet::new(),
+            persisted_ports: HashMap::new(),
         }
     }
 
@@ -162,6 +166,7 @@ impl Resolver {
             isolated_mode: false,
             port_resolutions: Vec::new(),
             managed_ports: HashSet::new(),
+            persisted_ports: HashMap::new(),
         }
     }
 
@@ -183,6 +188,14 @@ impl Resolver {
     /// prompting to kill our own services when they're already running.
     pub fn set_managed_ports(&mut self, ports: HashSet<u16>) {
         self.managed_ports = ports;
+    }
+
+    /// Set port allocations persisted from a previous `fed start`.
+    ///
+    /// These are read from the SQLite `_ports` entry and allow the resolver
+    /// to reuse ports across invocations without requiring an explicit session.
+    pub fn set_persisted_ports(&mut self, ports: HashMap<String, u16>) {
+        self.persisted_ports = ports;
     }
 
     /// Set the environment for resolution
@@ -490,8 +503,43 @@ impl Resolver {
                     // Use cached port if available, otherwise allocate
                     if let Some((p, reason)) = cached_result {
                         (p, reason)
+                    } else if let Some(&persisted_port) = self.persisted_ports.get(name) {
+                        // Reuse port from previous `fed start` (persisted in SQLite)
+                        if self.managed_ports.contains(&persisted_port) {
+                            tracing::debug!(
+                                "Reusing persisted port {} for parameter '{}' (owned by running service)",
+                                persisted_port,
+                                name
+                            );
+                            self.port_allocator.mark_allocated(persisted_port);
+                            (persisted_port, PortResolutionReason::SessionCached)
+                        } else if self.port_allocator.try_allocate_port(persisted_port).is_ok() {
+                            tracing::debug!(
+                                "Reusing persisted port {} for parameter '{}' (port is free)",
+                                persisted_port,
+                                name
+                            );
+                            (persisted_port, PortResolutionReason::SessionCached)
+                        } else {
+                            tracing::debug!(
+                                "Persisted port {} for parameter '{}' is no longer available, resolving conflict",
+                                persisted_port,
+                                name
+                            );
+                            let (new_port, conflict) =
+                                self.handle_port_conflict_interactive(persisted_port, name)?;
+                            let first = conflict.as_ref().and_then(|c| c.processes.first());
+                            (
+                                new_port,
+                                PortResolutionReason::ConflictAutoResolved {
+                                    default_port: persisted_port,
+                                    conflict_pid: first.map(|p| p.pid),
+                                    conflict_process: first.map(|p| p.name.clone()),
+                                },
+                            )
+                        }
                     } else {
-                        // No session: allocate normally
+                        // No session, no persisted port: allocate from default
                         if let Some(env_value) = param.get_value_for_environment(&self.environment)
                         {
                             let default_str = Self::value_to_string(env_value);

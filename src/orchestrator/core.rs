@@ -455,6 +455,18 @@ impl Orchestrator {
             }
         }
 
+        // Load persisted port allocations from previous `fed start` so the
+        // resolver can reuse ports across invocations without an explicit session.
+        let persisted_ports = self.state_tracker.read().await
+            .get_global_port_allocations().await;
+        if !persisted_ports.is_empty() {
+            tracing::debug!(
+                "Loaded {} persisted port allocation(s) from state",
+                persisted_ports.len()
+            );
+            self.resolver.set_persisted_ports(persisted_ports);
+        }
+
         // First pass: resolve parent parameters only (not services yet)
         // This allows us to use resolved parameter values when expanding external services
         self.resolver.resolve_parameters(&mut self.config)?;
