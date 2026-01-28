@@ -26,8 +26,9 @@ pub const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 type ServiceRegistry = HashMap<String, Arc<tokio::sync::Mutex<Box<dyn ServiceManager>>>>;
 /// Type alias for the shared, async-safe service registry
 type SharedServiceRegistry = Arc<tokio::sync::RwLock<ServiceRegistry>>;
-/// Type alias for the health checker registry
-type HealthCheckerRegistry = HashMap<String, Box<dyn HealthChecker>>;
+/// Type alias for the health checker registry.
+/// Uses `Arc` so checkers can be cloned out without holding the read lock.
+type HealthCheckerRegistry = HashMap<String, Arc<dyn HealthChecker>>;
 /// Type alias for the shared health checker registry
 type SharedHealthCheckerRegistry = Arc<tokio::sync::RwLock<HealthCheckerRegistry>>;
 
@@ -577,13 +578,13 @@ impl Orchestrator {
                 // Use configured timeout or default (5 seconds)
                 let timeout = healthcheck.get_timeout();
 
-                let checker: Box<dyn HealthChecker> = match healthcheck.health_check_type() {
+                let checker: Arc<dyn HealthChecker> = match healthcheck.health_check_type() {
                     HealthCheckType::Http => {
                         if let Some(url) = healthcheck.get_http_url() {
                             // Use shared HTTP client to prevent file descriptor exhaustion
                             // when running many services with HTTP health checks
                             match HttpChecker::with_shared_client(url.to_string(), timeout) {
-                                Ok(checker) => Box::new(checker),
+                                Ok(checker) => Arc::new(checker),
                                 Err(e) => {
                                     tracing::warn!(
                                         "Skipping invalid healthcheck URL for service '{}': {}",
@@ -614,14 +615,14 @@ impl Orchestrator {
                                     session_id.as_deref(),
                                     &self.work_dir,
                                 );
-                                Box::new(DockerCommandChecker::new(
+                                Arc::new(DockerCommandChecker::new(
                                     container_name,
                                     cmd.to_string(),
                                     timeout,
                                 ))
                             } else {
                                 // Process/Gradle service - run on host
-                                Box::new(CommandChecker::new(
+                                Arc::new(CommandChecker::new(
                                     "bash".to_string(),
                                     vec!["-c".to_string(), cmd.to_string()],
                                     timeout,
@@ -645,13 +646,15 @@ impl Orchestrator {
     /// Wait for a service to become healthy (used by script dependencies).
     /// Returns Ok(()) when healthy, or Err after timeout.
     pub async fn wait_for_healthy(&self, service_name: &str, timeout: Duration) -> Result<()> {
-        let health_checkers = self.health_checkers.read().await;
-        let checker = match health_checkers.get(service_name) {
-            Some(c) => c,
-            None => {
-                // No healthcheck configured - consider it healthy after a brief moment
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                return Ok(());
+        let checker = {
+            let health_checkers = self.health_checkers.read().await;
+            match health_checkers.get(service_name) {
+                Some(c) => Arc::clone(c),
+                None => {
+                    // No healthcheck configured - consider it healthy after a brief moment
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    return Ok(());
+                }
             }
         };
 
@@ -690,17 +693,22 @@ impl Orchestrator {
     /// Await a service's healthcheck during startup.
     ///
     /// If the service has a registered healthcheck, polls it until healthy or timeout.
-    /// Also monitors PID liveness to detect early crashes without waiting for the
-    /// full timeout. If no healthcheck is registered, returns immediately.
+    /// Also monitors process/container liveness to detect early crashes without
+    /// waiting for the full timeout. If no healthcheck is registered, returns immediately.
+    ///
+    /// Respects the orchestrator's cancellation token for responsive Ctrl-C handling.
     async fn await_healthcheck(
         &self,
         name: &str,
         manager_arc: &Arc<tokio::sync::Mutex<Box<dyn ServiceManager>>>,
     ) -> Result<()> {
-        let health_checkers = self.health_checkers.read().await;
-        let checker = match health_checkers.get(name) {
-            Some(c) => c,
-            None => return Ok(()), // No healthcheck configured — nothing to wait for
+        // Clone the Arc and drop the read lock immediately
+        let checker = {
+            let health_checkers = self.health_checkers.read().await;
+            match health_checkers.get(name) {
+                Some(c) => Arc::clone(c),
+                None => return Ok(()), // No healthcheck configured — nothing to wait for
+            }
         };
 
         let timeout = checker.timeout();
@@ -714,24 +722,29 @@ impl Orchestrator {
         );
 
         loop {
-            if start.elapsed() > timeout {
+            if start.elapsed() >= timeout {
                 tracing::warn!(
                     "Service '{}' did not become healthy within {:?}",
                     name,
                     timeout
                 );
-                // Update status to reflect the timeout but don't fail the start —
-                // the service is running, just not healthy yet. The TUI/status
-                // command will show the accurate state.
+                // Don't fail the start — the service process is running, just not
+                // healthy yet. The TUI/status command will show the accurate state.
                 return Ok(());
             }
 
-            // Check if the process died while we were waiting
+            // Respond to Ctrl-C promptly instead of waiting for timeout
+            if self.cancellation_token.is_cancelled() {
+                tracing::debug!("Healthcheck wait for '{}' cancelled", name);
+                return Err(Error::Cancelled(name.to_string()));
+            }
+
+            // Check if the service died while we were waiting
             {
                 let manager = manager_arc.lock().await;
-                let pid = manager.get_pid();
-                if let Some(pid) = pid {
-                    // Signal 0 checks if process exists without sending a signal
+
+                // Process/Gradle services: check PID liveness via signal 0
+                if let Some(pid) = manager.get_pid() {
                     let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
                     if nix::sys::signal::kill(nix_pid, None).is_err() {
                         tracing::warn!(
@@ -739,7 +752,6 @@ impl Orchestrator {
                             name,
                             pid
                         );
-                        // Update state to stopped
                         let mut tracker = self.state_tracker.write().await;
                         tracker.update_service_status(name, "stopped").await?;
                         tracker.save().await?;
@@ -749,13 +761,37 @@ impl Orchestrator {
                         ));
                     }
                 }
+
+                // Docker services: check container is still running
+                if let Some(ref container_id) = manager.get_container_id() {
+                    let output = tokio::process::Command::new("docker")
+                        .args(["ps", "-q", "--no-trunc", "-f", &format!("id={}", container_id)])
+                        .output()
+                        .await;
+                    let is_running = output
+                        .map(|o| !o.stdout.is_empty())
+                        .unwrap_or(true); // assume running if docker cmd fails
+                    if !is_running {
+                        tracing::warn!(
+                            "Service '{}' container {} stopped during healthcheck wait",
+                            name,
+                            container_id
+                        );
+                        let mut tracker = self.state_tracker.write().await;
+                        tracker.update_service_status(name, "stopped").await?;
+                        tracker.save().await?;
+                        return Err(Error::ServiceStartFailed(
+                            name.to_string(),
+                            format!("Service '{}' container stopped during healthcheck wait", name),
+                        ));
+                    }
+                }
             }
 
             // Poll the healthcheck
             match checker.check().await {
                 Ok(true) => {
                     tracing::info!("Service '{}' is healthy", name);
-                    // Update status to healthy
                     let mut tracker = self.state_tracker.write().await;
                     tracker.update_service_status(name, "healthy").await?;
                     tracker.save().await?;

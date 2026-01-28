@@ -110,14 +110,17 @@ services:
         combined
     );
 
-    // It should show as Stopped, Failed, or similar
+    // The service name should appear in the status output
     assert!(
-        combined_lower.contains("stopped")
-            || combined_lower.contains("failed")
-            || combined_lower.contains("exited")
-            || combined_lower.contains("dead")
-            || !combined_lower.contains("dying-service"),
-        "Service should be reported as Stopped/Failed after immediate exit. \
+        combined_lower.contains("dying-service"),
+        "Service name should appear in status output. Got:\n{}",
+        combined
+    );
+
+    // It should show as Stopped or Failed
+    assert!(
+        combined_lower.contains("stopped") || combined_lower.contains("failed"),
+        "Service should be reported as Stopped or Failed after immediate exit. \
          Status output:\n{}",
         combined
     );
