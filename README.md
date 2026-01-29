@@ -1,8 +1,8 @@
 # Service Federation (fed)
 
-**Local development orchestration with session-based port stability.**
+**Run your services. Per branch. No conflicts.**
 
-`fed` runs Docker containers, native processes, and Gradle tasks together with dependency resolution and port allocation. Sessions remember your ports across restarts.
+`fed` orchestrates Docker containers, native processes, and Gradle tasks for local development. One config file replaces docker-compose, process-compose, and ad-hoc shell scripts. Port isolation means multiple copies of your stack run simultaneously — per branch, per worktree, zero collisions.
 
 ## Quick Start
 
@@ -55,13 +55,22 @@ entrypoint: frontend
 ### Run
 
 ```bash
-fed start            # Start all services (follows dependencies)
-fed ports randomize  # Allocate fresh random ports
-fed ports reset      # Clear allocations, use defaults
-fed status           # Check status
-fed logs backend     # View logs
-fed stop             # Stop all
+fed start              # Start all services (follows dependencies)
+fed start --randomize  # Fresh random ports, no conflicts
+fed status             # Check what's running
+fed logs backend       # View logs
+fed stop               # Stop all
 ```
+
+## Why fed?
+
+**Multiple worktrees, one machine.** Working on a feature branch while reviewing a PR? `fed start --randomize` gives each copy its own ports. No collisions, no "address already in use", no manual port juggling. Ports persist across restarts — `fed stop && fed start` reuses the same allocations.
+
+**One config for everything.** Docker containers, native processes, Gradle tasks — all declared in one file with dependency ordering and healthchecks. No more waiting for postgres with `sleep 5` in a shell script.
+
+**Isolated test environments.** Mark a script as `isolated: true` and it gets its own ports, its own Docker volumes, its own service instances. Run integration tests while your dev stack keeps running.
+
+**Scripts with dependency awareness.** `fed test:integration` starts postgres, runs migrations, starts the API, runs tests, then cleans up. Dependencies are started in order, healthchecks are awaited, arguments pass through.
 
 ## Configuration
 
@@ -216,6 +225,27 @@ See [`examples/env-file/`](./examples/env-file) for a complete example.
 
 ## Features
 
+### Port Isolation
+
+Multiple copies of your stack on one machine:
+
+```bash
+# Worktree A (default ports)
+cd ~/project && fed start
+
+# Worktree B (random ports, no conflicts)
+cd ~/project-feature && fed start --randomize
+```
+
+Port allocations persist in SQLite — `fed stop && fed start` reuses the same ports. Reset with `fed ports reset`.
+
+```bash
+fed ports list               # Show current allocations
+fed ports list --json        # JSON output for scripting
+fed ports randomize          # Allocate fresh random ports (standalone)
+fed ports reset              # Clear allocations, use defaults next start
+```
+
 ### Sessions
 
 Sessions remember port allocations across restarts:
@@ -259,7 +289,7 @@ After all services start, messages are printed in a box. Entrypoint services sor
 ╰──────────────────────────────────────────────────╯
 ```
 
-Especially useful with `fed ports randomize` where ports are randomized. A warning is emitted if an entrypoint service has no `startup_message`.
+Especially useful with `fed start --randomize` where ports change. A warning is emitted if an entrypoint service has no `startup_message`.
 
 ### Isolated Test Execution
 
@@ -465,6 +495,7 @@ fed stop @critical    # Stop all tagged 'critical'
 ```bash
 # Service management
 fed start                    # Start all services in background
+fed start --randomize        # Fresh random ports, then start
 fed start -w                 # Start with watch mode (foreground, auto-restart on changes)
 fed start postgres redis     # Start specific services
 fed start --replace          # Kill processes occupying required ports, then start
@@ -552,11 +583,9 @@ fed logs <service-name> --tail 100
 ```
 
 **Port conflicts?**
-```yaml
-parameters:
-  API_PORT:
-    type: port
-    default: 8080  # Auto-falls back if in use
+```bash
+fed start --randomize   # Sidestep conflicts entirely
+fed start --replace     # Kill conflicting processes, then start
 ```
 
 **Stuck sessions?**
