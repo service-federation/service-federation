@@ -2,8 +2,6 @@
 
 Orchestrate your local dev stack from one config file. Docker containers and native processes with dependency-aware startup, healthchecks, and directory-scoped isolation.
 
-Replaces docker-compose + process-compose + shell script glue.
-
 ## Quick Start
 
 ```bash
