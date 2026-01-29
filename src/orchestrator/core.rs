@@ -312,7 +312,7 @@ impl Orchestrator {
         let mut managed_ports = std::collections::HashSet::new();
         let mut has_live_service = false;
 
-        for (_id, svc) in &services {
+        for svc in services.values() {
             if svc.status != "running" && svc.status != "healthy" {
                 continue;
             }
@@ -330,7 +330,7 @@ impl Orchestrator {
 
             if is_alive {
                 has_live_service = true;
-                for (_param, &port) in &svc.port_allocations {
+                for &port in svc.port_allocations.values() {
                     managed_ports.insert(port);
                 }
             }
@@ -340,7 +340,7 @@ impl Orchestrator {
         // These cover all port parameters including process/Gradle services.
         if has_live_service {
             let global_ports = state.get_global_port_allocations().await;
-            for (_param, port) in &global_ports {
+            for port in global_ports.values() {
                 managed_ports.insert(*port);
             }
 
@@ -350,7 +350,7 @@ impl Orchestrator {
                 if let Ok(Some(session)) =
                     crate::session::Session::current_for_workdir(Some(self.work_dir.as_path()))
                 {
-                    for (_param, &port) in session.get_all_ports() {
+                    for &port in session.get_all_ports().values() {
                         managed_ports.insert(port);
                     }
                 }
