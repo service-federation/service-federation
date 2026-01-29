@@ -133,7 +133,7 @@ pub struct Resolver {
     /// Ports owned by already-running managed services.
     /// These are trusted without bind-checking during resolution because we manage the processes.
     managed_ports: HashSet<u16>,
-    /// Port allocations persisted from a previous `fed start` (from SQLite `_ports` entry).
+    /// Port allocations persisted from a previous `fed start` (from SQLite `persisted_ports` table).
     /// Used to reuse ports across invocations without requiring an explicit session.
     persisted_ports: HashMap<String, u16>,
 }
@@ -192,7 +192,7 @@ impl Resolver {
 
     /// Set port allocations persisted from a previous `fed start`.
     ///
-    /// These are read from the SQLite `_ports` entry and allow the resolver
+    /// These are read from the SQLite `persisted_ports` table and allow the resolver
     /// to reuse ports across invocations without requiring an explicit session.
     pub fn set_persisted_ports(&mut self, ports: HashMap<String, u16>) {
         self.persisted_ports = ports;
