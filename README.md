@@ -1,18 +1,16 @@
 # Service Federation (fed)
 
-**Run your services. Per branch. No conflicts.**
+Orchestrate your local dev stack from one config file. Docker containers and native processes with dependency-aware startup, healthchecks, and directory-scoped isolation.
 
-`fed` orchestrates Docker containers, native processes, and Gradle tasks for local development. One config file replaces docker-compose, process-compose, and ad-hoc shell scripts. Port isolation means multiple copies of your stack run simultaneously — per branch, per worktree, zero collisions.
+Replaces docker-compose + process-compose + shell script glue.
 
 ## Quick Start
-
-### Install
 
 ```bash
 cargo install service-federation
 ```
 
-### Create `service-federation.yaml`
+Create `service-federation.yaml`:
 
 ```yaml
 parameters:
@@ -42,41 +40,73 @@ services:
     healthcheck:
       httpGet: 'http://localhost:{{API_PORT}}/health'
 
-  frontend:
-    process: npm run dev
-    cwd: ./frontend
-    depends_on: [backend]
-    environment:
-      BACKEND_URL: 'http://localhost:{{API_PORT}}'
-
-entrypoint: frontend
+entrypoint: backend
 ```
-
-### Run
 
 ```bash
-fed start              # Start all services (follows dependencies)
-fed start --randomize  # Fresh random ports, no conflicts
-fed status             # Check what's running
-fed logs backend       # View logs
-fed stop               # Stop all
+fed start        # Start services (waits for healthchecks, backgrounds)
+fed status       # What's running
+fed logs backend # View logs
+fed stop         # Stop all
 ```
 
-## Why fed?
+That's the whole workflow. `git clone`, add a config, `fed start`. New team members don't need a wiki page.
 
-**Multiple worktrees, one machine.** Working on a feature branch while reviewing a PR? `fed start --randomize` gives each copy its own ports. No collisions, no "address already in use", no manual port juggling. Ports persist across restarts — `fed stop && fed start` reuses the same allocations.
+## Isolation
 
-**One config for everything.** Docker containers, native processes, Gradle tasks — all declared in one file with dependency ordering and healthchecks. No more waiting for postgres with `sleep 5` in a shell script.
+All state is scoped by working directory — port allocations, Docker container names, Docker volumes, the SQLite state file. Two directories are two independent stacks.
 
-**Isolated test environments.** Mark a script as `isolated: true` and it gets its own ports, its own Docker volumes, its own service instances. Run integration tests while your dev stack keeps running.
+This means git worktrees give you full isolation for free:
 
-**Scripts with dependency awareness.** `fed test:integration` starts postgres, runs migrations, starts the API, runs tests, then cleans up. Dependencies are started in order, healthchecks are awaited, arguments pass through.
+```bash
+# Main worktree — default ports
+~/project $ fed start
+
+# Second worktree — randomized ports, separate volumes and containers
+~/project-review $ fed start --randomize
+```
+
+Both stacks run simultaneously on the same machine. `--randomize` allocates fresh random ports so nothing collides. Ports persist across restarts — `fed stop && fed start` reuses the same allocations until you `fed ports reset`.
+
+To find your allocated ports:
+
+```bash
+fed ports list       # Show allocations
+fed ports list --json
+```
+
+Or add `startup_message` to your services (see [Startup Messages](#startup-messages)).
+
+### Isolated scripts
+
+For integration tests that need a throwaway stack without interfering with your dev services:
+
+```yaml
+scripts:
+  test:integration:
+    isolated: true     # Fresh ports, scoped volumes, separate containers
+    depends_on: [database, api]
+    script: npm run test:e2e
+```
+
+```bash
+fed start                # Dev stack stays running
+fed test:integration     # Tests get their own stack, cleaned up after
+```
+
+### Cursor and parallel agents
+
+Cursor's parallel agents create git worktrees under the hood — each agent works in its own directory. If your project has a `service-federation.yaml`, each agent can spin up the full stack independently:
+
+```bash
+fed install && fed start --randomize
+```
+
+No plugin or integration needed. Directory-scoped isolation means it works the same whether Cursor created the worktree or you did.
 
 ## Configuration
 
 ### Services
-
-Services are the core of your config. Each service specifies one of four types:
 
 **Process** — run any command:
 ```yaml
@@ -94,55 +124,34 @@ services:
     ports: ["6379:6379"]
 ```
 
-**Docker Compose Service** — reuse existing docker-compose.yml:
+Also supports **Docker Compose services** (reuse an existing `docker-compose.yml`) and **Gradle tasks** (tasks sharing a `cwd` are batched into one gradle command):
+
 ```yaml
 services:
   postgres:
     composeFile: ./docker-compose.yml
     composeService: postgres
-```
 
-**Gradle Task** — tasks sharing a `cwd` are batched into one gradle command:
-```yaml
-services:
   auth-service:
     gradleTask: ':auth:bootRun'
     cwd: ./backend
-    environment:
-      SERVER_PORT: '{{AUTH_PORT}}'
-
-  user-service:
-    gradleTask: ':user:bootRun'
-    cwd: ./backend  # Same dir → runs as: gradle :auth:bootRun :user:bootRun
-    environment:
-      SERVER_PORT: '{{USER_PORT}}'
 ```
 
-### Parameters & Templating
+### Parameters
 
-Parameters define values that can be referenced throughout your config with `{{PARAM}}`:
+Values referenced throughout your config with `{{PARAM}}`:
 
 ```yaml
 parameters:
   API_PORT:
     type: port
-    default: 8080  # Tries 8080, falls back to random available
+    default: 8080  # Tries 8080, falls back to random if occupied
 
   DB_PORT:
-    type: port     # Always random available port
+    type: port     # No default — always random available port
 
   API_KEY:
     default: "dev-key"  # String parameter
-```
-
-Use in services:
-```yaml
-services:
-  api:
-    environment:
-      PORT: '{{API_PORT}}'
-      DATABASE_URL: 'postgres://localhost:{{DB_PORT}}/db'
-      API_KEY: '{{API_KEY}}'
 ```
 
 ### Dependencies & Health Checks
@@ -163,18 +172,15 @@ services:
     healthcheck:
       httpGet: 'http://localhost:{{API_PORT}}/health'
       timeout: 5s  # Optional, default 30s
-
-  frontend:
-    depends_on: [api]
 ```
 
-**Health check types:**
-- `httpGet` — HTTP request from the host. Use for web services.
-- `command` — shell command. For **Docker services**, runs inside the container via `docker exec`. For **process services**, runs on the host.
+Health check types:
+- `httpGet` — HTTP request from the host.
+- `command` — For Docker services, runs inside the container via `docker exec`. For process services, runs on the host.
 
 ### Scripts
 
-Scripts are automation commands that can depend on services or other scripts:
+Commands that can depend on services or other scripts:
 
 ```yaml
 scripts:
@@ -184,19 +190,16 @@ scripts:
 
   test:integration:
     depends_on: [db:migrate, api]
-    environment:
-      DATABASE_URL: postgres://localhost/test
-    script: npm run test:e2e -- "$@"  # "$@" receives arguments passed after --
+    script: npm run test:e2e -- "$@"  # "$@" passes arguments from CLI
 ```
 
-**Run scripts:**
 ```bash
 fed run db:migrate                    # Run a script
 fed db:migrate                        # Shorthand (if no command collision)
 fed test:integration -- -t "auth"     # Pass arguments after --
 ```
 
-Services started as script dependencies continue running after the script completes. Use `fed stop` to stop them.
+Services started as script dependencies keep running after the script finishes. Use `fed stop` to stop them.
 
 ### Environment Files
 
@@ -206,64 +209,15 @@ Services started as script dependencies continue running after the script comple
 parameters:
   API_KEY:
     default: ""
-  DATABASE_URL:
-    default: "postgres://localhost:5432/dev"
 
 env_file:
   - .env         # API_KEY=secret123
   - .env.local   # Later files override earlier
 ```
 
-All variables in `.env` files **must be declared** as parameters — undeclared variables cause an error.
+All `.env` variables must be declared as parameters. Priority: explicit `value` field > `env_file` > `default`.
 
-**Priority (highest to lowest):**
-1. Explicit parameter `value:` field
-2. Values from `env_file`
-3. Parameter `default:` value
-
-See [`examples/env-file/`](./examples/env-file) for a complete example.
-
-## Features
-
-### Port Isolation
-
-Multiple copies of your stack on one machine:
-
-```bash
-# Worktree A (default ports)
-cd ~/project && fed start
-
-# Worktree B (random ports, no conflicts)
-cd ~/project-feature && fed start --randomize
-```
-
-Port allocations persist in SQLite — `fed stop && fed start` reuses the same ports. Reset with `fed ports reset`.
-
-```bash
-fed ports list               # Show current allocations
-fed ports list --json        # JSON output for scripting
-fed ports randomize          # Allocate fresh random ports (standalone)
-fed ports reset              # Clear allocations, use defaults next start
-```
-
-### Sessions
-
-Sessions remember port allocations across restarts:
-
-```bash
-fed session start --id my-project   # Creates .fed/session file
-fed start postgres                  # postgres gets port 5432
-fed stop postgres
-fed start postgres                  # postgres gets 5432 again (remembered)
-fed session end                     # Clean up
-```
-
-Sessions are auto-detected from `.fed/session` in your project directory. Add `.fed/` to `.gitignore`.
-
-To use a session across multiple directories, export the env var:
-```bash
-export FED_SESSION=my-project
-```
+See [`examples/env-file/`](./examples/env-file).
 
 ### Startup Messages
 
@@ -272,68 +226,24 @@ Show where to access services after startup:
 ```yaml
 services:
   api:
-    process: npm start
     startup_message: "API docs: http://localhost:{{API_PORT}}/docs"
   frontend:
-    process: npm run dev
-    startup_message: "App running on http://localhost:{{NEXT_PORT}}"
+    startup_message: "App: http://localhost:{{NEXT_PORT}}"
 ```
-
-After all services start, messages are printed in a box. Entrypoint services sort last so the primary URL is the visual punchline:
 
 ```
 ╭──────────────────────────────────────────────────╮
 │ API docs: http://localhost:8081/docs             │
 ├──────────────────────────────────────────────────┤
-│ App running on http://localhost:3000             │
+│ App: http://localhost:3000                       │
 ╰──────────────────────────────────────────────────╯
 ```
 
-Especially useful with `fed start --randomize` where ports change. A warning is emitted if an entrypoint service has no `startup_message`.
+Entrypoint services sort last. A warning is emitted if an entrypoint has no `startup_message` — particularly useful when ports are randomized.
 
-### Isolated Test Execution
+### Templates
 
-Run tests with fresh ports and volumes while your dev stack keeps running:
-
-```yaml
-scripts:
-  test:integration:
-    isolated: true     # Fresh ports, scoped volumes, isolated services
-    depends_on: [database, api]
-    script: npm run test:e2e
-```
-
-```bash
-# Terminal 1: Dev stack on default ports
-fed start
-
-# Terminal 2: Tests on isolated random ports
-fed test:integration
-```
-
-Creates a child orchestrator with fresh port allocations, scopes Docker volumes by session, runs the script, then cleans up everything.
-
-### Lifecycle Hooks
-
-Manage setup, build, and cleanup per service:
-
-```yaml
-services:
-  backend:
-    process: npm start
-    cwd: ./backend
-    install: npm ci                   # Run before first start (tracked)
-    build: npm run build              # Run with `fed build`
-    clean: rm -rf node_modules dist   # Run with `fed clean`
-```
-
-- **Install** — runs before the service's first start. Re-run with `fed install`. Cleared by `fed clean`.
-- **Build** — runs with `fed build`. Always runs (not tracked).
-- **Clean** — runs custom cleanup. Also removes Docker volumes with `fed-` prefix. Bind mounts are not removed.
-
-### Service Templates
-
-Define base configurations to extend:
+Reusable base configurations:
 
 ```yaml
 templates:
@@ -343,249 +253,130 @@ templates:
       JAVA_OPTS: '-Xmx512m'
     healthcheck:
       httpGet: 'http://localhost:{{PORT}}/actuator/health'
-    restart: always
 
 services:
   auth-service:
     extends: java-service
     ports: ["8080:8080"]
-    environment:
-      PORT: '8080'
-
-  user-service:
-    extends: java-service
-    ports: ["8081:8081"]
-    environment:
-      PORT: '8081'
 ```
 
 See [`examples/templates-example.yaml`](./examples/templates-example.yaml).
 
 ### Profiles
 
-Conditionally include services based on active profiles:
+Conditionally include services:
 
 ```yaml
 services:
   api:
-    process: npm start
-    # No profiles = always included when no profiles are active
+    process: npm start       # No profiles = always included
 
   worker:
-    profiles: [worker]  # Only started when 'worker' profile is active
+    profiles: [worker]       # Only with -p worker
 
   debug-tools:
-    image: debug:latest
-    profiles: [debug, development]  # Started when either profile is active
+    profiles: [debug]        # Only with -p debug
 ```
 
 ```bash
-fed start                        # Starts only profileless services (api)
-fed start -p worker              # Starts api + worker
-fed start -p worker -p debug     # Starts api + worker + debug-tools
+fed start                    # Starts profileless services only
+fed start -p worker          # Starts api + worker
+fed start -p worker -p debug # Starts api + worker + debug-tools
 ```
 
 ### Packages
 
-Import and reuse service configurations across projects:
+Import service configurations across projects:
 
 ```yaml
 packages:
-  - source: "./packages/database"    # Local path
-    as: "db-pkg"
-  - source: "github:org/repo@v1.0"   # GitHub (tag, branch, or commit)
+  - source: "github:org/repo@v1.0"
     as: "infra"
-  - source: "git+ssh://host/path"    # Git SSH
-    as: "shared"
 
 services:
   database:
-    extends: "db-pkg.postgres"       # Inherit from package service
+    extends: "infra.postgres"
     environment:
-      POSTGRES_DB: "myapp"           # Override specific fields
-    ports:
-      - "5433:5432"
+      POSTGRES_DB: "myapp"
 ```
 
-Packages are cached locally. Use `fed package refresh` to re-fetch and `fed --offline start` to skip all git operations.
+Packages are cached locally. `fed package refresh` to re-fetch, `fed --offline start` to skip git.
 
-See [`examples/service-merging/`](./examples/service-merging) for a complete example.
+See [`examples/service-merging/`](./examples/service-merging).
 
-### Resource Limits
-
-Limit memory, CPU, and processes:
+### Lifecycle Hooks
 
 ```yaml
 services:
-  database:
-    image: postgres:15
-    resources:
-      memory: 512m
-      cpus: "2.0"
-      pids: 100
-      nofile: 1024
-
   backend:
     process: npm start
-    resources:
-      memory: 1g              # Supports: b, k/kb, m/mb, g/gb, t/tb
-      cpus: "1.0"
-      pids: 50
+    cwd: ./backend
+    install: npm ci                   # Runs before first start, re-run with `fed install`
+    build: npm run build              # Runs with `fed build`
+    clean: rm -rf node_modules dist   # Runs with `fed clean`
 ```
 
-**Docker services** support additional options: `memory_reservation`, `memory_swap`, `cpu_shares`.
+`fed clean` also removes Docker volumes with `fed-` prefix.
 
-**Process services** (Unix/Linux) use: `RLIMIT_AS` (memory), `RLIMIT_NPROC` (pids, Linux), `RLIMIT_NOFILE` (nofile).
+### Sessions
 
-### Watch Mode
-
-Auto-restart services on file changes:
+For cases where you want explicit named isolation rather than relying on directory scoping:
 
 ```bash
-fed start -w    # Start with watch mode (foreground)
+fed session start --id my-project
+fed start                            # Ports remembered under this session
+fed session end
 ```
 
-### Circuit Breaker
-
-Prevent crash loops for services with `restart: always`:
-
-```yaml
-services:
-  flaky-service:
-    process: ./might-crash.sh
-    restart: always
-    circuit_breaker:
-      restart_threshold: 5  # Max restarts within window before tripping (default: 5)
-      window_secs: 60       # Rolling window in seconds (default: 60)
-      cooldown_secs: 300    # Seconds before allowing retry (default: 300)
-```
-
-### Graceful Shutdown
-
-Control how long to wait before force-killing:
-
-```yaml
-services:
-  api:
-    process: npm start
-    grace_period: 30s  # Default: 10s
-```
-
-### Service Tags
-
-Tag services for grouped commands:
-
-```yaml
-services:
-  api:
-    tags: [backend, critical]
-  worker:
-    tags: [backend, async]
-  frontend:
-    tags: [frontend]
-```
-
-```bash
-fed start @backend    # Start all services tagged 'backend'
-fed stop @critical    # Stop all tagged 'critical'
-```
+Cross-directory session: `export FED_SESSION=my-project`. Add `.fed/` to `.gitignore`.
 
 ## Commands
 
 ```bash
-# Service management
-fed start                    # Start all services in background
-fed start --randomize        # Fresh random ports, then start
-fed start -w                 # Start with watch mode (foreground, auto-restart on changes)
-fed start postgres redis     # Start specific services
-fed start --replace          # Kill processes occupying required ports, then start
-fed start --dry-run          # Preview what would happen without starting
-fed start --output file      # Output mode: file (background), captured (memory), passthrough (stdio)
-fed stop                     # Stop all services
-fed stop postgres            # Stop specific service
-fed restart backend          # Restart specific service
-fed status                   # Show service status
-fed status --json            # JSON output for scripting
-fed logs backend --tail 50   # View service logs
-fed logs backend --follow    # Stream logs (Ctrl+C to stop)
-fed top                      # Show resource usage (CPU, memory, PID)
-
-# Port management
-fed ports list               # Show current port allocations
-fed ports list --json        # JSON output for scripting
-fed ports randomize          # Allocate fresh random ports for all port parameters
-fed ports randomize -f       # Skip confirmation, auto-stop running services
-fed ports reset              # Clear allocations (next start uses defaults)
-fed ports reset -f           # Skip confirmation, auto-stop running services
-
-# Build lifecycle
-fed install                  # Run install commands for all services
-fed install backend          # Run install for specific service
-fed build                    # Run build commands for all services
-fed build backend            # Build specific service
-fed clean                    # Run clean commands and remove Docker volumes
-fed clean backend            # Clean specific service
-
-# Configuration
-fed init                     # Create starter service-federation.yaml
-fed validate                 # Validate config without starting
-fed doctor                   # Check system requirements (Docker, Gradle, Java, etc.)
-
-# Sessions
-fed session start --id dev   # Start named session
-fed session list             # List all sessions
-fed session end              # End current session
-fed session cleanup          # Clean up orphaned sessions
-
-# Packages
-fed package list             # List cached packages
-fed package list --json      # JSON output
-fed package refresh          # Re-fetch all packages used in current config
-fed package refresh <source> # Re-fetch a specific package
-fed package clear            # Remove entire package cache
-fed package clear -f         # Skip confirmation
-
-# Scripts & shell
-fed run test                 # Run script from config
-fed test                     # Shorthand (if no command collision)
-fed test -- -t "specific"    # Pass arguments to script
-fed completions bash         # Generate shell completions (bash/zsh/fish)
-fed tui                      # Interactive TUI (beta)
-
-# Global flags
-fed --config dev.yaml start  # Use specific config file
-fed --offline start          # Skip git operations, use cached packages only
-fed --workdir ./project start # Set working directory
-fed --env staging start      # Set environment (default: development)
-fed --profile worker start   # Activate a profile (repeatable)
+fed start                    # Start all services (background)
+fed start --randomize        # Randomize ports, then start
+fed start --replace          # Kill processes on required ports, then start
+fed start --dry-run          # Preview without starting
+fed start -w                 # Watch mode (foreground, auto-restart on changes)
+fed stop                     # Stop all
+fed restart                  # Restart all
+fed status [--json]          # Service status
+fed logs <svc> [--follow]    # View / stream logs
+fed ports list [--json]      # Port allocations
+fed ports randomize          # Randomize ports (standalone)
+fed ports reset              # Clear allocations
+fed run <script> [-- args]   # Run a script
+fed install / build / clean  # Lifecycle hooks
+fed doctor                   # Check system requirements
+fed init                     # Create starter config
 ```
+
+Full reference: `fed --help`, `fed <command> --help`.
 
 ## Examples
 
-See the [`examples/`](./examples) directory:
+See [`examples/`](./examples):
 
 - [`simple.yaml`](./examples/simple.yaml) — Basic multi-service setup
-- [`scripts-example.yaml`](./examples/scripts-example.yaml) — Scripts with dependencies and argument passthrough
-- [`env-file/`](./examples/env-file) — Environment file (.env) support
-- [`templates-example.yaml`](./examples/templates-example.yaml) — Reusable service templates
-- [`resource-limits-example.yaml`](./examples/resource-limits-example.yaml) — Resource limits
-- [`docker-compose-example/`](./examples/docker-compose-example) — Integrating with existing docker-compose
+- [`scripts-example.yaml`](./examples/scripts-example.yaml) — Scripts with dependencies
+- [`env-file/`](./examples/env-file) — Environment files
+- [`templates-example.yaml`](./examples/templates-example.yaml) — Service templates
+- [`docker-compose-example/`](./examples/docker-compose-example) — Docker Compose integration
 - [`gradle-grouping.yaml`](./examples/gradle-grouping.yaml) — Gradle task batching
-- [`complex-dependencies/`](./examples/complex-dependencies) — Multi-level dependency graph
-- [`profiles-example.yaml`](./examples/profiles-example.yaml) — Environment-specific configs
-- [`service-merging/`](./examples/service-merging) — Importing and extending package services
+- [`profiles-example.yaml`](./examples/profiles-example.yaml) — Profiles
+- [`service-merging/`](./examples/service-merging) — Package imports
 
 ## Troubleshooting
 
 **Services not starting?**
 ```bash
-fed logs <service-name> --tail 100
+fed logs <service> --tail 100
 ```
 
 **Port conflicts?**
 ```bash
-fed start --randomize   # Sidestep conflicts entirely
-fed start --replace     # Kill conflicting processes, then start
+fed start --randomize   # Sidestep conflicts
+fed start --replace     # Kill conflicting processes
 ```
 
 **Stuck sessions?**
@@ -595,7 +386,7 @@ fed session cleanup
 
 ## Contributing
 
-Issues and PRs welcome! This is an early-stage project.
+Issues and PRs welcome.
 
 ## License
 
