@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 const FED_DIR: &str = ".fed";
 const DB_FILE_NAME: &str = "lock.db";
 const LOCK_FILE_NAME: &str = ".lock";
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 /// SQLite-backed state tracker for persistent service state management
 /// Provides ACID transactions and crash recovery via WAL mode.
@@ -331,6 +331,11 @@ impl SqliteStateTracker {
             self.migrate_v2_to_v3().await?;
         }
 
+        // Migration from v3 to v4: Extract _ports into persisted_ports table
+        if current_version < 4 {
+            self.migrate_v3_to_v4().await?;
+        }
+
         Ok(())
     }
 
@@ -453,6 +458,72 @@ impl SqliteStateTracker {
         Ok(())
     }
 
+    /// Migration v3 -> v4: Extract `_ports` synthetic service into dedicated `persisted_ports` table
+    async fn migrate_v3_to_v4(&self) -> Result<()> {
+        debug!("Running migration v3 -> v4: Creating persisted_ports table");
+
+        self.conn
+            .call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                let tx = conn.transaction()?;
+
+                let already_applied: bool = tx
+                    .query_row(
+                        "SELECT COUNT(*) > 0 FROM schema_version WHERE version = 4",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+
+                if already_applied {
+                    return Ok(());
+                }
+
+                // Create the new table
+                tx.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS persisted_ports (
+                        param_name TEXT PRIMARY KEY,
+                        port INTEGER NOT NULL,
+                        source TEXT NOT NULL,
+                        allocated_at TEXT NOT NULL
+                    );",
+                )?;
+
+                // Migrate existing data from _ports synthetic service
+                tx.execute(
+                    "INSERT OR IGNORE INTO persisted_ports (param_name, port, source, allocated_at)
+                     SELECT parameter_name, port, 'resolver', datetime('now')
+                     FROM port_allocations WHERE service_id = '_ports'",
+                    [],
+                )?;
+
+                // Ensure migrated ports have bind reservations in allocated_ports
+                tx.execute(
+                    "INSERT OR IGNORE INTO allocated_ports (port, allocated_at)
+                     SELECT port, allocated_at FROM persisted_ports",
+                    [],
+                )?;
+
+                // Remove old synthetic entries
+                tx.execute(
+                    "DELETE FROM port_allocations WHERE service_id = '_ports'",
+                    [],
+                )?;
+                tx.execute("DELETE FROM services WHERE id = '_ports'", [])?;
+
+                tx.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (4, datetime('now'))",
+                    [],
+                )?;
+
+                tx.commit()?;
+                Ok(())
+            })
+            .await?;
+
+        info!("Migration v3 -> v4 completed successfully");
+        Ok(())
+    }
+
     /// Create database schema
     async fn create_schema(&self) -> Result<()> {
         self.conn.call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
@@ -510,6 +581,14 @@ impl SqliteStateTracker {
                 -- Global allocated ports
                 CREATE TABLE allocated_ports (
                     port INTEGER PRIMARY KEY,
+                    allocated_at TEXT NOT NULL
+                );
+
+                -- Persisted port resolutions (replaces _ports synthetic service)
+                CREATE TABLE persisted_ports (
+                    param_name TEXT PRIMARY KEY,
+                    port INTEGER NOT NULL,
+                    source TEXT NOT NULL,
                     allocated_at TEXT NOT NULL
                 );
 
@@ -1524,7 +1603,7 @@ impl SqliteStateTracker {
     pub async fn get_services(&self) -> HashMap<String, ServiceState> {
         match self.conn.call(|conn: &mut rusqlite::Connection| {
             let mut stmt = conn.prepare(
-                "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures, startup_message FROM services WHERE id NOT LIKE '\\_%' ESCAPE '\\'"
+                "SELECT id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures, startup_message FROM services"
             )?;
 
             let services_iter = stmt.query_map([], |row| {
@@ -1699,24 +1778,19 @@ impl SqliteStateTracker {
 
     /// Clear runtime state (when all services stopped).
     ///
-    /// Preserves the `_ports` synthetic entry so that port allocations from
+    /// Preserves `persisted_ports` so that port allocations from
     /// `fed ports randomize` survive stop/start cycles and error cleanup.
     /// Use `clear_port_resolutions()` to explicitly clear port allocations.
     #[must_use = "ignoring this result may leave stale state in the database"]
     pub async fn clear(&mut self) -> Result<()> {
         self.with_transaction(|tx| {
+            tx.execute("DELETE FROM services", [])?;
+            tx.execute("DELETE FROM port_allocations", [])?;
+            // Clear bind reservations for stopped services. Preserve only those
+            // backing persisted_ports (global parameter resolutions) so that
+            // `fed ports randomize` allocations survive stop/start.
             tx.execute(
-                "DELETE FROM services WHERE id NOT LIKE '\\_%' ESCAPE '\\'",
-                [],
-            )?;
-            tx.execute(
-                "DELETE FROM port_allocations WHERE service_id NOT LIKE '\\_%' ESCAPE '\\'",
-                [],
-            )?;
-            // allocated_ports tracks bind reservations — clear those since services stopped,
-            // but keep the _ports allocations intact via port_allocations table
-            tx.execute(
-                "DELETE FROM allocated_ports WHERE port NOT IN (SELECT port FROM port_allocations)",
+                "DELETE FROM allocated_ports WHERE port NOT IN (SELECT port FROM persisted_ports)",
                 [],
             )?;
             Ok(())
@@ -1812,9 +1886,11 @@ impl SqliteStateTracker {
                         "DELETE FROM services WHERE status = 'stale'",
                         [],
                     )?;
-                    // Clean up orphaned ports
+                    // Clean up orphaned bind reservations: delete allocated_ports entries
+                    // for ports no longer in use by any service (port_allocations) or
+                    // global parameter resolution (persisted_ports).
                     tx.execute(
-                        "DELETE FROM allocated_ports WHERE port NOT IN (SELECT DISTINCT port FROM port_allocations)",
+                        "DELETE FROM allocated_ports WHERE port NOT IN (SELECT DISTINCT port FROM port_allocations) AND port NOT IN (SELECT port FROM persisted_ports)",
                         [],
                     )?;
                     tx.execute(
@@ -1836,13 +1912,9 @@ impl SqliteStateTracker {
 
     /// Save resolved port parameters globally.
     ///
-    /// Creates a synthetic `_ports` service entry and stores all resolved port
-    /// parameters against it. This ensures process/Gradle services have their
-    /// ports persisted in SQLite (previously only Docker services did).
-    ///
-    /// On subsequent `fed start`, `collect_managed_ports` can read these to
-    /// detect ports owned by managed services without relying on the session
-    /// port cache file.
+    /// Writes to the `persisted_ports` table and updates `allocated_ports`
+    /// for bind reservations. On subsequent `fed start`, `collect_managed_ports`
+    /// reads these to detect ports owned by managed services.
     pub async fn save_port_resolutions(&mut self, resolutions: &[(String, u16)]) -> Result<()> {
         let count = resolutions.len();
         let resolutions = resolutions.to_vec();
@@ -1852,23 +1924,14 @@ impl SqliteStateTracker {
             .call(move |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
                 let tx = conn.transaction()?;
 
-                // Ensure the synthetic _ports service exists
-                tx.execute(
-                    "INSERT OR REPLACE INTO services (id, status, service_type, namespace, started_at) VALUES ('_ports', 'system', 'system', '', ?1)",
-                    rusqlite::params![&now],
-                )?;
-
-                // Clear previous port resolutions for _ports
-                tx.execute(
-                    "DELETE FROM port_allocations WHERE service_id = '_ports'",
-                    [],
-                )?;
+                // Clear previous persisted port resolutions
+                tx.execute("DELETE FROM persisted_ports", [])?;
 
                 // Insert all resolved port parameters
                 for (param_name, port) in &resolutions {
                     tx.execute(
-                        "INSERT INTO port_allocations (service_id, parameter_name, port) VALUES ('_ports', ?1, ?2)",
-                        rusqlite::params![param_name, port],
+                        "INSERT INTO persisted_ports (param_name, port, source, allocated_at) VALUES (?1, ?2, 'resolver', ?3)",
+                        rusqlite::params![param_name, port, &now],
                     )?;
                     tx.execute(
                         "INSERT OR IGNORE INTO allocated_ports (port, allocated_at) VALUES (?1, ?2)",
@@ -1889,15 +1952,14 @@ impl SqliteStateTracker {
         Ok(())
     }
 
-    /// Get globally persisted port resolutions (from `_ports` synthetic service).
+    /// Get globally persisted port resolutions from the `persisted_ports` table.
     pub async fn get_global_port_allocations(&self) -> HashMap<String, u16> {
         match self
             .conn
             .call(
                 |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<HashMap<String, u16>> {
-                    let mut stmt = conn.prepare(
-                "SELECT parameter_name, port FROM port_allocations WHERE service_id = '_ports'"
-            )?;
+                    let mut stmt =
+                        conn.prepare("SELECT param_name, port FROM persisted_ports")?;
                     let ports: HashMap<String, u16> = stmt
                         .query_map([], |row| {
                             Ok((row.get::<_, String>(0)?, row.get::<_, u16>(1)?))
@@ -1917,18 +1979,14 @@ impl SqliteStateTracker {
         }
     }
 
-    /// Clear persisted port resolutions (the `_ports` synthetic service entry
-    /// and allocated_ports). Used by `fed ports reset`.
+    /// Clear persisted port resolutions and allocated port bind reservations.
+    /// Used by `fed ports reset`.
     pub async fn clear_port_resolutions(&mut self) -> Result<()> {
         self.conn
             .call(
                 |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
                     let tx = conn.transaction()?;
-                    tx.execute(
-                        "DELETE FROM port_allocations WHERE service_id = '_ports'",
-                        [],
-                    )?;
-                    tx.execute("DELETE FROM services WHERE id = '_ports'", [])?;
+                    tx.execute("DELETE FROM persisted_ports", [])?;
                     tx.execute("DELETE FROM allocated_ports", [])?;
                     tx.commit()?;
                     Ok(())
