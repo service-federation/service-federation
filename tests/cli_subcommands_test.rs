@@ -1427,3 +1427,75 @@ fn test_start_without_randomize_uses_defaults() {
         "Without port randomization, DB port should be the default 15632"
     );
 }
+
+#[test]
+fn test_start_randomize_flag_parses() {
+    // Verify --randomize is a valid flag by running it with --dry-run on a config
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = create_port_test_config(&temp_dir, 18480, 15832);
+
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "start",
+            "--randomize",
+            "--dry-run",
+        ])
+        .output()
+        .expect("Failed to run fed");
+
+    assert!(
+        output.status.success(),
+        "start --randomize --dry-run should parse and succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_start_randomize_dry_run_shows_non_default_ports() {
+    let temp_dir = TempDir::new().unwrap();
+    // Use very high defaults that are almost certainly free, so without
+    // --randomize they'd be used as-is.
+    let config_path = create_port_test_config(&temp_dir, 18380, 15732);
+
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "start",
+            "--randomize",
+            "--dry-run",
+        ])
+        .output()
+        .expect("Failed to run fed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "start --randomize --dry-run failed.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    let api_port = parse_resolved_param(&stdout, "TEST_API_PORT");
+    let db_port = parse_resolved_param(&stdout, "TEST_DB_PORT");
+
+    // Randomize should allocate ports different from defaults
+    assert_ne!(
+        api_port, 18380,
+        "With --randomize, API port should differ from default 18380"
+    );
+    assert_ne!(
+        db_port, 15732,
+        "With --randomize, DB port should differ from default 15732"
+    );
+    assert!(api_port > 1024, "API port {} out of valid range", api_port);
+    assert!(db_port > 1024, "DB port {} out of valid range", db_port);
+    assert_ne!(api_port, db_port, "Ports should differ from each other");
+}

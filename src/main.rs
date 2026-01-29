@@ -267,6 +267,11 @@ async fn run() -> anyhow::Result<()> {
     };
     orchestrator.set_output_mode(output_mode);
 
+    // --randomize allocates fresh random ports (same as `fed ports randomize` + `fed start`)
+    if matches!(&cli.command, Commands::Start { randomize: true, .. }) {
+        orchestrator.set_randomize_ports(true);
+    }
+
     // --replace should auto-resolve port conflicts during initialization
     // (the actual process killing happens later in run_start)
     if matches!(&cli.command, Commands::Start { replace: true, .. }) {
@@ -311,6 +316,7 @@ async fn run() -> anyhow::Result<()> {
             replace,
             output: _,
             dry_run,
+            randomize: _,
         } => {
             commands::run_start(
                 &mut orchestrator,
