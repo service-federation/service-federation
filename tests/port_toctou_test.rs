@@ -467,7 +467,7 @@ fn test_is_port_available_doesnt_hold_port() {
 
     // Check availability (static method)
     assert!(
-        PortAllocator::is_port_available(port),
+        service_federation::port::PortConflict::is_port_available(port),
         "Port should be available"
     );
 

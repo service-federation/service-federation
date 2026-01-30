@@ -86,12 +86,6 @@ impl PortAllocator {
         Ok(default_port)
     }
 
-    /// Check if a port is available (checks both IPv4 loopback and all-interfaces)
-    pub fn is_port_available(port: u16) -> bool {
-        TcpListener::bind(("127.0.0.1", port)).is_ok()
-            && TcpListener::bind(("0.0.0.0", port)).is_ok()
-    }
-
     /// Try to allocate a specific port, keeping listeners alive to prevent TOCTOU races.
     /// Returns Ok(port) if successful, Err if port is unavailable.
     ///
@@ -284,7 +278,7 @@ mod tests {
 
         for default_port in ports_to_try {
             // First check if the port is available
-            let is_available = PortAllocator::is_port_available(default_port);
+            let is_available = crate::port::PortConflict::is_port_available(default_port);
 
             let port = allocator.allocate_port_with_default(default_port).unwrap();
             allocated.push(port);
