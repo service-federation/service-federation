@@ -1364,26 +1364,26 @@ impl SqliteStateTracker {
     ///
     /// Returns `Some(seconds)` if the circuit breaker is open, `None` if closed.
     /// This is useful for logging how long until the service can restart.
-    pub async fn get_circuit_breaker_remaining(&self, service_id: &str) -> Option<i64> {
+    pub async fn get_circuit_breaker_remaining(&self, service_id: &str) -> Result<Option<i64>> {
         let service_id = service_id.to_string();
 
-        self.conn
+        let remaining = self.conn
             .call(move |conn| {
-                let remaining: Option<i64> = conn
-                    .query_row(
-                        "SELECT MAX(0, CAST((julianday(circuit_breaker_open_until) - julianday('now')) * 86400 AS INTEGER))
-                         FROM services
-                         WHERE id = ?1 AND circuit_breaker_open_until > datetime('now')",
-                        rusqlite::params![&service_id],
-                        |row| row.get(0),
-                    )
-                    .ok();
-
-                Ok(remaining)
+                match conn.query_row(
+                    "SELECT MAX(0, CAST((julianday(circuit_breaker_open_until) - julianday('now')) * 86400 AS INTEGER))
+                     FROM services
+                     WHERE id = ?1 AND circuit_breaker_open_until > datetime('now')",
+                    rusqlite::params![&service_id],
+                    |row| row.get(0),
+                ) {
+                    Ok(val) => Ok(Some(val)),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                    Err(e) => Err(e.into()),
+                }
             })
-            .await
-            .ok()
-            .flatten()
+            .await?;
+
+        Ok(remaining)
     }
 
     /// Close the circuit breaker for a service.
@@ -2194,7 +2194,7 @@ mod tests {
         register_test_service(&mut tracker, "test-service").await;
 
         // No remaining time when circuit is closed
-        let remaining = tracker.get_circuit_breaker_remaining("test-service").await;
+        let remaining = tracker.get_circuit_breaker_remaining("test-service").await.unwrap();
         assert!(
             remaining.is_none(),
             "Should have no remaining time when closed"
@@ -2207,7 +2207,7 @@ mod tests {
             .unwrap();
 
         // Should have remaining time
-        let remaining = tracker.get_circuit_breaker_remaining("test-service").await;
+        let remaining = tracker.get_circuit_breaker_remaining("test-service").await.unwrap();
         assert!(remaining.is_some(), "Should have remaining time when open");
         let remaining = remaining.unwrap();
         // Should be approximately 60 seconds (allow some tolerance)
