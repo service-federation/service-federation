@@ -5,7 +5,8 @@ pub async fn run_clean(
     config: &Config,
     services: Vec<String>,
 ) -> anyhow::Result<()> {
-    let services_to_clean = if services.is_empty() {
+    let cleaning_all = services.is_empty();
+    let services_to_clean = if cleaning_all {
         // Include services that have either a clean command or Docker volumes
         config
             .services
@@ -33,6 +34,17 @@ pub async fn run_clean(
             println!("[clean] {} failed: {}", service, e);
             return Err(e.into());
         }
+    }
+
+    // When cleaning all services, also clear persisted port allocations
+    // (from `fed ports randomize`). Partial cleans leave port state intact.
+    if cleaning_all {
+        orchestrator
+            .state_tracker
+            .write()
+            .await
+            .clear_port_resolutions()
+            .await?;
     }
 
     println!("\nAll clean commands completed successfully.");
