@@ -345,11 +345,14 @@ impl Orchestrator {
                             service_name
                         );
                         // Unregister the stale service from state
-                        self.state_tracker
+                        if let Err(e) = self.state_tracker
                             .write()
                             .await
                             .unregister_service(service_name)
-                            .await;
+                            .await
+                        {
+                            tracing::warn!("Failed to unregister stale service '{}': {}", service_name, e);
+                        }
                     }
                 } else {
                     tracing::error!(
@@ -358,11 +361,14 @@ impl Orchestrator {
                         service_name
                     );
                     // Unregister the invalid PID from state
-                    self.state_tracker
+                    if let Err(e) = self.state_tracker
                         .write()
                         .await
                         .unregister_service(service_name)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("Failed to unregister stale service '{}': {}", service_name, e);
+                    }
                 }
             }
 
@@ -404,11 +410,14 @@ impl Orchestrator {
                             pid,
                             service_name
                         );
-                        self.state_tracker
+                        if let Err(e) = self.state_tracker
                             .write()
                             .await
                             .unregister_service(service_name)
-                            .await;
+                            .await
+                        {
+                            tracing::warn!("Failed to unregister stale service '{}': {}", service_name, e);
+                        }
                     }
                 } else {
                     tracing::error!(
@@ -416,11 +425,14 @@ impl Orchestrator {
                         pid,
                         service_name
                     );
-                    self.state_tracker
+                    if let Err(e) = self.state_tracker
                         .write()
                         .await
                         .unregister_service(service_name)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("Failed to unregister stale service '{}': {}", service_name, e);
+                    }
                 }
             }
 
@@ -458,11 +470,14 @@ impl Orchestrator {
                     service_name
                 );
                 // Unregister the stale service from state
-                self.state_tracker
+                if let Err(e) = self.state_tracker
                     .write()
                     .await
                     .unregister_service(service_name)
-                    .await;
+                    .await
+                {
+                    tracing::warn!("Failed to unregister stale service '{}': {}", service_name, e);
+                }
             }
         }
     }

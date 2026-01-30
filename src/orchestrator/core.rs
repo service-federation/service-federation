@@ -1010,7 +1010,7 @@ impl Orchestrator {
                 .write()
                 .await
                 .unregister_service(name)
-                .await;
+                .await?;
             return Err(Error::Cancelled(name.to_string()));
         }
 
@@ -1253,7 +1253,7 @@ impl Orchestrator {
         // Unregister from state tracker
         async {
             let mut tracker = self.state_tracker.write().await;
-            tracker.unregister_service(name).await;
+            tracker.unregister_service(name).await?;
             tracker.save().await?;
             Result::<()>::Ok(())
         }

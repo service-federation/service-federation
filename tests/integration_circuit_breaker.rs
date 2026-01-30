@@ -323,7 +323,7 @@ async fn test_circuit_breaker_reset_on_unregister() {
     );
 
     // Unregister the service (simulates service being stopped)
-    tracker.unregister_service("reset-service").await;
+    tracker.unregister_service("reset-service").await.unwrap();
 
     // Register the same service again (simulates service being started fresh)
     let service_state = service_federation::state::ServiceState::new(

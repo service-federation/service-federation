@@ -358,7 +358,7 @@ proptest! {
             for &idx in &indices_to_remove {
                 if idx < service_names.len() {
                     let name = &service_names[idx];
-                    tracker.unregister_service(name).await;
+                    tracker.unregister_service(name).await.unwrap();
                     removed_names.push(name.clone());
                 }
             }

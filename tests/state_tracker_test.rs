@@ -72,7 +72,7 @@ async fn test_unregister_service() {
     tracker.register_service(service_state).await.unwrap();
     assert!(tracker.is_service_registered("test-service").await);
 
-    tracker.unregister_service("test-service").await;
+    tracker.unregister_service("test-service").await.unwrap();
     assert!(!tracker.is_service_registered("test-service").await);
     assert_eq!(tracker.get_services().await.len(), 0);
 }
@@ -282,8 +282,8 @@ async fn test_multiple_services() {
     assert_eq!(tracker.get_services().await.len(), 5);
 
     // Unregister some
-    tracker.unregister_service("service-2").await;
-    tracker.unregister_service("service-4").await;
+    tracker.unregister_service("service-2").await.unwrap();
+    tracker.unregister_service("service-4").await.unwrap();
 
     assert_eq!(tracker.get_services().await.len(), 3);
     assert!(tracker.is_service_registered("service-1").await);
@@ -579,10 +579,10 @@ async fn test_regression_unregister_requires_plain_name() {
     assert!(tracker.is_service_registered("temp-service").await);
 
     // Unregister with namespaced ID should do nothing (key not found)
-    tracker.unregister_service("root/temp-service").await;
+    tracker.unregister_service("root/temp-service").await.unwrap();
     assert!(tracker.is_service_registered("temp-service").await); // Still registered!
 
     // Unregister with plain name should work
-    tracker.unregister_service("temp-service").await;
+    tracker.unregister_service("temp-service").await.unwrap();
     assert!(!tracker.is_service_registered("temp-service").await);
 }

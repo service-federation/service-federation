@@ -1424,28 +1424,26 @@ impl SqliteStateTracker {
     }
 
     /// Unregister a service (when stopped)
-    pub async fn unregister_service(&mut self, service_id: &str) {
+    pub async fn unregister_service(&mut self, service_id: &str) -> Result<()> {
         let service_id = service_id.to_string();
         let service_id_for_tx = service_id.clone();
 
-        match self
-            .with_transaction(move |tx| {
-                tx.execute(
-                    "DELETE FROM services WHERE id = ?1",
-                    rusqlite::params![&service_id_for_tx],
-                )?;
-                // Clean up global ports no longer in use
-                tx.execute(
-                    "DELETE FROM allocated_ports WHERE port NOT IN (SELECT DISTINCT port FROM port_allocations)",
-                    [],
-                )?;
-                Ok(())
-            })
-            .await
-        {
-            Ok(_) => debug!("Unregistered service: {}", service_id),
-            Err(e) => warn!("Failed to unregister service {}: {}", service_id, e),
-        }
+        self.with_transaction(move |tx| {
+            tx.execute(
+                "DELETE FROM services WHERE id = ?1",
+                rusqlite::params![&service_id_for_tx],
+            )?;
+            // Clean up global ports no longer in use
+            tx.execute(
+                "DELETE FROM allocated_ports WHERE port NOT IN (SELECT DISTINCT port FROM port_allocations)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await?;
+
+        debug!("Unregistered service: {}", service_id);
+        Ok(())
     }
 
     /// Track a newly allocated port
