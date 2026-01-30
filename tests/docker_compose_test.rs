@@ -114,6 +114,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     let result = orchestrator.initialize().await;
 
     // Should fail because compose file doesn't exist
@@ -144,6 +145,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator.initialize().await.expect("Init failed");
 
     let result = orchestrator.start("test").await;
@@ -184,6 +186,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator.initialize().await.expect("Init failed");
 
     // Start service
@@ -248,6 +251,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator.initialize().await.expect("Init failed");
 
     orchestrator.start("busybox").await.expect("Start failed");
@@ -306,6 +310,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator.initialize().await.expect("Init failed");
 
     // Start app - should start redis first
@@ -396,6 +401,7 @@ services:
     let mut orch1 = Orchestrator::new(config1, orch1_temp.path().to_path_buf())
         .await
         .unwrap();
+    orch1.set_auto_resolve_conflicts(true);
     orch1.initialize().await.expect("Init 1 failed");
     orch1.start("nginx1").await.expect("Start 1 failed");
 
@@ -406,6 +412,7 @@ services:
     let mut orch2 = Orchestrator::new(config2, orch2_temp.path().to_path_buf())
         .await
         .unwrap();
+    orch2.set_auto_resolve_conflicts(true);
     orch2.initialize().await.expect("Init 2 failed");
     orch2.start("nginx2").await.expect("Start 2 failed");
 
@@ -462,6 +469,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator.initialize().await.expect("Init failed");
 
     // Start once
@@ -505,6 +513,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator.initialize().await.expect("Init failed");
 
     orchestrator.start("nginx").await.expect("Start failed");
@@ -555,6 +564,7 @@ services:
     let mut orch1 = Orchestrator::new(config1, orch1_temp.path().to_path_buf())
         .await
         .unwrap();
+    orch1.set_auto_resolve_conflicts(true);
     orch1.initialize().await.expect("Init failed");
     orch1.start("nginx1").await.expect("Start 1 failed");
 
@@ -566,6 +576,7 @@ services:
     let mut orch2 = Orchestrator::new(config2, orch2_temp.path().to_path_buf())
         .await
         .unwrap();
+    orch2.set_auto_resolve_conflicts(true);
     orch2.initialize().await.expect("Init 2 failed");
 
     let result = orch2.start("nginx1").await;
@@ -629,6 +640,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator.initialize().await.expect("Init failed");
     orchestrator
         .start("compose-process")

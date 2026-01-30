@@ -55,6 +55,7 @@ services:
     ));
 
     // Initialize and start services
+    orchestrator.lock().await.set_auto_resolve_conflicts(true);
     orchestrator.lock().await.initialize().await.unwrap();
     orchestrator.lock().await.start("service1").await.ok();
     orchestrator.lock().await.start("service2").await.ok();
@@ -198,6 +199,7 @@ services:
             .unwrap(),
     ));
 
+    orchestrator.lock().await.set_auto_resolve_conflicts(true);
     orchestrator.lock().await.initialize().await.unwrap();
     orchestrator.lock().await.start("svc1").await.ok();
     orchestrator.lock().await.start("svc2").await.ok();
@@ -267,6 +269,7 @@ async fn repro_unbounded_health_check_task_spawning() {
             .await
             .unwrap(),
     ));
+    orchestrator.lock().await.set_auto_resolve_conflicts(true);
     orchestrator.lock().await.initialize().await.unwrap();
 
     // Start all services
@@ -622,6 +625,7 @@ services:
             .unwrap(),
     ));
 
+    orchestrator.lock().await.set_auto_resolve_conflicts(true);
     orchestrator.lock().await.initialize().await.ok();
     orchestrator.lock().await.start("svc1").await.ok();
     orchestrator.lock().await.start("svc2").await.ok();
@@ -977,6 +981,7 @@ entrypoint: app
     // Initialize - this will load the stale lock file
     // The monitoring loop will start and find stale services
     println!("=== Initializing orchestrator with stale lock file ===");
+    orchestrator.set_auto_resolve_conflicts(true);
     let init_result = orchestrator.initialize().await;
 
     match init_result {

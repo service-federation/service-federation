@@ -34,6 +34,7 @@ async fn create_test_orchestrator(config_content: &str) -> (Arc<Orchestrator>, t
     // Use shorter timeouts for tests to avoid slow cleanup
     orchestrator.startup_timeout = Duration::from_secs(30);
     orchestrator.stop_timeout = Duration::from_secs(5);
+    orchestrator.set_auto_resolve_conflicts(true);
 
     orchestrator
         .initialize()
@@ -324,6 +325,7 @@ entrypoint: hanging_service
     // Set a very short timeout for testing
     orchestrator.startup_timeout = Duration::from_millis(500);
     orchestrator.stop_timeout = Duration::from_secs(2);
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await

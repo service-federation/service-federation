@@ -763,6 +763,7 @@ async fn test_orchestrator_empty_config() {
         .await
         .unwrap();
 
+    orchestrator.set_auto_resolve_conflicts(true);
     let result = orchestrator.initialize().await;
     assert!(
         result.is_ok(),
@@ -785,6 +786,7 @@ async fn test_orchestrator_service_with_no_type() {
     let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     let result = orchestrator.initialize().await;
 
     // Should handle undefined service type
@@ -815,6 +817,7 @@ async fn test_orchestrator_multiple_entrypoints() {
     let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     let result = orchestrator.initialize().await;
 
     assert!(result.is_ok());
@@ -848,6 +851,7 @@ async fn test_gradle_empty_cwd_vs_none() {
     let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator.initialize().await.expect("Should initialize");
 
     let services = orchestrator.get_status().await;
@@ -923,6 +927,7 @@ async fn test_multiple_service_failures_returns_aggregated_error() {
         Ok(o) => o,
         Err(_) => return, // Orchestrator creation failure is acceptable
     };
+    orchestrator.set_auto_resolve_conflicts(true);
     if orchestrator.initialize().await.is_err() {
         return;
     }

@@ -20,6 +20,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -65,6 +66,7 @@ scripts:
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -107,6 +109,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -141,6 +144,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -174,6 +178,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -206,6 +211,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -233,6 +239,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -265,6 +272,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -315,6 +323,7 @@ scripts:
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -353,6 +362,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -381,6 +391,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -422,6 +433,7 @@ scripts:
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -459,6 +471,7 @@ services:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -487,6 +500,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -519,6 +533,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -551,6 +566,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -581,6 +597,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -618,6 +635,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -666,6 +684,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -719,6 +738,7 @@ scripts:
     let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -769,6 +789,7 @@ scripts:
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -829,6 +850,7 @@ scripts:
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -888,6 +910,7 @@ scripts:
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -953,6 +976,7 @@ scripts:
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -1016,6 +1040,7 @@ scripts:
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -1102,6 +1127,7 @@ scripts:
         .set_work_dir(temp_dir.path().to_path_buf())
         .await
         .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
