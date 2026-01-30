@@ -636,33 +636,6 @@ impl SqliteStateTracker {
 
     /// Validate existing state and cleanup stale services
     async fn validate_and_cleanup(&mut self) -> Result<()> {
-        // Check if previous fed process still running
-        // Note: fed is a CLI tool, not a daemon - it's NORMAL for the previous
-        // fed process to have exited. What matters is whether SERVICES are running.
-        let fed_pid: u32 = self
-            .conn
-            .call(
-                |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<u32> {
-                    Ok(
-                        conn.query_row("SELECT fed_pid FROM lock_file WHERE id = 1", [], |row| {
-                            row.get(0)
-                        })?,
-                    )
-                },
-            )
-            .await?;
-
-        // Always cleanup stale services on startup, regardless of fed_pid status.
-        // The fed_pid check is only useful for detecting if another fed instance
-        // is actively modifying state (rare race condition).
-        if Self::is_process_running(fed_pid).await && fed_pid != std::process::id() {
-            // Another fed instance is running - this could cause conflicts
-            debug!(
-                "Another fed process (PID {}) may be running - proceeding with caution",
-                fed_pid
-            );
-        }
-
         // Mark dead services as stale (does not delete — purge_stale_services does that)
         self.mark_dead_services().await?;
 
