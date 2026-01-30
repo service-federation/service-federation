@@ -66,6 +66,8 @@ This means git worktrees give you full isolation for free:
 
 Both stacks run simultaneously on the same machine. `--randomize` allocates fresh random ports so nothing collides. Ports persist across restarts — `fed stop && fed start` reuses the same allocations until you `fed ports reset`.
 
+`--randomize` allocates fresh ports on every invocation. For stable randomized ports across restarts, use `fed ports randomize` once, then `fed start` without the flag.
+
 To find your allocated ports:
 
 ```bash
