@@ -387,7 +387,7 @@ impl Orchestrator {
 
     /// Lightweight initialization for read-only commands (status, logs).
     ///
-    /// Unlike [`initialize`], this skips parameter resolution, Docker orphan cleanup,
+    /// Unlike [`Orchestrator::initialize`], this skips parameter resolution, Docker orphan cleanup,
     /// external service expansion, and profile filtering. It only loads state,
     /// builds the dependency graph, and creates+restores service managers.
     ///

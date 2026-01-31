@@ -1777,7 +1777,7 @@ impl SqliteStateTracker {
     /// Mark dead/stale services in state without deleting them.
     ///
     /// Sets status to `stale` so that port_allocations remain readable
-    /// until [`purge_stale_services`] is called. This enables callers to
+    /// until [`SqliteStateTracker::purge_stale_services`] is called. This enables callers to
     /// collect managed port information before data is deleted.
     pub async fn mark_dead_services(&mut self) -> Result<usize> {
         let services = self.get_services().await;
@@ -1845,7 +1845,7 @@ impl SqliteStateTracker {
         Ok(marked)
     }
 
-    /// Purge services previously marked as stale by [`mark_dead_services`].
+    /// Purge services previously marked as stale by [`SqliteStateTracker::mark_dead_services`].
     ///
     /// Deletes stale service records and their associated port_allocations
     /// (via CASCADE). Call this after managed port information has been collected.
