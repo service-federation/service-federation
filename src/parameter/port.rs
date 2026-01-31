@@ -43,18 +43,17 @@ impl PortAllocator {
             .map_err(|e| Error::PortAllocation(format!("Failed to get local address: {}", e)))?
             .port();
 
-        // Also bind 0.0.0.0 on the same port to prevent dual-stack conflicts
-        let listener_any = TcpListener::bind(("0.0.0.0", port)).map_err(|e| {
-            Error::PortAllocation(format!(
-                "Random port {} not available on 0.0.0.0: {}",
-                port, e
-            ))
-        })?;
+        // Also try 0.0.0.0 to catch dual-stack conflicts (e.g. :::PORT).
+        // On Linux, this may fail with EADDRINUSE because the kernel treats
+        // 127.0.0.1:PORT as overlapping with 0.0.0.0:PORT — that's fine,
+        // the 127.0.0.1 bind already reserves it.
+        let listener_any = TcpListener::bind(("0.0.0.0", port)).ok();
 
-        // Keep both listeners alive to prevent port reuse
         let mut listeners = self.listeners.lock();
         listeners.push(listener_v4);
-        listeners.push(listener_any);
+        if let Some(l) = listener_any {
+            listeners.push(l);
+        }
         self.allocated_ports.lock().insert(port);
 
         Ok(port)
@@ -66,22 +65,22 @@ impl PortAllocator {
     ///
     /// Thread-safe: Uses interior mutability to allow concurrent allocation.
     pub fn allocate_port_with_default(&mut self, default_port: u16) -> Result<u16> {
-        // Try to bind to the default port on both interfaces
+        // Try to bind to the default port on 127.0.0.1
         let listener_v4 = match TcpListener::bind(("127.0.0.1", default_port)) {
             Ok(l) => l,
             Err(_) => return self.allocate_random_port(),
         };
-        let listener_any = match TcpListener::bind(("0.0.0.0", default_port)) {
-            Ok(l) => l,
-            Err(_) => {
-                drop(listener_v4);
-                return self.allocate_random_port();
-            }
-        };
+        // Also try 0.0.0.0 to catch dual-stack conflicts.
+        // On Linux this may fail because 127.0.0.1 already covers it — that's fine.
+        // On macOS the two binds coexist, so holding both prevents conflicts from
+        // processes binding on either address.
+        let listener_any = TcpListener::bind(("0.0.0.0", default_port)).ok();
 
         let mut listeners = self.listeners.lock();
         listeners.push(listener_v4);
-        listeners.push(listener_any);
+        if let Some(l) = listener_any {
+            listeners.push(l);
+        }
         self.allocated_ports.lock().insert(default_port);
         Ok(default_port)
     }
@@ -98,20 +97,15 @@ impl PortAllocator {
         let listener_v4 = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
             Error::PortAllocation(format!("Port {} not available (127.0.0.1): {}", port, e))
         })?;
-        let listener_any = match TcpListener::bind(("0.0.0.0", port)) {
-            Ok(l) => l,
-            Err(e) => {
-                drop(listener_v4);
-                return Err(Error::PortAllocation(format!(
-                    "Port {} not available (0.0.0.0): {}",
-                    port, e
-                )));
-            }
-        };
+        // Also try 0.0.0.0 to catch dual-stack conflicts.
+        // On Linux this may fail because 127.0.0.1 already covers it — that's fine.
+        let listener_any = TcpListener::bind(("0.0.0.0", port)).ok();
 
         let mut listeners = self.listeners.lock();
         listeners.push(listener_v4);
-        listeners.push(listener_any);
+        if let Some(l) = listener_any {
+            listeners.push(l);
+        }
         self.allocated_ports.lock().insert(port);
         Ok(port)
     }
