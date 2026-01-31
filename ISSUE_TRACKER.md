@@ -1,8 +1,0 @@
-| ID       | Status  | Priority | Complexity | Description |
-|----------|---------|----------|------------|-------------|
-| SF-00080 | Pending | MEDIUM | Medium | Unify stop/cleanup paths — four ways to stop services (`run_stop`, `run_stop_from_state`, `cleanup()`, signal handler) with different state-clearing semantics. Source of SF-00078 and future bugs. Should converge to single state machine. |
-| SF-00081 | Pending | MEDIUM | Medium | Make orchestrator builder the sole construction path — `main.rs` uses setter calls with implicit ordering (`set_work_dir` before `initialize`, `set_randomize_ports` before `initialize`). Builder exists but isn't used. Encode constraints in builder type state or validation. |
-| SF-00082 | Pending | MEDIUM | Medium | Split main.rs command dispatch — two-pass match (early exits then full orchestrator) entangles command dispatch with orchestrator lifecycle. Separate commands-that-need-orchestrator from commands-that-don't as distinct dispatch paths. |
-| SF-00083 | Pending | LOW | Medium | Dry-run duplicates port conflict derivation — SF-00050 fixed resolver tracking but dry-run still has ~200 lines re-deriving port info independently. Unify to single code path consuming resolver decisions. |
-| SF-00093 | Pending | HIGH | Low | Port allocation `0.0.0.0` bind fails on Linux CI — `allocate_random_port` binds `127.0.0.1:0` then tries `0.0.0.0:PORT`, which fails on Linux because the kernel treats them as overlapping. All port allocator tests fail on ubuntu-latest. |
-| SF-00094 | Pending | LOW | Low | Broken rustdoc links — `[`initialize`]` in core.rs:390, `[`purge_stale_services`]` in sqlite.rs:1780, `[`mark_dead_services`]` in sqlite.rs:1848 are unresolved. CI docs job fails with `-D warnings`. |
