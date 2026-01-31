@@ -87,36 +87,35 @@ services:
     println!("Status stdout:\n{}", status_text);
     println!("Status stderr:\n{}", status_stderr);
 
-    let combined = format!("{}{}", status_text, status_stderr);
-    let combined_lower = combined.to_lowercase();
+    // Check stdout only — stderr may contain unrelated Docker daemon warnings
+    // (e.g. "Docker daemon unhealthy") that would false-positive on "healthy".
+    let status_lower = status_text.to_lowercase();
 
     // The service exited immediately. If healthchecks were awaited during
     // startup, fed would have noticed the process died. The status should
     // NOT show "Running" or "Healthy" for a dead service.
-    //
-    // SF-00077 bug: currently the service is briefly reported as "Running"
-    // because start_service_impl never polls the healthcheck.
     assert!(
-        !combined_lower.contains("running") && !combined_lower.contains("healthy"),
+        !status_lower.contains("running") && !status_lower.contains("healthy"),
         "SF-00077 BUG: A service that exited immediately should NOT be reported as \
          Running or Healthy. If healthchecks were awaited during startup, the dead \
-         process would have been detected. Status output:\n{}",
-        combined
+         process would have been detected. Status output:\n{}{}",
+        status_text,
+        status_stderr
     );
 
     // The service name should appear in the status output
     assert!(
-        combined_lower.contains("dying-service"),
+        status_lower.contains("dying-service"),
         "Service name should appear in status output. Got:\n{}",
-        combined
+        status_text
     );
 
     // It should show as Stopped or Failed
     assert!(
-        combined_lower.contains("stopped") || combined_lower.contains("failed"),
+        status_lower.contains("stopped") || status_lower.contains("failed"),
         "Service should be reported as Stopped or Failed after immediate exit. \
          Status output:\n{}",
-        combined
+        status_text
     );
 
     // Cleanup
