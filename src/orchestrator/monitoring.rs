@@ -315,14 +315,15 @@ async fn execute_health_check_cycle(
             // Get remaining cooldown time for better logging
             let remaining = {
                 let tracker = state_tracker.read().await;
-                match tracker
-                    .get_circuit_breaker_remaining(&service_name)
-                    .await
-                {
+                match tracker.get_circuit_breaker_remaining(&service_name).await {
                     Ok(Some(secs)) => secs,
                     Ok(None) => 0,
                     Err(e) => {
-                        tracing::warn!("Failed to read circuit breaker remaining for '{}': {}", service_name, e);
+                        tracing::warn!(
+                            "Failed to read circuit breaker remaining for '{}': {}",
+                            service_name,
+                            e
+                        );
                         0
                     }
                 }

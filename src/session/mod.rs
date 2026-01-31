@@ -809,8 +809,8 @@ mod tests {
     fn test_session_context_global_mode() {
         // When no session exists, SessionContext should use global mode
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let ctx =
-            SessionContext::current(temp_dir.path().to_path_buf()).expect("Failed to create context");
+        let ctx = SessionContext::current(temp_dir.path().to_path_buf())
+            .expect("Failed to create context");
 
         // Test install tracking in global mode
         let service_name = "test-service-global";
@@ -841,10 +841,10 @@ mod tests {
         let dir_a = tempfile::tempdir().expect("Failed to create temp dir A");
         let dir_b = tempfile::tempdir().expect("Failed to create temp dir B");
 
-        let ctx_a =
-            SessionContext::current(dir_a.path().to_path_buf()).expect("Failed to create context A");
-        let ctx_b =
-            SessionContext::current(dir_b.path().to_path_buf()).expect("Failed to create context B");
+        let ctx_a = SessionContext::current(dir_a.path().to_path_buf())
+            .expect("Failed to create context A");
+        let ctx_b = SessionContext::current(dir_b.path().to_path_buf())
+            .expect("Failed to create context B");
 
         let service_name = "test-isolated-service";
 
@@ -858,8 +858,12 @@ mod tests {
             .expect("mark_installed failed");
 
         // dir_a sees it as installed, dir_b does not
-        assert!(ctx_a.is_installed(service_name).expect("is_installed failed"));
-        assert!(!ctx_b.is_installed(service_name).expect("is_installed failed"));
+        assert!(ctx_a
+            .is_installed(service_name)
+            .expect("is_installed failed"));
+        assert!(!ctx_b
+            .is_installed(service_name)
+            .expect("is_installed failed"));
 
         // Clean up
         let _ = ctx_a.clear_installed(service_name);

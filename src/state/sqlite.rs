@@ -463,61 +463,63 @@ impl SqliteStateTracker {
         debug!("Running migration v3 -> v4: Creating persisted_ports table");
 
         self.conn
-            .call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
-                let tx = conn.transaction()?;
+            .call(
+                |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                    let tx = conn.transaction()?;
 
-                let already_applied: bool = tx
-                    .query_row(
-                        "SELECT COUNT(*) > 0 FROM schema_version WHERE version = 4",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(false);
+                    let already_applied: bool = tx
+                        .query_row(
+                            "SELECT COUNT(*) > 0 FROM schema_version WHERE version = 4",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(false);
 
-                if already_applied {
-                    return Ok(());
-                }
+                    if already_applied {
+                        return Ok(());
+                    }
 
-                // Create the new table
-                tx.execute_batch(
-                    "CREATE TABLE IF NOT EXISTS persisted_ports (
+                    // Create the new table
+                    tx.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS persisted_ports (
                         param_name TEXT PRIMARY KEY,
                         port INTEGER NOT NULL,
                         source TEXT NOT NULL,
                         allocated_at TEXT NOT NULL
                     );",
-                )?;
+                    )?;
 
-                // Migrate existing data from _ports synthetic service
-                tx.execute(
+                    // Migrate existing data from _ports synthetic service
+                    tx.execute(
                     "INSERT OR IGNORE INTO persisted_ports (param_name, port, source, allocated_at)
                      SELECT parameter_name, port, 'resolver', datetime('now')
                      FROM port_allocations WHERE service_id = '_ports'",
                     [],
                 )?;
 
-                // Ensure migrated ports have bind reservations in allocated_ports
-                tx.execute(
-                    "INSERT OR IGNORE INTO allocated_ports (port, allocated_at)
+                    // Ensure migrated ports have bind reservations in allocated_ports
+                    tx.execute(
+                        "INSERT OR IGNORE INTO allocated_ports (port, allocated_at)
                      SELECT port, allocated_at FROM persisted_ports",
-                    [],
-                )?;
+                        [],
+                    )?;
 
-                // Remove old synthetic entries
-                tx.execute(
-                    "DELETE FROM port_allocations WHERE service_id = '_ports'",
-                    [],
-                )?;
-                tx.execute("DELETE FROM services WHERE id = '_ports'", [])?;
+                    // Remove old synthetic entries
+                    tx.execute(
+                        "DELETE FROM port_allocations WHERE service_id = '_ports'",
+                        [],
+                    )?;
+                    tx.execute("DELETE FROM services WHERE id = '_ports'", [])?;
 
-                tx.execute(
+                    tx.execute(
                     "INSERT INTO schema_version (version, applied_at) VALUES (4, datetime('now'))",
                     [],
                 )?;
 
-                tx.commit()?;
-                Ok(())
-            })
+                    tx.commit()?;
+                    Ok(())
+                },
+            )
             .await?;
 
         info!("Migration v3 -> v4 completed successfully");
@@ -1929,8 +1931,7 @@ impl SqliteStateTracker {
             .conn
             .call(
                 |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<HashMap<String, u16>> {
-                    let mut stmt =
-                        conn.prepare("SELECT param_name, port FROM persisted_ports")?;
+                    let mut stmt = conn.prepare("SELECT param_name, port FROM persisted_ports")?;
                     let ports: HashMap<String, u16> = stmt
                         .query_map([], |row| {
                             Ok((row.get::<_, String>(0)?, row.get::<_, u16>(1)?))
@@ -2167,7 +2168,10 @@ mod tests {
         register_test_service(&mut tracker, "test-service").await;
 
         // No remaining time when circuit is closed
-        let remaining = tracker.get_circuit_breaker_remaining("test-service").await.unwrap();
+        let remaining = tracker
+            .get_circuit_breaker_remaining("test-service")
+            .await
+            .unwrap();
         assert!(
             remaining.is_none(),
             "Should have no remaining time when closed"
@@ -2180,7 +2184,10 @@ mod tests {
             .unwrap();
 
         // Should have remaining time
-        let remaining = tracker.get_circuit_breaker_remaining("test-service").await.unwrap();
+        let remaining = tracker
+            .get_circuit_breaker_remaining("test-service")
+            .await
+            .unwrap();
         assert!(remaining.is_some(), "Should have remaining time when open");
         let remaining = remaining.unwrap();
         // Should be approximately 60 seconds (allow some tolerance)

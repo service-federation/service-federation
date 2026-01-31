@@ -417,7 +417,10 @@ async fn test_circuit_breaker_time_remaining() {
         .expect("Failed to open circuit breaker");
 
     // Get time remaining - should be approximately 5 seconds (with tolerance for execution time)
-    let remaining: Option<i64> = tracker.get_circuit_breaker_remaining("timer-service").await.unwrap();
+    let remaining: Option<i64> = tracker
+        .get_circuit_breaker_remaining("timer-service")
+        .await
+        .unwrap();
     match remaining {
         Some(secs) => {
             assert!(
@@ -434,7 +437,10 @@ async fn test_circuit_breaker_time_remaining() {
     sleep(Duration::from_millis(5100)).await;
 
     // Time remaining should be None (circuit breaker closed)
-    let remaining: Option<i64> = tracker.get_circuit_breaker_remaining("timer-service").await.unwrap();
+    let remaining: Option<i64> = tracker
+        .get_circuit_breaker_remaining("timer-service")
+        .await
+        .unwrap();
     assert!(
         remaining.is_none(),
         "Time remaining should be None after cooldown expires"

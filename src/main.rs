@@ -268,7 +268,13 @@ async fn run() -> anyhow::Result<()> {
     orchestrator.set_output_mode(output_mode);
 
     // --randomize allocates fresh random ports (same as `fed ports randomize` + `fed start`)
-    if matches!(&cli.command, Commands::Start { randomize: true, .. }) {
+    if matches!(
+        &cli.command,
+        Commands::Start {
+            randomize: true,
+            ..
+        }
+    ) {
         orchestrator.set_randomize_ports(true);
     }
 

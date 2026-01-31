@@ -579,7 +579,10 @@ async fn test_regression_unregister_requires_plain_name() {
     assert!(tracker.is_service_registered("temp-service").await);
 
     // Unregister with namespaced ID should do nothing (key not found)
-    tracker.unregister_service("root/temp-service").await.unwrap();
+    tracker
+        .unregister_service("root/temp-service")
+        .await
+        .unwrap();
     assert!(tracker.is_service_registered("temp-service").await); // Still registered!
 
     // Unregister with plain name should work
