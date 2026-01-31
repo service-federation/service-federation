@@ -69,7 +69,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
     /// - Session context is unavailable
     pub async fn run_install(&self, service_name: &str) -> Result<()> {
         // Clear install state first
-        let ctx = crate::session::SessionContext::current()?;
+        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
         ctx.clear_installed(service_name)?;
 
         // Run install
@@ -110,7 +110,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
         };
 
         // Check if already installed
-        let ctx = crate::session::SessionContext::current()?;
+        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
         let is_installed = ctx.is_installed(service_name)?;
 
         if is_installed {
@@ -172,7 +172,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
         }
 
         // Mark as installed
-        let ctx = crate::session::SessionContext::current()?;
+        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
         ctx.mark_installed(service_name)?;
 
         tracing::info!(
@@ -371,7 +371,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
         }
 
         // Clear install state since we cleaned up
-        let ctx = crate::session::SessionContext::current()?;
+        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
         ctx.clear_installed(service_name)?;
 
         tracing::info!(

@@ -91,3 +91,4 @@
 | SF-00089 | Done | LOW | Low | `validate_and_cleanup` `fed_pid` check is vestigial. Fixed: removed dead code and unnecessary fed_pid read. |
 | SF-00090 | Done | LOW | Low | README doesn't document difference between `--randomize` (fresh every time) and `fed ports randomize` (persist once, reuse). Fixed: added clarification to README. |
 | SF-00091 | Done | LOW | Low | `is_port_available()` duplicated identically in `parameter/port.rs:90` and `port/conflict.rs:44`. Fixed: removed from PortAllocator, kept in PortConflict. |
+| SF-00092 | Done | HIGH | Low | Global install markers not scoped by project directory — `~/.fed/installed/` is shared across all projects. Fixed: scoped by work_dir hash — `~/.fed/installed/{hash}/{service}`. SessionContext now takes work_dir parameter. |

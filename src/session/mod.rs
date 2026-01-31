@@ -639,24 +639,25 @@ fn sanitize_service_name_for_path(service_name: &str) -> Result<String> {
     Ok(sanitized)
 }
 
-/// Get the global installed directory (for non-session mode)
-fn global_installed_dir() -> Result<PathBuf> {
+/// Get the global installed directory (for non-session mode), scoped by work_dir hash.
+fn global_installed_dir(work_dir: &Path) -> Result<PathBuf> {
     let home = dirs::home_dir()
         .ok_or_else(|| Error::Config("Could not determine home directory".to_string()))?;
-    Ok(home.join(".fed").join("installed"))
+    let hash = crate::service::hash_work_dir(work_dir);
+    Ok(home.join(".fed").join("installed").join(hash))
 }
 
 /// Check if a service has been installed (global, non-session mode)
-pub fn is_installed_global(service_name: &str) -> Result<bool> {
-    let installed_dir = global_installed_dir()?;
+pub fn is_installed_global(service_name: &str, work_dir: &Path) -> Result<bool> {
+    let installed_dir = global_installed_dir(work_dir)?;
     let sanitized = sanitize_service_name_for_path(service_name)?;
     let marker_file = installed_dir.join(sanitized);
     Ok(marker_file.exists())
 }
 
 /// Mark a service as installed (global, non-session mode)
-pub fn mark_installed_global(service_name: &str) -> Result<()> {
-    let installed_dir = global_installed_dir()?;
+pub fn mark_installed_global(service_name: &str, work_dir: &Path) -> Result<()> {
+    let installed_dir = global_installed_dir(work_dir)?;
     fs::create_dir_all(&installed_dir)
         .map_err(|e| Error::Config(format!("Failed to create installed directory: {}", e)))?;
 
@@ -674,8 +675,8 @@ pub fn mark_installed_global(service_name: &str) -> Result<()> {
 }
 
 /// Clear install state for a service (global, non-session mode)
-pub fn clear_installed_global(service_name: &str) -> Result<()> {
-    let installed_dir = global_installed_dir()?;
+pub fn clear_installed_global(service_name: &str, work_dir: &Path) -> Result<()> {
+    let installed_dir = global_installed_dir(work_dir)?;
     let sanitized = sanitize_service_name_for_path(service_name)?;
     let marker_file = installed_dir.join(sanitized);
 
@@ -701,7 +702,7 @@ pub fn clear_installed_global(service_name: &str) -> Result<()> {
 /// use service_federation::session::SessionContext;
 ///
 /// # fn example() -> Result<(), service_federation::Error> {
-/// let ctx = SessionContext::current()?;
+/// let ctx = SessionContext::current(std::path::PathBuf::from("."))?;
 /// ctx.mark_installed("my-service")?;
 ///
 /// if ctx.is_installed("my-service")? {
@@ -712,16 +713,17 @@ pub fn clear_installed_global(service_name: &str) -> Result<()> {
 /// ```
 pub struct SessionContext {
     session: Option<Session>,
+    work_dir: PathBuf,
 }
 
 impl SessionContext {
-    /// Get the current session context.
+    /// Get the current session context with the given work directory.
     ///
     /// Returns a context that either wraps an active session (if `FED_SESSION` env var
-    /// is set or `.fed/session` file exists) or falls back to global mode.
-    pub fn current() -> Result<Self> {
+    /// is set or `.fed/session` file exists) or falls back to global mode scoped by work_dir.
+    pub fn current(work_dir: PathBuf) -> Result<Self> {
         let session = Session::current()?;
-        Ok(Self { session })
+        Ok(Self { session, work_dir })
     }
 
     /// Get the session ID, if in a session.
@@ -736,7 +738,7 @@ impl SessionContext {
         if let Some(ref session) = self.session {
             Ok(session.is_installed(service_name))
         } else {
-            is_installed_global(service_name)
+            is_installed_global(service_name, &self.work_dir)
         }
     }
 
@@ -747,7 +749,7 @@ impl SessionContext {
         if let Some(ref session) = self.session {
             session.mark_installed(service_name)
         } else {
-            mark_installed_global(service_name)
+            mark_installed_global(service_name, &self.work_dir)
         }
     }
 
@@ -758,7 +760,7 @@ impl SessionContext {
         if let Some(ref session) = self.session {
             session.clear_installed(service_name)
         } else {
-            clear_installed_global(service_name)
+            clear_installed_global(service_name, &self.work_dir)
         }
     }
 }
@@ -806,7 +808,9 @@ mod tests {
     #[test]
     fn test_session_context_global_mode() {
         // When no session exists, SessionContext should use global mode
-        let ctx = SessionContext::current().expect("Failed to create context");
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let ctx =
+            SessionContext::current(temp_dir.path().to_path_buf()).expect("Failed to create context");
 
         // Test install tracking in global mode
         let service_name = "test-service-global";
@@ -830,5 +834,34 @@ mod tests {
 
         // Should not be installed anymore
         assert!(!ctx.is_installed(service_name).expect("is_installed failed"));
+    }
+
+    #[test]
+    fn test_global_install_markers_isolated_by_work_dir() {
+        let dir_a = tempfile::tempdir().expect("Failed to create temp dir A");
+        let dir_b = tempfile::tempdir().expect("Failed to create temp dir B");
+
+        let ctx_a =
+            SessionContext::current(dir_a.path().to_path_buf()).expect("Failed to create context A");
+        let ctx_b =
+            SessionContext::current(dir_b.path().to_path_buf()).expect("Failed to create context B");
+
+        let service_name = "test-isolated-service";
+
+        // Clean up
+        let _ = ctx_a.clear_installed(service_name);
+        let _ = ctx_b.clear_installed(service_name);
+
+        // Mark installed only in dir_a
+        ctx_a
+            .mark_installed(service_name)
+            .expect("mark_installed failed");
+
+        // dir_a sees it as installed, dir_b does not
+        assert!(ctx_a.is_installed(service_name).expect("is_installed failed"));
+        assert!(!ctx_b.is_installed(service_name).expect("is_installed failed"));
+
+        // Clean up
+        let _ = ctx_a.clear_installed(service_name);
     }
 }
