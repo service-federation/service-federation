@@ -41,6 +41,7 @@ async fn test_no_profiles_active_starts_only_profileless_services() {
     let mut orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
         .await
         .unwrap();
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -82,6 +83,7 @@ async fn test_production_profile_filters_services() {
         .await
         .unwrap()
         .with_profiles(vec!["production".to_string()]);
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -132,6 +134,7 @@ async fn test_development_profile_filters_services() {
         .await
         .unwrap()
         .with_profiles(vec!["development".to_string()]);
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -182,6 +185,7 @@ async fn test_multiple_profiles() {
         .await
         .unwrap()
         .with_profiles(vec!["production".to_string(), "experimental".to_string()]);
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -232,6 +236,7 @@ async fn test_staging_profile() {
         .await
         .unwrap()
         .with_profiles(vec!["staging".to_string()]);
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -270,6 +275,7 @@ async fn test_analytics_profile() {
         .await
         .unwrap()
         .with_profiles(vec!["analytics".to_string()]);
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -309,6 +315,7 @@ async fn test_dependency_filtering() {
         .await
         .unwrap()
         .with_profiles(vec!["production".to_string()]);
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -354,6 +361,7 @@ async fn test_profile_case_sensitivity() {
         .await
         .unwrap()
         .with_profiles(vec!["Production".to_string()]); // Note: capital P
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await
@@ -382,6 +390,7 @@ async fn test_nonexistent_profile() {
         .await
         .unwrap()
         .with_profiles(vec!["nonexistent".to_string()]);
+    orchestrator.set_auto_resolve_conflicts(true);
     orchestrator
         .initialize()
         .await

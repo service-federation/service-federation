@@ -31,6 +31,14 @@ fn is_interactive() -> bool {
     if std::env::var_os("FED_NON_INTERACTIVE").is_some() {
         return false;
     }
+    // Cargo test binaries run from target/*/deps/ — never interactive
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(path) = exe.to_str() {
+            if path.contains("/deps/") || path.contains("\\deps\\") {
+                return false;
+            }
+        }
+    }
     stdin().is_terminal() && stdout().is_terminal()
 }
 
