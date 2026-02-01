@@ -1,0 +1,213 @@
+use service_federation::{
+    config::{BuildConfig, Config, DockerBuildResult},
+    orchestrator::ServiceLifecycleCommands,
+};
+use std::path::Path;
+
+/// Warn if the git working tree has uncommitted or staged changes.
+///
+/// This is relevant for Docker builds that default-tag with the git short hash,
+/// since the tag won't reflect the actual file contents if the tree is dirty.
+pub fn warn_if_dirty_tree() {
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["diff", "--quiet"])
+        .output()
+    {
+        if !output.status.success() {
+            eprintln!("Warning: Git working tree has uncommitted changes. Docker images will be tagged with the current commit hash, which may not reflect the actual contents.");
+        }
+    }
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["diff", "--quiet", "--cached"])
+        .output()
+    {
+        if !output.status.success() {
+            eprintln!("Warning: Git index has staged but uncommitted changes. Docker images will be tagged with the current commit hash, which may not reflect the actual contents.");
+        }
+    }
+}
+
+/// Filter services to only those with `BuildConfig::DockerBuild`.
+fn docker_build_services(config: &Config, requested: &[String]) -> Vec<String> {
+    if requested.is_empty() {
+        config
+            .services
+            .iter()
+            .filter(|(_, svc)| matches!(svc.build.as_ref(), Some(BuildConfig::DockerBuild(_))))
+            .map(|(name, _)| name.clone())
+            .collect()
+    } else {
+        requested
+            .iter()
+            .filter(|name| {
+                config
+                    .services
+                    .get(name.as_str())
+                    .and_then(|s| s.build.as_ref())
+                    .map(|b| matches!(b, BuildConfig::DockerBuild(_)))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+/// Resolve the image tag: CLI --tag takes precedence, otherwise git short hash.
+async fn resolve_tag(tag: Option<String>, work_dir: &Path) -> anyhow::Result<String> {
+    if let Some(t) = tag {
+        return Ok(t);
+    }
+    let output = tokio::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(work_dir)
+        .output()
+        .await?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to get git hash for Docker tag. Use --tag to specify a tag manually."
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+pub async fn run_docker_build(
+    config: &Config,
+    work_dir: &Path,
+    services: Vec<String>,
+    tag: Option<String>,
+    build_args: Vec<String>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let services_to_build = docker_build_services(config, &services);
+
+    if services_to_build.is_empty() {
+        if services.is_empty() {
+            println!("No services with Docker build configuration found");
+        } else {
+            println!(
+                "None of the specified services have Docker build configuration: {}",
+                services.join(", ")
+            );
+        }
+        return Ok(());
+    }
+
+    // Warn about dirty tree when using git hash as tag
+    if tag.is_none() {
+        warn_if_dirty_tree();
+    }
+
+    if !json {
+        println!(
+            "Building Docker images for: {}",
+            services_to_build.join(", ")
+        );
+    }
+
+    let lifecycle = ServiceLifecycleCommands::new(config, work_dir);
+    let mut results: Vec<DockerBuildResult> = Vec::new();
+
+    for service in &services_to_build {
+        if !json {
+            println!("\n[docker build] {}", service);
+        }
+        match lifecycle
+            .run_build(service, tag.as_deref(), &build_args)
+            .await
+        {
+            Ok(Some(result)) => {
+                if !json {
+                    println!(
+                        "[docker build] {} -> {}:{}",
+                        service, result.image, result.tag
+                    );
+                }
+                results.push(result);
+            }
+            Ok(None) => {
+                // Shouldn't happen since we filtered to DockerBuild only
+            }
+            Err(e) => {
+                if !json {
+                    println!("[docker build] {} failed: {}", service, e);
+                }
+                return Err(e.into());
+            }
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        println!("\nAll Docker image builds completed successfully.");
+    }
+
+    Ok(())
+}
+
+pub async fn run_docker_push(
+    config: &Config,
+    work_dir: &Path,
+    services: Vec<String>,
+    tag: Option<String>,
+) -> anyhow::Result<()> {
+    let services_to_push = docker_build_services(config, &services);
+
+    if services_to_push.is_empty() {
+        if services.is_empty() {
+            println!("No services with Docker build configuration found");
+        } else {
+            println!(
+                "None of the specified services have Docker build configuration: {}",
+                services.join(", ")
+            );
+        }
+        return Ok(());
+    }
+
+    let resolved_tag = resolve_tag(tag, work_dir).await?;
+
+    println!("Pushing Docker images for: {}", services_to_push.join(", "));
+
+    for service_name in &services_to_push {
+        let svc = config.services.get(service_name.as_str()).unwrap();
+        let docker_config = match svc.build.as_ref() {
+            Some(BuildConfig::DockerBuild(cfg)) => cfg,
+            _ => continue,
+        };
+
+        let full_image = format!("{}:{}", docker_config.image, resolved_tag);
+
+        // Check that image exists locally
+        let inspect = tokio::process::Command::new("docker")
+            .args(["image", "inspect", &full_image])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await?;
+
+        if !inspect.success() {
+            anyhow::bail!(
+                "Image '{}' not found locally. Run `fed docker build` first.",
+                full_image
+            );
+        }
+
+        println!("\n[docker push] {} -> {}", service_name, full_image);
+
+        let status = tokio::process::Command::new("docker")
+            .args(["push", &full_image])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .await?;
+
+        if !status.success() {
+            anyhow::bail!("Docker push failed for '{}'", full_image);
+        }
+    }
+
+    println!("\nAll Docker images pushed successfully.");
+    Ok(())
+}

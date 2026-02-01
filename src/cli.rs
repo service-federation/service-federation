@@ -118,6 +118,15 @@ pub enum Commands {
     Build {
         /// Services to build (defaults to all services with build field)
         services: Vec<String>,
+        /// Tag for Docker images (default: git short hash)
+        #[arg(long)]
+        tag: Option<String>,
+        /// Additional build arguments for Docker builds (can be repeated)
+        #[arg(long = "build-arg", value_name = "KEY=VALUE")]
+        build_args: Vec<String>,
+        /// Output build results as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Manage sessions
     #[command(subcommand)]
@@ -157,6 +166,10 @@ pub enum Commands {
     #[command(subcommand)]
     Debug(DebugCommands),
 
+    /// Docker image commands
+    #[command(subcommand)]
+    Docker(DockerCommands),
+
     /// Run a script by name (shorthand for `fed run <script>`)
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -183,6 +196,32 @@ pub enum DebugCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DockerCommands {
+    /// Build Docker images for services
+    Build {
+        /// Services to build (defaults to all with Docker build config)
+        services: Vec<String>,
+        /// Tag for images (default: git short hash)
+        #[arg(long)]
+        tag: Option<String>,
+        /// Additional build arguments (can be repeated)
+        #[arg(long = "build-arg", value_name = "KEY=VALUE")]
+        build_args: Vec<String>,
+        /// Output build results as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Push Docker images to registry
+    Push {
+        /// Services to push (defaults to all with Docker build config)
+        services: Vec<String>,
+        /// Tag to push (default: git short hash)
+        #[arg(long)]
+        tag: Option<String>,
     },
 }
 

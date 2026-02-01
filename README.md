@@ -318,6 +318,32 @@ services:
 
 `fed clean` also removes Docker volumes with `fed-` prefix.
 
+### Docker Image Builds
+
+```yaml
+services:
+  web:
+    cwd: ./apps/web
+    build:
+      image: my-app
+      # dockerfile: Dockerfile  (default)
+      # args:                    (optional build arguments)
+      #   NODE_ENV: production
+```
+
+`fed build` builds all services with a `build` field. `fed docker build` builds only Docker images. For Docker builds, images are tagged with the git short hash by default.
+
+```bash
+fed build                          # Build all (shell + Docker)
+fed build --tag v1.0.0             # Custom tag
+fed build --build-arg KEY=VALUE    # Extra build args
+fed docker build                   # Build Docker images only
+fed docker build --tag v1.0.0      # Custom tag
+fed docker build --json            # Machine-readable output
+fed docker push                    # Push images to registry
+fed docker push --tag v1.0.0       # Push specific tag
+```
+
 ### Sessions
 
 For cases where you want explicit named isolation rather than relying on directory scoping:
@@ -347,6 +373,8 @@ fed ports randomize          # Randomize ports (standalone)
 fed ports reset              # Clear allocations
 fed run <script> [-- args]   # Run a script
 fed install / build / clean  # Lifecycle hooks
+fed docker build [--json]    # Build Docker images
+fed docker push              # Push images to registry
 fed doctor                   # Check system requirements
 fed init                     # Create starter config
 ```

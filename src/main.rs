@@ -44,8 +44,11 @@ async fn run() -> anyhow::Result<()> {
 
     // Check if help is requested - we'll add scripts after standard help
     let args: Vec<String> = std::env::args().collect();
-    let wants_help =
-        args.iter().any(|a| a == "--help" || a == "-h") || (args.len() == 2 && args[1] == "help");
+    // Only intercept top-level help (e.g., `fed --help`, `fed -h`, `fed help`).
+    // Subcommand help like `fed docker build --help` is handled by clap.
+    let wants_help = (args.len() == 2
+        && (args[1] == "--help" || args[1] == "-h" || args[1] == "help"))
+        || (args.len() == 1 && false); // just `fed` with no args — handled by clap
 
     if wants_help {
         // Print standard help first
@@ -112,6 +115,55 @@ async fn run() -> anyhow::Result<()> {
         }
         Commands::Ports(ref ports_cmd) => {
             return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone()).await;
+        }
+        Commands::Docker(docker_cmd) => {
+            let parser = ConfigParser::new();
+            let config_path = if let Some(path) = cli.config.clone() {
+                path
+            } else {
+                parser.find_config_file()?
+            };
+            let config = parser.load_config(&config_path)?;
+            let work_dir = if let Some(workdir) = cli.workdir {
+                workdir
+            } else {
+                if let Some(parent) = config_path.parent() {
+                    if parent.as_os_str().is_empty() {
+                        std::env::current_dir()?
+                    } else {
+                        parent.to_path_buf()
+                    }
+                } else {
+                    std::env::current_dir()?
+                }
+            };
+            match docker_cmd {
+                cli::DockerCommands::Build {
+                    services,
+                    tag,
+                    build_args,
+                    json,
+                } => {
+                    return commands::run_docker_build(
+                        &config,
+                        &work_dir,
+                        services.clone(),
+                        tag.clone(),
+                        build_args.clone(),
+                        *json,
+                    )
+                    .await;
+                }
+                cli::DockerCommands::Push { services, tag } => {
+                    return commands::run_docker_push(
+                        &config,
+                        &work_dir,
+                        services.clone(),
+                        tag.clone(),
+                    )
+                    .await;
+                }
+            }
         }
         Commands::Debug(debug_cmd) => {
             // Debug commands only need config and work_dir
@@ -401,8 +453,13 @@ async fn run() -> anyhow::Result<()> {
         Commands::Clean { services } => {
             commands::run_clean(&orchestrator, &config, services).await?;
         }
-        Commands::Build { services } => {
-            commands::run_build(&orchestrator, &config, services).await?;
+        Commands::Build {
+            services,
+            tag,
+            build_args,
+            json,
+        } => {
+            commands::run_build(&orchestrator, &config, services, tag, build_args, json).await?;
         }
         Commands::Top { interval } => {
             commands::run_top(&orchestrator, interval).await?;
@@ -415,7 +472,8 @@ async fn run() -> anyhow::Result<()> {
         | Commands::Validate
         | Commands::Completions { .. }
         | Commands::Doctor
-        | Commands::Debug(_) => {
+        | Commands::Debug(_)
+        | Commands::Docker(_) => {
             unreachable!("These commands should have been handled earlier");
         }
     }

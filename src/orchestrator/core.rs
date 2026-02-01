@@ -847,10 +847,15 @@ impl Orchestrator {
     }
 
     /// Run build command for a service.
-    pub async fn run_build(&self, service_name: &str) -> Result<()> {
+    pub async fn run_build(
+        &self,
+        service_name: &str,
+        tag: Option<&str>,
+        cli_build_args: &[String],
+    ) -> Result<Option<crate::config::DockerBuildResult>> {
         let lifecycle =
             crate::orchestrator::ServiceLifecycleCommands::new(&self.config, &self.work_dir);
-        lifecycle.run_build(service_name).await
+        lifecycle.run_build(service_name, tag, cli_build_args).await
     }
 
     /// Start a specific service and its dependencies.

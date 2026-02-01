@@ -7,6 +7,41 @@ use super::{CircuitBreakerConfig, DependsOn, HealthCheck, ResourceLimits, Restar
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Build configuration — either a shell command or a Docker image build.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BuildConfig {
+    /// Shell command (existing behavior): `build: "npm run build"`
+    Command(String),
+    /// Docker image build: `build: { image: "my-image", ... }`
+    DockerBuild(DockerBuildConfig),
+}
+
+/// Docker image build configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerBuildConfig {
+    /// Target image name (required)
+    pub image: String,
+    /// Path to Dockerfile relative to cwd (default: "Dockerfile")
+    #[serde(default = "default_dockerfile")]
+    pub dockerfile: String,
+    /// Build arguments passed as --build-arg
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub args: HashMap<String, String>,
+}
+
+fn default_dockerfile() -> String {
+    "Dockerfile".to_string()
+}
+
+/// Result of a Docker image build, used for --json output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerBuildResult {
+    pub service: String,
+    pub image: String,
+    pub tag: String,
+}
+
 /// Service configuration for a single service in the federation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Service {
@@ -26,9 +61,9 @@ pub struct Service {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clean: Option<String>,
 
-    /// Command to build the service (e.g., "npm run build", "cargo build --release")
+    /// Command to build the service (e.g., "npm run build") or Docker image build config.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub build: Option<String>,
+    pub build: Option<BuildConfig>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process: Option<String>,
@@ -183,5 +218,119 @@ fn parse_duration_string(s: &str) -> Option<std::time::Duration> {
     } else {
         // Default to seconds if no suffix
         s.parse::<u64>().ok().map(Duration::from_secs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_config_deserialize_command_string() {
+        let yaml = r#"build: "npm run build""#;
+        #[derive(Deserialize)]
+        struct Wrapper {
+            build: BuildConfig,
+        }
+        let w: Wrapper = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(w.build, BuildConfig::Command(ref s) if s == "npm run build"));
+    }
+
+    #[test]
+    fn test_build_config_deserialize_docker_build_minimal() {
+        let yaml = r#"
+build:
+  image: my-app
+"#;
+        #[derive(Deserialize)]
+        struct Wrapper {
+            build: BuildConfig,
+        }
+        let w: Wrapper = serde_yaml::from_str(yaml).unwrap();
+        match w.build {
+            BuildConfig::DockerBuild(ref cfg) => {
+                assert_eq!(cfg.image, "my-app");
+                assert_eq!(cfg.dockerfile, "Dockerfile");
+                assert!(cfg.args.is_empty());
+            }
+            _ => panic!("Expected DockerBuild variant"),
+        }
+    }
+
+    #[test]
+    fn test_build_config_deserialize_docker_build_full() {
+        let yaml = r#"
+build:
+  image: my-app
+  dockerfile: Dockerfile.prod
+  args:
+    NODE_ENV: production
+    VERSION: "1.0"
+"#;
+        #[derive(Deserialize)]
+        struct Wrapper {
+            build: BuildConfig,
+        }
+        let w: Wrapper = serde_yaml::from_str(yaml).unwrap();
+        match w.build {
+            BuildConfig::DockerBuild(ref cfg) => {
+                assert_eq!(cfg.image, "my-app");
+                assert_eq!(cfg.dockerfile, "Dockerfile.prod");
+                assert_eq!(cfg.args.get("NODE_ENV").unwrap(), "production");
+                assert_eq!(cfg.args.get("VERSION").unwrap(), "1.0");
+            }
+            _ => panic!("Expected DockerBuild variant"),
+        }
+    }
+
+    #[test]
+    fn test_service_with_docker_build() {
+        let yaml = r#"
+cwd: ./apps/web
+build:
+  image: my-web-app
+  dockerfile: Dockerfile.dev
+environment:
+  NODE_ENV: development
+"#;
+        let svc: Service = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(svc.cwd.as_deref(), Some("./apps/web"));
+        assert!(svc.build.is_some());
+        match svc.build.as_ref().unwrap() {
+            BuildConfig::DockerBuild(cfg) => {
+                assert_eq!(cfg.image, "my-web-app");
+                assert_eq!(cfg.dockerfile, "Dockerfile.dev");
+            }
+            _ => panic!("Expected DockerBuild variant"),
+        }
+    }
+
+    #[test]
+    fn test_build_config_serialize_roundtrip_command() {
+        let config = BuildConfig::Command("cargo build".to_string());
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: BuildConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert!(matches!(deserialized, BuildConfig::Command(ref s) if s == "cargo build"));
+    }
+
+    #[test]
+    fn test_build_config_serialize_roundtrip_docker() {
+        let mut args = HashMap::new();
+        args.insert("KEY".to_string(), "value".to_string());
+        let config = BuildConfig::DockerBuild(DockerBuildConfig {
+            image: "test-image".to_string(),
+            dockerfile: "Dockerfile.test".to_string(),
+            args,
+        });
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: BuildConfig = serde_yaml::from_str(&yaml).unwrap();
+        match deserialized {
+            BuildConfig::DockerBuild(cfg) => {
+                assert_eq!(cfg.image, "test-image");
+                assert_eq!(cfg.dockerfile, "Dockerfile.test");
+                assert_eq!(cfg.args.get("KEY").unwrap(), "value");
+            }
+            _ => panic!("Expected DockerBuild variant"),
+        }
     }
 }

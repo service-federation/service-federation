@@ -184,34 +184,42 @@ impl<'a> ServiceLifecycleCommands<'a> {
 
     /// Run build command for a service.
     ///
-    /// This runs the user-defined build command for the service. Build commands
-    /// are typically used for compiling code, bundling assets, or other build steps.
+    /// Handles two build types:
+    /// - `BuildConfig::Command` — runs a shell command (existing behavior)
+    /// - `BuildConfig::DockerBuild` — builds a Docker image with `docker build`
     ///
-    /// Unlike install, build does not track whether the service has been built before,
-    /// so it will always run the build command.
+    /// For Docker builds, images are tagged with the git short hash by default,
+    /// or with an explicit `--tag` value. CLI build args are appended as `--build-arg`.
     ///
     /// # Arguments
     ///
     /// * `service_name` - Name of the service to build
+    /// * `tag` - Optional Docker image tag (overrides git hash default)
+    /// * `cli_build_args` - Additional `--build-arg` values from the CLI
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - Service not found in configuration
-    /// - Service has no build command defined
-    /// - Build command execution fails
-    /// - Build command returns non-zero exit code
-    pub async fn run_build(&self, service_name: &str) -> Result<()> {
-        // Get service config
+    /// - Service has no build config defined
+    /// - Build command or docker build execution fails
+    /// - Build returns non-zero exit code
+    pub async fn run_build(
+        &self,
+        service_name: &str,
+        tag: Option<&str>,
+        cli_build_args: &[String],
+    ) -> Result<Option<crate::config::DockerBuildResult>> {
+        use crate::config::BuildConfig;
+
         let service_config = self
             .config
             .services
             .get(service_name)
             .ok_or_else(|| Error::ServiceNotFound(service_name.to_string()))?;
 
-        // Check if service has build command
-        let build_cmd = match &service_config.build {
-            Some(cmd) => cmd,
+        let build_config = match &service_config.build {
+            Some(config) => config,
             None => {
                 return Err(Error::Config(format!(
                     "Service '{}' has no build command defined",
@@ -220,14 +228,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
             }
         };
 
-        // Run build command
-        tracing::info!(
-            "Running build command for service '{}': {}",
-            service_name,
-            build_cmd
-        );
-
-        // Get working directory from service config, relative to orchestrator work_dir
+        // Get working directory
         let cwd = if let Some(ref service_cwd) = service_config.cwd {
             let cwd_path = std::path::Path::new(service_cwd);
             if cwd_path.is_absolute() {
@@ -245,36 +246,128 @@ impl<'a> ServiceLifecycleCommands<'a> {
             env_vars.insert(key.clone(), value.clone());
         }
 
-        // Run the build command with streaming output
-        let status = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(build_cmd)
-            .current_dir(cwd)
-            .envs(&env_vars)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()
-            .await
-            .map_err(|e| {
-                Error::Config(format!(
-                    "Failed to execute build command for '{}': {}",
-                    service_name, e
-                ))
-            })?;
+        match build_config {
+            BuildConfig::Command(cmd) => {
+                tracing::info!(
+                    "Running build command for service '{}': {}",
+                    service_name,
+                    cmd
+                );
 
-        if !status.success() {
-            return Err(Error::Config(format!(
-                "Build command failed for '{}'",
-                service_name
-            )));
+                let status = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(cmd)
+                    .current_dir(&cwd)
+                    .envs(&env_vars)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .status()
+                    .await
+                    .map_err(|e| {
+                        Error::Config(format!(
+                            "Failed to execute build command for '{}': {}",
+                            service_name, e
+                        ))
+                    })?;
+
+                if !status.success() {
+                    return Err(Error::Config(format!(
+                        "Build command failed for '{}'",
+                        service_name
+                    )));
+                }
+            }
+            BuildConfig::DockerBuild(docker_config) => {
+                // Resolve tag: CLI flag > git short hash
+                let resolved_tag = if let Some(t) = tag {
+                    t.to_string()
+                } else {
+                    // Get git short hash
+                    let output = tokio::process::Command::new("git")
+                        .args(["rev-parse", "--short", "HEAD"])
+                        .current_dir(&cwd)
+                        .output()
+                        .await
+                        .map_err(|e| {
+                            Error::Config(format!(
+                                "Failed to get git hash for Docker tag: {}. Use --tag to specify a tag manually.",
+                                e
+                            ))
+                        })?;
+
+                    if !output.status.success() {
+                        return Err(Error::Config(
+                            "Failed to get git hash for Docker tag. Use --tag to specify a tag manually.".to_string()
+                        ));
+                    }
+
+                    String::from_utf8_lossy(&output.stdout).trim().to_string()
+                };
+
+                let full_image = format!("{}:{}", docker_config.image, resolved_tag);
+
+                tracing::info!(
+                    "Building Docker image for service '{}': {}",
+                    service_name,
+                    full_image
+                );
+
+                let mut cmd = tokio::process::Command::new("docker");
+                cmd.args(["build", "-t", &full_image, "-f", &docker_config.dockerfile]);
+
+                // Add build args from config
+                for (key, value) in &docker_config.args {
+                    cmd.arg("--build-arg");
+                    cmd.arg(format!("{}={}", key, value));
+                }
+
+                // Add build args from CLI
+                for arg in cli_build_args {
+                    cmd.arg("--build-arg");
+                    cmd.arg(arg);
+                }
+
+                // Context is the cwd
+                cmd.arg(".");
+
+                cmd.current_dir(&cwd)
+                    .envs(&env_vars)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit());
+
+                let status = cmd.status().await.map_err(|e| {
+                    Error::Config(format!(
+                        "Failed to execute docker build for '{}': {}",
+                        service_name, e
+                    ))
+                })?;
+
+                if !status.success() {
+                    return Err(Error::Config(format!(
+                        "Docker build failed for '{}'",
+                        service_name
+                    )));
+                }
+
+                tracing::info!(
+                    "Successfully completed build for service '{}'",
+                    service_name
+                );
+                return Ok(Some(crate::config::DockerBuildResult {
+                    service: service_name.to_string(),
+                    image: docker_config.image.clone(),
+                    tag: resolved_tag,
+                }));
+            }
         }
 
         tracing::info!(
             "Successfully completed build for service '{}'",
             service_name
         );
-        Ok(())
+        Ok(None)
     }
 
     /// Run clean command for a service.

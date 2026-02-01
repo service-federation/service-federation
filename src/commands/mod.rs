@@ -1,6 +1,7 @@
 mod build;
 mod clean;
 mod debug;
+mod docker;
 mod doctor;
 mod init;
 mod install;
@@ -20,6 +21,7 @@ mod validate;
 pub use build::run_build;
 pub use clean::run_clean;
 pub use debug::{run_debug, DebugCommand};
+pub use docker::{run_docker_build, run_docker_push};
 pub use doctor::run_doctor;
 pub use init::run_init;
 pub use install::run_install;
