@@ -294,6 +294,69 @@ impl Orchestrator {
         self
     }
 
+    /// Detect Docker containers for this project that aren't tracked in state DB.
+    ///
+    /// Returns a list of container names that match this project's naming pattern
+    /// (fed-{work_dir_hash}-*) but aren't found in the state tracker.
+    ///
+    /// This is a conservative detection - we don't auto-remove, just warn.
+    async fn detect_untracked_containers(&self) -> Result<Vec<String>> {
+        use crate::service::{hash_work_dir, sanitize_container_name_component};
+        use std::collections::HashSet;
+
+        let work_dir_hash = hash_work_dir(&self.work_dir);
+        let prefix = format!("fed-{}-", work_dir_hash);
+
+        // List all containers matching our project prefix
+        let output = tokio::process::Command::new("docker")
+            .args([
+                "ps",
+                "-a",
+                "--filter",
+                &format!("name=^{}", prefix),
+                "--format",
+                "{{.Names}}",
+            ])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            return Err(Error::Config("Failed to list Docker containers".to_string()));
+        }
+
+        let all_containers: HashSet<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if all_containers.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Get tracked services from state DB
+        let state = self.state_tracker.read().await;
+        let tracked_services = state.get_services().await;
+
+        // Build set of expected container names for tracked Docker services
+        let tracked_containers: HashSet<String> = tracked_services
+            .iter()
+            .filter(|(_, svc)| svc.service_type == "docker")
+            .map(|(name, _)| {
+                let sanitized = sanitize_container_name_component(name);
+                format!("{}{}", prefix, sanitized)
+            })
+            .collect();
+
+        // Find containers that exist but aren't tracked
+        let orphans: Vec<String> = all_containers
+            .difference(&tracked_containers)
+            .cloned()
+            .collect();
+
+        Ok(orphans)
+    }
+
     /// Collect ports owned by running managed services.
     ///
     /// Safe to call after `state_tracker.initialize()` because dead services are
@@ -452,6 +515,26 @@ impl Orchestrator {
             Err(e) => {
                 tracing::warn!("Failed to cleanup orphaned containers: {}", e);
                 // Continue initialization even if cleanup fails
+            }
+        }
+
+        // Detect containers for this project that aren't tracked in state DB
+        // (Conservative approach: warn but don't auto-remove)
+        match self.detect_untracked_containers().await {
+            Ok(orphans) if !orphans.is_empty() => {
+                for container in &orphans {
+                    tracing::warn!(
+                        "Found container '{}' for this project that isn't tracked in state. \
+                        This may indicate a previous stop operation failed. \
+                        Run 'fed stop' or 'fed clean' to remove it.",
+                        container
+                    );
+                }
+            }
+            Ok(_) => {} // No untracked containers
+            Err(e) => {
+                tracing::debug!("Failed to detect untracked containers: {}", e);
+                // Continue initialization even if detection fails
             }
         }
 
