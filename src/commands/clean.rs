@@ -6,6 +6,21 @@ pub async fn run_clean(
     services: Vec<String>,
 ) -> anyhow::Result<()> {
     let cleaning_all = services.is_empty();
+
+    // When cleaning all, first remove any orphaned containers
+    // (from failed starts, etc.) so volumes can be freed
+    if cleaning_all {
+        match orchestrator.remove_orphaned_containers().await {
+            Ok(count) if count > 0 => {
+                println!("Removed {} orphaned container(s)", count);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Warning: Failed to clean orphaned containers: {}", e);
+            }
+        }
+    }
+
     let services_to_clean = if cleaning_all {
         // Include services that have either a clean command or Docker volumes
         config

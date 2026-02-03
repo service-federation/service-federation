@@ -1,4 +1,4 @@
-use service_federation::{config::Config, state::StateTracker, Orchestrator};
+use service_federation::{config::Config, service::hash_work_dir, state::StateTracker, Orchestrator};
 use std::path::Path;
 
 pub async fn run_stop(
@@ -9,6 +9,18 @@ pub async fn run_stop(
     if services.is_empty() {
         println!("Stopping all services...");
         orchestrator.stop_all().await?;
+
+        // Also remove any orphaned containers (from failed starts, etc.)
+        match orchestrator.remove_orphaned_containers().await {
+            Ok(count) if count > 0 => {
+                println!("Removed {} orphaned container(s)", count);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Warning: Failed to clean orphaned containers: {}", e);
+            }
+        }
+
         orchestrator.cleanup().await;
     } else {
         // Expand tag references (e.g., @backend) into service names
@@ -113,6 +125,51 @@ pub async fn run_stop_from_state(work_dir: &Path, services: Vec<String>) -> anyh
 
     // Clear all stopped services from state
     tracker.clear().await?;
+
+    // Also remove any orphaned containers not in state DB
+    let work_dir_hash = hash_work_dir(work_dir);
+    let prefix = format!("fed-{}-", work_dir_hash);
+
+    let output = tokio::process::Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("name=^{}", prefix),
+            "--format",
+            "{{.Names}}",
+        ])
+        .output()
+        .await;
+
+    if let Ok(output) = output {
+        if output.status.success() {
+            let containers: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let mut removed = 0;
+            for container in containers {
+                let rm_output = tokio::process::Command::new("docker")
+                    .args(["rm", "-f", &container])
+                    .output()
+                    .await;
+
+                if let Ok(out) = rm_output {
+                    if out.status.success() {
+                        removed += 1;
+                    }
+                }
+            }
+
+            if removed > 0 {
+                println!("Removed {} orphaned container(s)", removed);
+            }
+        }
+    }
+
     println!("Services stopped");
 
     Ok(())

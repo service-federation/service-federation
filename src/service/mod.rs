@@ -32,7 +32,7 @@ mod types;
 pub use compose::*;
 pub(crate) use docker::docker_container_name;
 pub(crate) use docker::fnv1a_32;
-pub(crate) use docker::hash_work_dir;
+pub use docker::hash_work_dir;
 pub(crate) use docker::sanitize_container_name_component;
 pub use docker::*;
 pub use external::*;

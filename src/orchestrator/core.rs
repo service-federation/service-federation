@@ -1378,6 +1378,42 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Remove orphaned containers for this project.
+    ///
+    /// Finds containers matching `fed-{work_dir_hash}-*` that aren't tracked
+    /// in the state database and removes them with `docker rm -f`.
+    ///
+    /// Returns the number of containers removed.
+    pub async fn remove_orphaned_containers(&self) -> Result<usize> {
+        let orphans = self.detect_untracked_containers().await?;
+
+        if orphans.is_empty() {
+            return Ok(0);
+        }
+
+        let mut removed = 0;
+        for container in &orphans {
+            tracing::info!("Removing orphaned container: {}", container);
+            let output = tokio::process::Command::new("docker")
+                .args(["rm", "-f", container])
+                .output()
+                .await
+                .map_err(|e| Error::Config(format!("Failed to remove container: {}", e)))?;
+
+            if output.status.success() {
+                removed += 1;
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // Ignore "No such container" - already gone
+                if !stderr.contains("No such container") {
+                    tracing::warn!("Failed to remove orphaned container '{}': {}", container, stderr.trim());
+                }
+            }
+        }
+
+        Ok(removed)
+    }
+
     /// Restart all services in dependency-aware order.
     ///
     /// Stops all services first (in reverse dependency order), then starts

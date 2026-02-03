@@ -88,7 +88,7 @@ pub(crate) fn sanitize_container_name_component(input: &str) -> String {
 ///
 /// The path is canonicalized first so that `./project` and `/abs/path/project`
 /// produce the same container name.
-pub(crate) fn hash_work_dir(work_dir: &Path) -> String {
+pub fn hash_work_dir(work_dir: &Path) -> String {
     let canonical = std::fs::canonicalize(work_dir).unwrap_or_else(|_| work_dir.to_path_buf());
     let bytes = canonical.as_os_str().as_encoded_bytes();
     let hash = fnv1a_32(bytes);
