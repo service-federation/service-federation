@@ -759,6 +759,7 @@ impl ServiceManager for DockerService {
 
         let container_id = self.container_id.read().clone();
         if let Some(ref id) = container_id {
+            // Stop the container
             let output = tokio::process::Command::new("docker")
                 .args(["stop", id])
                 .output()
@@ -779,30 +780,60 @@ impl ServiceManager for DockerService {
                 )));
             }
 
-            // Remove the container after stopping (since we don't use --rm flag)
-            let rm_output = tokio::process::Command::new("docker")
-                .args(["rm", id])
-                .output()
-                .await
-                .map_err(|e| {
+            // Remove the container with retry logic (since we don't use --rm flag)
+            // Use -f flag to force removal even if container is still busy
+            const MAX_RETRIES: u32 = 3;
+            let mut last_error = String::new();
+
+            for attempt in 1..=MAX_RETRIES {
+                let rm_output = tokio::process::Command::new("docker")
+                    .args(["rm", "-f", id])
+                    .output()
+                    .await
+                    .map_err(|e| {
+                        Error::Config(format!("Failed to execute docker rm command: {}", e))
+                    })?;
+
+                if rm_output.status.success() {
+                    // Successfully removed
+                    break;
+                }
+
+                let error = String::from_utf8_lossy(&rm_output.stderr);
+
+                // Ignore "No such container" errors - container already gone
+                if error.contains("No such container") {
+                    break;
+                }
+
+                last_error = error.to_string();
+
+                if attempt < MAX_RETRIES {
+                    // Wait before retry with exponential backoff
+                    let delay_ms = 100 * attempt as u64;
+                    tracing::warn!(
+                        "Failed to remove container {} (attempt {}/{}): {}. Retrying in {}ms...",
+                        id,
+                        attempt,
+                        MAX_RETRIES,
+                        error.trim(),
+                        delay_ms
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                } else {
+                    // All retries exhausted - this is a real failure
                     let mut base = self.base.write();
                     base.set_status(Status::Failing);
-                    Error::Config(format!("Failed to execute docker rm command: {}", e))
-                })?;
-
-            if !rm_output.status.success() {
-                // Log warning but don't fail - container might have been auto-removed
-                let error = String::from_utf8_lossy(&rm_output.stderr);
-                tracing::warn!("Failed to remove container {}: {}", id, error);
-                // IMPORTANT: Don't clear container_id if rm failed - this prevents orphaned containers
-                // The container still exists and should be tracked for cleanup
-                let mut base = self.base.write();
-                base.set_status(Status::Stopped);
-                return Ok(());
+                    return Err(Error::Config(format!(
+                        "Failed to remove container {} after {} attempts: {}. \
+                        Container may be orphaned. Run 'fed stop' or 'fed clean' to retry.",
+                        id, MAX_RETRIES, last_error.trim()
+                    )));
+                }
             }
         }
 
-        // Only clear container ID after both stop AND remove succeed
+        // Only clear container ID and mark as stopped after both stop AND remove succeed
         *self.container_id.write() = None;
 
         {
