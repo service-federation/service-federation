@@ -46,9 +46,11 @@ async fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // Only intercept top-level help (e.g., `fed --help`, `fed -h`, `fed help`).
     // Subcommand help like `fed docker build --help` is handled by clap.
-    let wants_help = (args.len() == 2
-        && (args[1] == "--help" || args[1] == "-h" || args[1] == "help"))
-        || (args.len() == 1 && false); // just `fed` with no args — handled by clap
+    let wants_help = if args.len() == 2 {
+        args[1] == "--help" || args[1] == "-h" || args[1] == "help"
+    } else {
+        false
+    };
 
     if wants_help {
         // Print standard help first
