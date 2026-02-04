@@ -21,6 +21,12 @@ pub async fn run_stop(
             }
         }
 
+        // Also remove any orphaned processes (from crashed services, etc.)
+        let process_count = orchestrator.remove_orphaned_processes().await;
+        if process_count > 0 {
+            println!("Killed {} orphaned process(es)", process_count);
+        }
+
         orchestrator.cleanup().await;
     } else {
         // Expand tag references (e.g., @backend) into service names

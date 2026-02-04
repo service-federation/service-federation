@@ -363,6 +363,88 @@ impl Orchestrator {
         Ok(orphans)
     }
 
+    /// Detect orphaned processes - PIDs in state that are still running
+    /// but the service is marked as stopped/stale.
+    ///
+    /// Returns a list of (service_name, pid) tuples for orphaned processes.
+    async fn detect_orphan_processes(&self) -> Vec<(String, u32)> {
+        let state = self.state_tracker.read().await;
+        let services = state.get_services().await;
+        let mut orphans = Vec::new();
+
+        for (name, svc) in services {
+            // Only check services with PIDs that are marked as stopped/stale
+            if let Some(pid) = svc.pid {
+                let is_stopped = matches!(
+                    svc.status.as_str(),
+                    "stopped" | "stale" | "failing" | "unknown"
+                );
+
+                if is_stopped && Self::is_pid_alive(pid) {
+                    orphans.push((name, pid));
+                }
+            }
+        }
+
+        orphans
+    }
+
+    /// Remove orphaned processes for this project.
+    ///
+    /// Finds processes with PIDs in state DB that are still running
+    /// but the service is marked as stopped. Kills them with SIGKILL.
+    ///
+    /// Returns the number of processes killed.
+    pub async fn remove_orphaned_processes(&self) -> usize {
+        let orphans = self.detect_orphan_processes().await;
+
+        if orphans.is_empty() {
+            return 0;
+        }
+
+        let mut killed = 0;
+        for (name, pid) in &orphans {
+            tracing::info!("Killing orphaned process: {} (PID {})", name, pid);
+
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{self, Signal};
+                use nix::unistd::Pid;
+
+                let nix_pid = Pid::from_raw(*pid as i32);
+
+                // Try SIGTERM first
+                if signal::kill(nix_pid, Signal::SIGTERM).is_ok() {
+                    // Wait briefly for graceful shutdown
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                    // If still alive, SIGKILL
+                    if signal::kill(nix_pid, None).is_ok() {
+                        let _ = signal::kill(nix_pid, Signal::SIGKILL);
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    killed += 1;
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                tracing::warn!("Cannot kill orphaned process on non-Unix platform");
+            }
+        }
+
+        // Clear the PIDs from state
+        if killed > 0 {
+            let mut state = self.state_tracker.write().await;
+            for (name, _) in &orphans {
+                let _ = state.unregister_service(name).await;
+            }
+            let _ = state.save().await;
+        }
+
+        killed
+    }
+
     /// Collect ports owned by running managed services.
     ///
     /// Safe to call after `state_tracker.initialize()` because dead services are
