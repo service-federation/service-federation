@@ -124,6 +124,8 @@ pub struct Resolver {
     environment: crate::config::Environment,
     /// When true, port conflicts are auto-resolved using alternative ports (no interactive prompt)
     auto_resolve_conflicts: bool,
+    /// When true, kill blocking processes/containers and use original ports (for --replace flag)
+    replace_mode: bool,
     /// Working directory for resolving relative paths (e.g., .env files)
     work_dir: Option<PathBuf>,
     /// When true, skip session port cache and always allocate fresh ports (for test isolation)
@@ -146,6 +148,7 @@ impl Resolver {
             port_parameter_names: Vec::new(),
             environment: crate::config::Environment::default(),
             auto_resolve_conflicts: false,
+            replace_mode: false,
             work_dir: None,
             isolated_mode: false,
             port_resolutions: Vec::new(),
@@ -162,6 +165,7 @@ impl Resolver {
             port_parameter_names: Vec::new(),
             environment,
             auto_resolve_conflicts: false,
+            replace_mode: false,
             work_dir: None,
             isolated_mode: false,
             port_resolutions: Vec::new(),
@@ -179,6 +183,12 @@ impl Resolver {
     /// Enable auto-resolve mode for port conflicts (use in TUI mode to avoid interactive prompts)
     pub fn set_auto_resolve_conflicts(&mut self, auto_resolve: bool) {
         self.auto_resolve_conflicts = auto_resolve;
+    }
+
+    /// Enable replace mode - kill blocking processes/containers and use original ports.
+    /// Use this for `--replace` flag behavior.
+    pub fn set_replace_mode(&mut self, replace: bool) {
+        self.replace_mode = replace;
     }
 
     /// Register ports owned by already-running managed services.
@@ -891,8 +901,44 @@ impl Resolver {
             return Ok((port, None));
         };
 
-        // Allocate alternative port
+        // Allocate alternative port (we may need it as fallback)
         let alternative_port = self.port_allocator.allocate_random_port()?;
+
+        // In replace mode (--replace flag), kill blocking processes and use original port
+        if self.replace_mode {
+            match conflict.free_port() {
+                Ok(msg) => {
+                    tracing::info!(
+                        "Port {} ({}) was in use, freed it: {}",
+                        port,
+                        param_name,
+                        msg
+                    );
+                    // Try to allocate the original port now that it's free
+                    match self.port_allocator.try_allocate_port(port) {
+                        Ok(_) => return Ok((port, None)),
+                        Err(_) => {
+                            // Something else grabbed it, fall through to alternative
+                            tracing::warn!(
+                                "Port {} freed but couldn't allocate, using {}",
+                                port,
+                                alternative_port
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to free port {} ({}): {}, using {}",
+                        port,
+                        param_name,
+                        e,
+                        alternative_port
+                    );
+                }
+            }
+            return Ok((alternative_port, Some(conflict)));
+        }
 
         // In auto-resolve mode (e.g., TUI), skip interactive prompt and use alternative port
         if self.auto_resolve_conflicts {

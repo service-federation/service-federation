@@ -330,15 +330,9 @@ async fn run() -> anyhow::Result<()> {
         orchestrator.set_randomize_ports(true);
     }
 
-    // --replace should auto-resolve port conflicts during initialization
-    // (the actual process killing happens later in run_start)
-    //
-    // Known limitation: when combined with --randomize, there is a theoretical
-    // TOCTOU window between port allocation and process killing — another process
-    // could grab the newly allocated port before --replace kills the old occupant.
-    // In practice this is unlikely since randomized ports are ephemeral-range.
+    // --replace kills blocking processes/containers and uses original ports
     if matches!(&cli.command, Commands::Start { replace: true, .. }) {
-        orchestrator.set_auto_resolve_conflicts(true);
+        orchestrator.set_replace_mode(true);
     }
 
     // For script commands, check if the script has isolated: true

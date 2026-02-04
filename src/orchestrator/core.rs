@@ -277,6 +277,12 @@ impl Orchestrator {
         self.resolver.set_auto_resolve_conflicts(auto_resolve);
     }
 
+    /// Enable replace mode - kill blocking processes/containers and use original ports.
+    /// Use this for `--replace` flag behavior.
+    pub fn set_replace_mode(&mut self, replace: bool) {
+        self.resolver.set_replace_mode(replace);
+    }
+
     /// Enable randomized port allocation.
     ///
     /// Skips the session port cache and allocates fresh random ports for all
