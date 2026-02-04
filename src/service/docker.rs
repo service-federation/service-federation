@@ -154,6 +154,32 @@ impl DockerService {
         base.set_status(Status::Running);
     }
 
+    /// Parse Docker error message for port conflict and extract port number.
+    ///
+    /// Looks for patterns like:
+    /// - "Bind for 0.0.0.0:5433 failed: port is already allocated"
+    /// - "Bind for [::]:6379 failed: port is already allocated"
+    fn parse_port_conflict(error: &str) -> Option<u16> {
+        // Look for "Bind for X:PORT failed" pattern
+        if !error.contains("port is already allocated") {
+            return None;
+        }
+
+        // Find "Bind for " and extract the address:port part up to " failed"
+        let bind_idx = error.find("Bind for ")?;
+        let after_bind = &error[bind_idx + 9..]; // Skip "Bind for "
+
+        // Find " failed" to know where the address:port ends
+        let failed_idx = after_bind.find(" failed")?;
+        let addr_port = &after_bind[..failed_idx]; // e.g., "0.0.0.0:5433" or "[::]:6379"
+
+        // Find the last colon in just the address:port part
+        let colon_idx = addr_port.rfind(':')?;
+        let port_str = &addr_port[colon_idx + 1..];
+
+        port_str.parse().ok()
+    }
+
     /// Scope a volume specification with a session ID.
     ///
     /// Transforms named volumes to include the session prefix for isolation:
@@ -731,9 +757,27 @@ impl ServiceManager for DockerService {
         };
 
         if !output.status.success() {
-            let mut base = self.base.write();
-            base.set_status(Status::Failing);
+            {
+                let mut base = self.base.write();
+                base.set_status(Status::Failing);
+            } // Drop lock before await
+
             let error = String::from_utf8_lossy(&output.stderr);
+
+            // Clean up the orphaned container that Docker created but couldn't start
+            let _ = tokio::process::Command::new("docker")
+                .args(["rm", "-f", &container_name])
+                .output()
+                .await;
+
+            // Parse port conflict errors for better messaging
+            if let Some(port) = Self::parse_port_conflict(&error) {
+                return Err(Error::DockerPortConflict {
+                    service: service_name,
+                    port,
+                });
+            }
+
             return Err(Error::ServiceStartFailed(service_name, error.to_string()));
         }
 
@@ -1629,5 +1673,29 @@ mod tests {
         let name_a = docker_container_name("svc", Some("sess1"), Path::new("/projects/alpha"));
         let name_b = docker_container_name("svc", Some("sess1"), Path::new("/projects/beta"));
         assert_eq!(name_a, name_b, "Session should override work_dir scoping");
+    }
+
+    // ========================================================================
+    // Port Conflict Parsing Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_port_conflict_ipv4() {
+        let error = "docker: Error response from daemon: failed to set up container networking: \
+            driver failed programming external connectivity on endpoint fed-abc-postgres \
+            (12345): Bind for 0.0.0.0:5433 failed: port is already allocated";
+        assert_eq!(DockerService::parse_port_conflict(error), Some(5433));
+    }
+
+    #[test]
+    fn test_parse_port_conflict_ipv6() {
+        let error = "docker: Error response from daemon: Bind for [::]:6379 failed: port is already allocated";
+        assert_eq!(DockerService::parse_port_conflict(error), Some(6379));
+    }
+
+    #[test]
+    fn test_parse_port_conflict_not_port_error() {
+        let error = "docker: Error response from daemon: image not found";
+        assert_eq!(DockerService::parse_port_conflict(error), None);
     }
 }

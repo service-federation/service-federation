@@ -95,6 +95,13 @@ pub enum Error {
         process_name: Option<String>,
     },
 
+    #[error("{service} – port {port} already allocated")]
+    #[diagnostic(
+        code(fed::docker::port_conflict),
+        help("To stop existing processes and containers run:\n\n    fed start --replace")
+    )]
+    DockerPortConflict { service: String, port: u16 },
+
     #[error("Operation aborted by user")]
     Aborted,
 
