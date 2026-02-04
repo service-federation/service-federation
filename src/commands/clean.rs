@@ -7,8 +7,8 @@ pub async fn run_clean(
 ) -> anyhow::Result<()> {
     let cleaning_all = services.is_empty();
 
-    // When cleaning all, first remove any orphaned containers
-    // (from failed starts, etc.) so volumes can be freed
+    // When cleaning all, first remove any orphaned containers and processes
+    // (from failed starts, crashes, etc.) so volumes/ports can be freed
     if cleaning_all {
         match orchestrator.remove_orphaned_containers().await {
             Ok(count) if count > 0 => {
@@ -18,6 +18,11 @@ pub async fn run_clean(
             Err(e) => {
                 eprintln!("Warning: Failed to clean orphaned containers: {}", e);
             }
+        }
+
+        let process_count = orchestrator.remove_orphaned_processes().await;
+        if process_count > 0 {
+            println!("Killed {} orphaned process(es)", process_count);
         }
     }
 
