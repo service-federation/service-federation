@@ -5,6 +5,7 @@ mod docker;
 mod doctor;
 mod init;
 mod install;
+mod lifecycle;
 mod logs;
 mod package;
 mod ports;

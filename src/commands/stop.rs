@@ -1,5 +1,9 @@
-use service_federation::{config::Config, service::hash_work_dir, state::StateTracker, Orchestrator};
+use service_federation::{
+    config::Config, service::hash_work_dir, state::StateTracker, Orchestrator,
+};
 use std::path::Path;
+
+use super::lifecycle::{graceful_docker_stop, graceful_process_kill, validate_pid_start_time};
 
 pub async fn run_stop(
     orchestrator: &mut Orchestrator,
@@ -9,6 +13,14 @@ pub async fn run_stop(
     if services.is_empty() {
         println!("Stopping all services...");
         orchestrator.stop_all().await?;
+
+        // If the config changed since services were started, some running services may
+        // still exist in state but not in the current config (so stop_all won't see them).
+        // Best-effort stop those remaining state-tracked services.
+        let extra_stopped = stop_remaining_state_services(orchestrator).await;
+        if extra_stopped > 0 {
+            println!("Stopped {} additional service(s) from state", extra_stopped);
+        }
 
         // Also remove any orphaned containers (from failed starts, etc.)
         match orchestrator.remove_orphaned_containers().await {
@@ -46,6 +58,85 @@ pub async fn run_stop(
     Ok(())
 }
 
+fn state_status_is_active(status: &str) -> bool {
+    matches!(
+        status,
+        "running" | "healthy" | "starting" | "failing" | "stopping"
+    )
+}
+
+/// Stop any services that remain in state after config-based stop operations.
+///
+/// This catches cases where services are running but no longer appear in the
+/// current config (e.g., services renamed/removed).
+async fn stop_remaining_state_services(orchestrator: &Orchestrator) -> usize {
+    use service_federation::state::SqliteStateTracker;
+
+    // Avoid holding the outer RwLock across await by cloning the DB connection.
+    let conn = orchestrator.state_tracker.read().await.clone_connection();
+    let services = SqliteStateTracker::fetch_services_from_connection(&conn).await;
+
+    if services.is_empty() {
+        return 0;
+    }
+
+    let mut stopped_names: Vec<String> = Vec::new();
+
+    for (name, state) in services {
+        if !state_status_is_active(state.status.as_str()) {
+            continue;
+        }
+
+        // These services are not necessarily present in the current config.
+        // Stop by state (PID/container) and unregister regardless of config.
+        print!("  Stopping {} (from state)...", name);
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        let mut note: Option<String> = None;
+        let success = if let Some(container_id) = state.container_id.as_deref() {
+            graceful_docker_stop(container_id).await
+        } else if let Some(pid) = state.pid {
+            if !validate_pid_start_time(pid, state.started_at) {
+                // The recorded PID is not safe to signal; drop this state entry.
+                note = Some(format!(
+                    "skipped (PID {} was reused by another process)",
+                    pid
+                ));
+                true
+            } else {
+                graceful_process_kill(pid).await
+            }
+        } else {
+            // No PID/container - nothing to stop
+            note = Some("skipped (no PID/container)".to_string());
+            true
+        };
+
+        if success {
+            if let Some(note) = note {
+                println!(" {}", note);
+            } else {
+                println!(" done");
+            }
+            stopped_names.push(name);
+        } else {
+            println!(" failed");
+        }
+    }
+
+    if stopped_names.is_empty() {
+        return 0;
+    }
+
+    let mut tracker = orchestrator.state_tracker.write().await;
+    for name in &stopped_names {
+        let _ = tracker.unregister_service(name).await;
+    }
+    let _ = tracker.save().await;
+
+    stopped_names.len()
+}
+
 /// Stop services using only the state tracker (no config required).
 /// Used when config is invalid but we still need to stop running services.
 pub async fn run_stop_from_state(work_dir: &Path, services: Vec<String>) -> anyhow::Result<()> {
@@ -81,56 +172,46 @@ pub async fn run_stop_from_state(work_dir: &Path, services: Vec<String>) -> anyh
 
         print!("  Stopping {}...", name);
 
-        match state.service_type.as_str() {
-            "Docker" => {
-                if let Some(container_id) = &state.container_id {
-                    match tokio::process::Command::new("docker")
-                        .args(["rm", "-f", container_id])
-                        .output()
-                        .await
-                    {
-                        Ok(output) if output.status.success() => println!(" done"),
-                        Ok(output) => {
-                            let stderr = String::from_utf8_lossy(&output.stderr);
-                            println!(" failed (docker rm: {})", stderr.trim());
-                        }
-                        Err(e) => println!(" failed ({})", e),
-                    }
-                } else {
-                    println!(" skipped (no container ID)");
-                }
+        let mut note: Option<String> = None;
+        let stopped = if let Some(container_id) = state.container_id.as_deref() {
+            graceful_docker_stop(container_id).await
+        } else if let Some(pid) = state.pid {
+            if !validate_pid_start_time(pid, state.started_at) {
+                note = Some(format!(
+                    "skipped (PID {} was reused by another process)",
+                    pid
+                ));
+                true
+            } else {
+                graceful_process_kill(pid).await
             }
-            _ => {
-                // Process, Gradle, or other PID-based services
-                if let Some(pid) = state.pid {
-                    use nix::sys::signal::{self, Signal};
-                    use nix::unistd::Pid;
-                    let nix_pid = Pid::from_raw(pid as i32);
-                    // Send SIGTERM first
-                    match signal::kill(nix_pid, Signal::SIGTERM) {
-                        Ok(()) => {
-                            // Wait briefly for graceful shutdown
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                            // Check if still alive, SIGKILL if needed
-                            if signal::kill(nix_pid, None).is_ok() {
-                                let _ = signal::kill(nix_pid, Signal::SIGKILL);
-                            }
-                            println!(" done");
-                        }
-                        Err(_) => {
-                            // Process already gone
-                            println!(" done (already stopped)");
-                        }
-                    }
-                } else {
-                    println!(" skipped (no PID)");
-                }
+        } else {
+            note = Some("skipped (no PID/container)".to_string());
+            true
+        };
+
+        if stopped {
+            if let Some(note) = note {
+                println!(" {}", note);
+            } else {
+                println!(" done");
             }
+        } else {
+            println!(" failed");
         }
     }
 
-    // Clear all stopped services from state
-    tracker.clear().await?;
+    // Update state:
+    // - stop all: clear entire DB
+    // - stop subset: only unregister the named services (leave others intact)
+    if services.is_empty() {
+        tracker.clear().await?;
+    } else {
+        for (name, _) in &services_to_stop {
+            let _ = tracker.unregister_service(name).await;
+        }
+        tracker.save().await?;
+    }
 
     // Also remove any orphaned containers not in state DB
     let work_dir_hash = hash_work_dir(work_dir);
