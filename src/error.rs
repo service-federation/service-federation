@@ -243,6 +243,10 @@ impl Error {
                 "Port allocation failed: {}. Try using 'type: port' parameters which auto-fallback to available ports.",
                 msg
             )),
+            Error::DockerPortConflict { port, .. } => Some(format!(
+                "Port {} is in use by another container or process.\n\nTo stop existing processes and containers run:\n\n    fed start --replace",
+                port
+            )),
             Error::CircularDependency(path) => Some(format!(
                 "Services cannot depend on each other in a cycle. Review the depends_on fields for: {}",
                 path.join(", ")

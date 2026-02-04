@@ -1124,11 +1124,7 @@ impl Orchestrator {
                 return Err(Error::Cancelled(name.to_string()));
             }
 
-            manager.start().await.map_err(|e| {
-                // Unregister on failure - note we can't await here, so use blocking
-                // This is safe because we're in an error path
-                Error::ServiceStartFailed(name.to_string(), e.to_string())
-            })?;
+            manager.start().await?;
             Ok(())
         }
         .instrument(tracing::info_span!("spawn_service"))
