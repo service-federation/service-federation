@@ -1,6 +1,7 @@
 mod builder;
 mod core;
 mod factory;
+mod health;
 mod lifecycle;
 mod monitoring;
 mod orphans;
