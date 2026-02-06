@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::Orchestrator;
+use service_federation::{Error as FedError, Orchestrator};
 
 pub async fn run_script(
     orchestrator: &mut Orchestrator,
@@ -16,12 +16,11 @@ pub async fn run_script(
     }
 
     if !available_scripts.contains(&name.to_string()) {
-        out.error(&format!("Script '{}' not found", name));
-        out.error("\nAvailable scripts:");
-        for script in available_scripts {
-            out.error(&format!("  - {}", script));
+        out.warning("Available scripts:");
+        for script in &available_scripts {
+            out.warning(&format!("  - {}", script));
         }
-        return Err(anyhow::anyhow!("Script not found"));
+        return Err(FedError::ScriptNotFound(name.to_string()).into());
     }
 
     // Run interactively with stdin/stdout/stderr passthrough

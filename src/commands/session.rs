@@ -43,11 +43,11 @@ pub async fn run_session(
             } else if let Some(id) = Session::read_session_file_for_dir(&workdir)? {
                 id
             } else {
-                return Err(anyhow::anyhow!(
-                    "No active session found.\n\
-                    Either set FED_SESSION environment variable or run this command\n\
-                    in a directory with a .fed/session file."
-                ));
+                return Err(service_federation::Error::Session(
+                    "No active session found. \
+                    Either set FED_SESSION environment variable or run this command \
+                    in a directory with a .fed/session file.".to_string()
+                ).into());
             };
 
             let session = Session::load(&session_id)?;
