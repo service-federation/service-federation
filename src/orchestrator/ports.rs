@@ -3,6 +3,10 @@
 //! This module contains port-related operations extracted from the main
 //! Orchestrator: collecting managed ports from running services and
 //! releasing port listeners (TOCTOU race prevention).
+//!
+//! Port management uses free functions rather than a runner struct because
+//! `collect_managed_ports` requires `&mut Resolver`, which can't be borrowed
+//! from `&Orchestrator`.
 
 use crate::parameter::Resolver;
 use crate::service::Status;
