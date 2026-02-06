@@ -1,3 +1,4 @@
+use crate::output::UserOutput;
 use crate::cli::SessionCommands;
 use service_federation::session::Session;
 use service_federation::{Orchestrator, Parser as ConfigParser};
@@ -7,6 +8,7 @@ pub async fn run_session(
     session_cmd: &SessionCommands,
     workdir: Option<PathBuf>,
     profiles: Vec<String>,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     let workdir = if let Some(wd) = workdir {
         wd
@@ -21,18 +23,18 @@ pub async fn run_session(
             // Write .fed/session file in the workspace (use workdir, not current_dir)
             Session::write_session_file_for_dir(session.id(), &workdir)?;
 
-            println!("Session started: {}", session.id());
-            println!("  Workspace: {}", workdir.display());
-            println!("  Session file: .fed/session");
-            println!();
-            println!("The session is now active in this directory.");
-            println!("All 'fed' commands will use this session automatically.");
-            println!();
-            println!("To use this session elsewhere:");
-            println!("  export FED_SESSION={}", session.id());
-            println!();
-            println!("To end this session:");
-            println!("  fed session end");
+            out.success(&format!("Session started: {}", session.id()));
+            out.status(&format!("  Workspace: {}", workdir.display()));
+            out.status("  Session file: .fed/session");
+            out.blank();
+            out.status("The session is now active in this directory.");
+            out.status("All 'fed' commands will use this session automatically.");
+            out.blank();
+            out.status("To use this session elsewhere:");
+            out.status(&format!("  export FED_SESSION={}", session.id()));
+            out.blank();
+            out.status("To end this session:");
+            out.status("  fed session end");
         }
         SessionCommands::End => {
             // Try to detect session from env var or .fed/session file
@@ -50,17 +52,17 @@ pub async fn run_session(
 
             let session = Session::load(&session_id)?;
 
-            println!("Ending session: {}", session.id());
+            out.status(&format!("Ending session: {}", session.id()));
 
             // Stop all services in this session
-            println!("  Stopping services...");
+            out.status("  Stopping services...");
 
             // Load config from session workspace
             let config_path = match ConfigParser::find_config_in_dir(session.workspace()) {
                 Ok(path) => path,
                 Err(_) => {
-                    println!("  Config file not found in workspace, skipping service cleanup");
-                    println!("  You may need to manually stop any running services");
+                    out.status("  Config file not found in workspace, skipping service cleanup");
+                    out.status("  You may need to manually stop any running services");
 
                     // Remove .fed/session file if it exists (in the session's workspace)
                     if let Err(e) = Session::remove_session_file_for_dir(session.workspace()) {
@@ -70,12 +72,12 @@ pub async fn run_session(
                     // Delete session data
                     session.delete()?;
 
-                    println!("Session ended");
+                    out.success("Session ended");
 
                     if std::env::var("FED_SESSION").is_ok() {
-                        println!();
-                        println!("To clear the environment variable, run:");
-                        println!("  unset FED_SESSION");
+                        out.blank();
+                        out.status("To clear the environment variable, run:");
+                        out.status("  unset FED_SESSION");
                     }
 
                     return Ok(());
@@ -94,7 +96,7 @@ pub async fn run_session(
 
             // Stop all services
             if let Err(e) = orchestrator.stop_all().await {
-                println!("  Error stopping services: {}", e);
+                out.status(&format!("  Error stopping services: {}", e));
             }
 
             // Clean up orchestrator resources
@@ -108,27 +110,30 @@ pub async fn run_session(
             // Delete session data
             session.delete()?;
 
-            println!("Session ended");
+            out.success("Session ended");
 
             // Only show unset message if FED_SESSION is set
             if std::env::var("FED_SESSION").is_ok() {
-                println!();
-                println!("To clear the environment variable, run:");
-                println!("  unset FED_SESSION");
+                out.blank();
+                out.status("To clear the environment variable, run:");
+                out.status("  unset FED_SESSION");
             }
         }
         SessionCommands::List => {
             let sessions = Session::list_all()?;
 
             if sessions.is_empty() {
-                println!("No sessions found");
+                out.status("No sessions found");
                 return Ok(());
             }
 
-            println!("Sessions:");
-            println!("{:-<80}", "");
-            println!("{:<15} {:<12} {:<40} Created", "ID", "Status", "Workspace");
-            println!("{:-<80}", "");
+            out.status("Sessions:");
+            out.status(&format!("{:-<80}", ""));
+            out.status(&format!(
+                "{:<15} {:<12} {:<40} Created",
+                "ID", "Status", "Workspace"
+            ));
+            out.status(&format!("{:-<80}", ""));
 
             for metadata in sessions {
                 let status_str = match metadata.status {
@@ -139,13 +144,13 @@ pub async fn run_session(
                 let created = chrono::DateTime::<chrono::Local>::from(metadata.created_at);
                 let created_str = created.format("%Y-%m-%d %H:%M").to_string();
 
-                println!(
+                out.status(&format!(
                     "{:<15} {:<12} {:<40} {}",
                     metadata.id,
                     status_str,
                     metadata.workspace.display().to_string(),
                     created_str
-                );
+                ));
             }
         }
         SessionCommands::Cleanup { force } => {
@@ -161,25 +166,27 @@ pub async fn run_session(
             }
 
             if orphaned.is_empty() {
-                println!("No orphaned sessions found");
+                out.status("No orphaned sessions found");
                 return Ok(());
             }
 
-            println!("Found {} orphaned session(s):", orphaned.len());
+            out.status(&format!(
+                "Found {} orphaned session(s):",
+                orphaned.len()
+            ));
             for session in &orphaned {
-                println!(
+                out.status(&format!(
                     "  - {} (workspace: {})",
                     session.id(),
                     session.workspace().display()
-                );
+                ));
             }
 
             let should_delete = if *force {
                 true
             } else {
-                println!();
-                print!("Remove these sessions? [y/N] ");
-                std::io::Write::flush(&mut std::io::stdout())?;
+                out.blank();
+                out.progress("Remove these sessions? [y/N] ");
 
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)?;
@@ -189,13 +196,13 @@ pub async fn run_session(
 
             if should_delete {
                 for session in orphaned {
-                    print!("  Removing {}...", session.id());
+                    out.progress(&format!("  Removing {}...", session.id()));
                     session.delete()?;
-                    println!(" done");
+                    out.finish_progress(" done");
                 }
-                println!("\nCleanup complete");
+                out.success("\nCleanup complete");
             } else {
-                println!("Cancelled");
+                out.status("Cancelled");
             }
         }
     }

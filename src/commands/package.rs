@@ -1,27 +1,27 @@
 use crate::cli::PackageCommands;
+use crate::output::UserOutput;
 use anyhow::Result;
 use service_federation::package::PackageResolver;
-use std::io::{self, Write};
 use std::path::PathBuf;
 
 /// Run package commands
-pub async fn run_package(cmd: &PackageCommands) -> Result<()> {
+pub async fn run_package(cmd: &PackageCommands, out: &dyn UserOutput) -> Result<()> {
     match cmd {
-        PackageCommands::List { json } => list_cached_packages(*json).await,
-        PackageCommands::Refresh { package } => refresh_package(package.as_deref()).await,
-        PackageCommands::Clear { force } => clear_cache(*force).await,
+        PackageCommands::List { json } => list_cached_packages(*json, out).await,
+        PackageCommands::Refresh { package } => refresh_package(package.as_deref(), out).await,
+        PackageCommands::Clear { force } => clear_cache(*force, out).await,
     }
 }
 
 /// List all cached packages
-async fn list_cached_packages(json: bool) -> Result<()> {
+async fn list_cached_packages(json: bool, out: &dyn UserOutput) -> Result<()> {
     let cache_dir = PackageResolver::get_cache_dir_static()?;
 
     if !cache_dir.exists() {
         if json {
-            println!("{{\"packages\":[]}}");
+            out.status("{\"packages\":[]}");
         } else {
-            println!("No packages cached.");
+            out.status("No packages cached.");
         }
         return Ok(());
     }
@@ -90,44 +90,43 @@ async fn list_cached_packages(json: bool) -> Result<()> {
                 })
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "packages": output }))?
-        );
+        out.status(&serde_json::to_string_pretty(
+            &serde_json::json!({ "packages": output }),
+        )?);
     } else if packages.is_empty() {
-        println!("No packages cached.");
+        out.status("No packages cached.");
     } else {
-        println!("Cached packages:");
+        out.status("Cached packages:");
         for pkg in &packages {
-            println!(
+            out.status(&format!(
                 "  {} @ {} ({})",
                 pkg.source,
                 pkg.version,
                 pkg.path.display()
-            );
+            ));
         }
-        println!("\nTotal: {} package(s)", packages.len());
+        out.status(&format!("\nTotal: {} package(s)", packages.len()));
     }
 
     Ok(())
 }
 
 /// Refresh a specific package or all packages in current config
-async fn refresh_package(package: Option<&str>) -> Result<()> {
+async fn refresh_package(package: Option<&str>, out: &dyn UserOutput) -> Result<()> {
     let cache_dir = PackageResolver::get_cache_dir_static()?;
 
     if let Some(source) = package {
         // Refresh specific package
         let path_to_remove = find_cached_package_path(&cache_dir, source)?;
         if let Some(path) = path_to_remove {
-            println!("Removing cached package: {}", path.display());
+            out.status(&format!("Removing cached package: {}", path.display()));
             std::fs::remove_dir_all(&path)?;
-            println!(
+            out.success(&format!(
                 "Cache cleared for {}. Package will be re-fetched on next use.",
                 source
-            );
+            ));
         } else {
-            println!("Package {} not found in cache.", source);
+            out.status(&format!("Package {} not found in cache.", source));
         }
     } else {
         // Refresh all packages - just remove the entire cache
@@ -147,15 +146,15 @@ async fn refresh_package(package: Option<&str>) -> Result<()> {
             }
 
             if count > 0 {
-                println!(
+                out.success(&format!(
                     "Cleared {} cached package(s). Packages will be re-fetched on next use.",
                     count
-                );
+                ));
             } else {
-                println!("No packages in cache.");
+                out.status("No packages in cache.");
             }
         } else {
-            println!("No packages in cache.");
+            out.status("No packages in cache.");
         }
     }
 
@@ -163,29 +162,28 @@ async fn refresh_package(package: Option<&str>) -> Result<()> {
 }
 
 /// Clear the entire package cache
-async fn clear_cache(force: bool) -> Result<()> {
+async fn clear_cache(force: bool, out: &dyn UserOutput) -> Result<()> {
     let cache_dir = PackageResolver::get_cache_dir_static()?;
 
     if !cache_dir.exists() {
-        println!("Package cache is empty.");
+        out.status("Package cache is empty.");
         return Ok(());
     }
 
     if !force {
-        print!("This will remove all cached packages. Continue? [y/N] ");
-        io::stdout().flush()?;
+        out.progress("This will remove all cached packages. Continue? [y/N] ");
 
         let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
+        std::io::stdin().read_line(&mut input)?;
 
         if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Aborted.");
+            out.status("Aborted.");
             return Ok(());
         }
     }
 
     std::fs::remove_dir_all(&cache_dir)?;
-    println!("Package cache cleared.");
+    out.success("Package cache cleared.");
 
     Ok(())
 }

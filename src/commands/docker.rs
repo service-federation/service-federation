@@ -1,3 +1,4 @@
+use crate::output::UserOutput;
 use service_federation::{
     config::{BuildConfig, Config, DockerBuildResult},
     orchestrator::ServiceLifecycleCommands,
@@ -77,17 +78,18 @@ pub async fn run_docker_build(
     tag: Option<String>,
     build_args: Vec<String>,
     json: bool,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     let services_to_build = docker_build_services(config, &services);
 
     if services_to_build.is_empty() {
         if services.is_empty() {
-            println!("No services with Docker build configuration found");
+            out.status("No services with Docker build configuration found");
         } else {
-            println!(
+            out.status(&format!(
                 "None of the specified services have Docker build configuration: {}",
                 services.join(", ")
-            );
+            ));
         }
         return Ok(());
     }
@@ -98,10 +100,10 @@ pub async fn run_docker_build(
     }
 
     if !json {
-        println!(
+        out.status(&format!(
             "Building Docker images for: {}",
             services_to_build.join(", ")
-        );
+        ));
     }
 
     let lifecycle = ServiceLifecycleCommands::new(config, work_dir);
@@ -109,7 +111,7 @@ pub async fn run_docker_build(
 
     for service in &services_to_build {
         if !json {
-            println!("\n[docker build] {}", service);
+            out.status(&format!("\n[docker build] {}", service));
         }
         match lifecycle
             .run_build(service, tag.as_deref(), &build_args)
@@ -117,10 +119,10 @@ pub async fn run_docker_build(
         {
             Ok(Some(result)) => {
                 if !json {
-                    println!(
+                    out.status(&format!(
                         "[docker build] {} -> {}:{}",
                         service, result.image, result.tag
-                    );
+                    ));
                 }
                 results.push(result);
             }
@@ -129,7 +131,7 @@ pub async fn run_docker_build(
             }
             Err(e) => {
                 if !json {
-                    println!("[docker build] {} failed: {}", service, e);
+                    out.status(&format!("[docker build] {} failed: {}", service, e));
                 }
                 return Err(e.into());
             }
@@ -137,9 +139,9 @@ pub async fn run_docker_build(
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&results)?);
+        out.status(&serde_json::to_string_pretty(&results)?);
     } else {
-        println!("\nAll Docker image builds completed successfully.");
+        out.success("\nAll Docker image builds completed successfully.");
     }
 
     Ok(())
@@ -150,24 +152,28 @@ pub async fn run_docker_push(
     work_dir: &Path,
     services: Vec<String>,
     tag: Option<String>,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     let services_to_push = docker_build_services(config, &services);
 
     if services_to_push.is_empty() {
         if services.is_empty() {
-            println!("No services with Docker build configuration found");
+            out.status("No services with Docker build configuration found");
         } else {
-            println!(
+            out.status(&format!(
                 "None of the specified services have Docker build configuration: {}",
                 services.join(", ")
-            );
+            ));
         }
         return Ok(());
     }
 
     let resolved_tag = resolve_tag(tag, work_dir).await?;
 
-    println!("Pushing Docker images for: {}", services_to_push.join(", "));
+    out.status(&format!(
+        "Pushing Docker images for: {}",
+        services_to_push.join(", ")
+    ));
 
     for service_name in &services_to_push {
         let svc = config.services.get(service_name.as_str()).unwrap();
@@ -193,7 +199,10 @@ pub async fn run_docker_push(
             );
         }
 
-        println!("\n[docker push] {} -> {}", service_name, full_image);
+        out.status(&format!(
+            "\n[docker push] {} -> {}",
+            service_name, full_image
+        ));
 
         let status = tokio::process::Command::new("docker")
             .args(["push", &full_image])
@@ -208,6 +217,6 @@ pub async fn run_docker_push(
         }
     }
 
-    println!("\nAll Docker images pushed successfully.");
+    out.success("\nAll Docker images pushed successfully.");
     Ok(())
 }

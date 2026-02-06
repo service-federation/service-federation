@@ -37,6 +37,9 @@ pub struct OrchestratorBuilder {
     work_dir: Option<PathBuf>,
     output_mode: OutputMode,
     auto_resolve_conflicts: bool,
+    randomize_ports: bool,
+    replace_mode: bool,
+    readonly: bool,
     profiles: Vec<String>,
     startup_timeout: Option<Duration>,
     stop_timeout: Option<Duration>,
@@ -50,6 +53,9 @@ impl OrchestratorBuilder {
             work_dir: None,
             output_mode: OutputMode::default(),
             auto_resolve_conflicts: false,
+            randomize_ports: false,
+            replace_mode: false,
+            readonly: false,
             profiles: Vec::new(),
             startup_timeout: None,
             stop_timeout: None,
@@ -116,6 +122,34 @@ impl OrchestratorBuilder {
         self
     }
 
+    /// Enable randomized port allocation.
+    ///
+    /// Skips the session port cache and allocates fresh random ports for all
+    /// port-type parameters. Also enables auto-resolve to avoid interactive
+    /// conflict prompts.
+    pub fn randomize_ports(mut self, randomize: bool) -> Self {
+        self.randomize_ports = randomize;
+        self
+    }
+
+    /// Enable replace mode — kill blocking processes/containers and use original ports.
+    ///
+    /// Use this for `--replace` flag behavior.
+    pub fn replace_mode(mut self, replace: bool) -> Self {
+        self.replace_mode = replace;
+        self
+    }
+
+    /// Enable readonly initialization.
+    ///
+    /// When enabled, `build()` calls `initialize_readonly()` instead of
+    /// `initialize()`, skipping parameter resolution and Docker cleanup.
+    /// Use this for read-only commands like `status`, `logs`, and `stop`.
+    pub fn readonly(mut self, readonly: bool) -> Self {
+        self.readonly = readonly;
+        self
+    }
+
     /// Build the orchestrator and initialize it.
     ///
     /// This method performs the following steps:
@@ -148,6 +182,13 @@ impl OrchestratorBuilder {
         orchestrator.set_output_mode(self.output_mode);
         orchestrator.set_auto_resolve_conflicts(self.auto_resolve_conflicts);
 
+        if self.randomize_ports {
+            orchestrator.set_randomize_ports(true);
+        }
+        if self.replace_mode {
+            orchestrator.set_replace_mode(true);
+        }
+
         if let Some(timeout) = self.startup_timeout {
             orchestrator.startup_timeout = timeout;
         }
@@ -156,8 +197,12 @@ impl OrchestratorBuilder {
             orchestrator.stop_timeout = timeout;
         }
 
-        // Initialize automatically
-        orchestrator.initialize().await?;
+        // Initialize: readonly skips parameter resolution and Docker cleanup
+        if self.readonly {
+            orchestrator.initialize_readonly().await?;
+        } else {
+            orchestrator.initialize().await?;
+        }
 
         Ok(orchestrator)
     }

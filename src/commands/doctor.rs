@@ -1,10 +1,12 @@
-pub async fn run_doctor() -> anyhow::Result<()> {
-    println!("Checking system requirements...\n");
+use crate::output::UserOutput;
+
+pub async fn run_doctor(out: &dyn UserOutput) -> anyhow::Result<()> {
+    out.status("Checking system requirements...\n");
 
     let mut all_ok = true;
 
     // Check Docker
-    print!("Docker: ");
+    out.progress("Docker: ");
     match tokio::process::Command::new("docker")
         .arg("--version")
         .output()
@@ -12,16 +14,16 @@ pub async fn run_doctor() -> anyhow::Result<()> {
     {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            println!("{}", version);
+            out.finish_progress(&version);
         }
         _ => {
-            println!("Not found");
+            out.finish_progress("Not found");
             all_ok = false;
         }
     }
 
     // Check docker-compose
-    print!("docker-compose: ");
+    out.progress("docker-compose: ");
     match tokio::process::Command::new("docker-compose")
         .arg("--version")
         .output()
@@ -29,7 +31,7 @@ pub async fn run_doctor() -> anyhow::Result<()> {
     {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            println!("{}", version);
+            out.finish_progress(&version);
         }
         _ => {
             // Try "docker compose" (newer syntax)
@@ -40,17 +42,17 @@ pub async fn run_doctor() -> anyhow::Result<()> {
             {
                 Ok(output) if output.status.success() => {
                     let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    println!("{} (via docker compose)", version);
+                    out.finish_progress(&format!("{} (via docker compose)", version));
                 }
                 _ => {
-                    println!("Not found (optional)");
+                    out.finish_progress("Not found (optional)");
                 }
             }
         }
     }
 
     // Check Gradle
-    print!("Gradle: ");
+    out.progress("Gradle: ");
     match tokio::process::Command::new("gradle")
         .arg("--version")
         .output()
@@ -59,18 +61,18 @@ pub async fn run_doctor() -> anyhow::Result<()> {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Some(line) = stdout.lines().find(|l| l.contains("Gradle")) {
-                println!("{}", line.trim());
+                out.finish_progress(line.trim());
             } else {
-                println!("Installed");
+                out.finish_progress("Installed");
             }
         }
         _ => {
-            println!("Not found (optional, needed for gradle services)");
+            out.finish_progress("Not found (optional, needed for gradle services)");
         }
     }
 
     // Check Java
-    print!("Java: ");
+    out.progress("Java: ");
     match tokio::process::Command::new("java")
         .arg("--version")
         .output()
@@ -79,18 +81,18 @@ pub async fn run_doctor() -> anyhow::Result<()> {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Some(line) = stdout.lines().next() {
-                println!("{}", line.trim());
+                out.finish_progress(line.trim());
             } else {
-                println!("Installed");
+                out.finish_progress("Installed");
             }
         }
         _ => {
-            println!("Not found (optional, needed for Gradle/Java services)");
+            out.finish_progress("Not found (optional, needed for Gradle/Java services)");
         }
     }
 
     // Check Git
-    print!("Git: ");
+    out.progress("Git: ");
     match tokio::process::Command::new("git")
         .arg("--version")
         .output()
@@ -98,20 +100,20 @@ pub async fn run_doctor() -> anyhow::Result<()> {
     {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            println!("{}", version);
+            out.finish_progress(&version);
         }
         _ => {
-            println!("Not found (optional)");
+            out.finish_progress("Not found (optional)");
         }
     }
 
-    println!();
+    out.blank();
     if all_ok {
-        println!("All required dependencies are installed");
+        out.success("All required dependencies are installed");
     } else {
-        println!("Some required dependencies are missing");
-        eprintln!("\nInstallation guides:");
-        eprintln!("  Docker: https://docs.docker.com/get-docker/");
+        out.status("Some required dependencies are missing");
+        out.error("\nInstallation guides:");
+        out.error("  Docker: https://docs.docker.com/get-docker/");
     }
 
     Ok(())

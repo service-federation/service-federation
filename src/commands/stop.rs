@@ -1,42 +1,53 @@
+use crate::output::UserOutput;
 use service_federation::{
-    config::Config, service::hash_work_dir, state::StateTracker, Orchestrator,
+    config::Config,
+    service::Status,
+    state::StateTracker,
+    Orchestrator,
 };
 use std::path::Path;
 
-use super::lifecycle::{graceful_docker_stop, graceful_process_kill, validate_pid_start_time};
+use super::lifecycle::{remove_orphan_containers_for_workdir, stop_service_by_state, StopResult};
 
 pub async fn run_stop(
     orchestrator: &mut Orchestrator,
     config: &Config,
     services: Vec<String>,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     if services.is_empty() {
-        println!("Stopping all services...");
+        out.status("Stopping all services...");
         orchestrator.stop_all().await?;
 
         // If the config changed since services were started, some running services may
         // still exist in state but not in the current config (so stop_all won't see them).
         // Best-effort stop those remaining state-tracked services.
-        let extra_stopped = stop_remaining_state_services(orchestrator).await;
+        let extra_stopped = stop_remaining_state_services(orchestrator, out).await;
         if extra_stopped > 0 {
-            println!("Stopped {} additional service(s) from state", extra_stopped);
+            out.status(&format!(
+                "Stopped {} additional service(s) from state",
+                extra_stopped
+            ));
         }
 
         // Also remove any orphaned containers (from failed starts, etc.)
         match orchestrator.remove_orphaned_containers().await {
             Ok(count) if count > 0 => {
-                println!("Removed {} orphaned container(s)", count);
+                out.status(&format!("Removed {} orphaned container(s)", count));
             }
             Ok(_) => {}
             Err(e) => {
-                eprintln!("Warning: Failed to clean orphaned containers: {}", e);
+                out.warning(&format!(
+                    "Warning: Failed to clean orphaned containers: {}",
+                    e
+                ));
             }
         }
 
         // Also remove any orphaned processes (from crashed services, etc.)
         let process_count = orchestrator.remove_orphaned_processes().await;
         if process_count > 0 {
-            println!("Killed {} orphaned process(es)", process_count);
+            out.status(&format!("Killed {} orphaned process(es)", process_count));
         }
 
         orchestrator.cleanup().await;
@@ -45,23 +56,23 @@ pub async fn run_stop(
         let services_to_stop = config.expand_service_selection(&services);
 
         for service in services_to_stop {
-            print!("  Stopping {}...", service);
+            out.progress(&format!("  Stopping {}...", service));
             match orchestrator.stop(&service).await {
-                Ok(_) => println!(" done"),
-                Err(e) => println!(" failed ({})", e),
+                Ok(_) => out.finish_progress(" done"),
+                Err(e) => out.finish_progress(&format!(" failed ({})", e)),
             }
         }
         orchestrator.state_tracker.write().await.save().await?;
     }
-    println!("Services stopped");
+    out.success("Services stopped");
 
     Ok(())
 }
 
-fn state_status_is_active(status: &str) -> bool {
+fn state_status_is_active(status: Status) -> bool {
     matches!(
         status,
-        "running" | "healthy" | "starting" | "failing" | "stopping"
+        Status::Running | Status::Healthy | Status::Starting | Status::Failing | Status::Stopping
     )
 }
 
@@ -69,7 +80,10 @@ fn state_status_is_active(status: &str) -> bool {
 ///
 /// This catches cases where services are running but no longer appear in the
 /// current config (e.g., services renamed/removed).
-async fn stop_remaining_state_services(orchestrator: &Orchestrator) -> usize {
+async fn stop_remaining_state_services(
+    orchestrator: &Orchestrator,
+    out: &dyn UserOutput,
+) -> usize {
     use service_federation::state::SqliteStateTracker;
 
     // Avoid holding the outer RwLock across await by cloning the DB connection.
@@ -83,44 +97,26 @@ async fn stop_remaining_state_services(orchestrator: &Orchestrator) -> usize {
     let mut stopped_names: Vec<String> = Vec::new();
 
     for (name, state) in services {
-        if !state_status_is_active(state.status.as_str()) {
+        if !state_status_is_active(state.status) {
             continue;
         }
 
         // These services are not necessarily present in the current config.
         // Stop by state (PID/container) and unregister regardless of config.
-        print!("  Stopping {} (from state)...", name);
-        std::io::Write::flush(&mut std::io::stdout()).ok();
+        out.progress(&format!("  Stopping {} (from state)...", name));
 
-        let mut note: Option<String> = None;
-        let success = if let Some(container_id) = state.container_id.as_deref() {
-            graceful_docker_stop(container_id).await
-        } else if let Some(pid) = state.pid {
-            if !validate_pid_start_time(pid, state.started_at) {
-                // The recorded PID is not safe to signal; drop this state entry.
-                note = Some(format!(
-                    "skipped (PID {} was reused by another process)",
-                    pid
-                ));
-                true
-            } else {
-                graceful_process_kill(pid).await
+        match stop_service_by_state(&name, &state).await {
+            StopResult::Stopped => {
+                out.finish_progress(" done");
+                stopped_names.push(name);
             }
-        } else {
-            // No PID/container - nothing to stop
-            note = Some("skipped (no PID/container)".to_string());
-            true
-        };
-
-        if success {
-            if let Some(note) = note {
-                println!(" {}", note);
-            } else {
-                println!(" done");
+            StopResult::Skipped(reason) => {
+                out.finish_progress(&format!(" skipped ({})", reason));
+                stopped_names.push(name);
             }
-            stopped_names.push(name);
-        } else {
-            println!(" failed");
+            StopResult::Failed => {
+                out.finish_progress(" failed");
+            }
         }
     }
 
@@ -139,13 +135,17 @@ async fn stop_remaining_state_services(orchestrator: &Orchestrator) -> usize {
 
 /// Stop services using only the state tracker (no config required).
 /// Used when config is invalid but we still need to stop running services.
-pub async fn run_stop_from_state(work_dir: &Path, services: Vec<String>) -> anyhow::Result<()> {
+pub async fn run_stop_from_state(
+    work_dir: &Path,
+    services: Vec<String>,
+    out: &dyn UserOutput,
+) -> anyhow::Result<()> {
     let mut tracker = StateTracker::new(work_dir.to_path_buf()).await?;
     tracker.initialize().await?;
 
     let all_services = tracker.get_services().await;
     if all_services.is_empty() {
-        println!("No services found in state tracker.");
+        out.status("No services found in state tracker.");
         return Ok(());
     }
 
@@ -159,45 +159,32 @@ pub async fn run_stop_from_state(work_dir: &Path, services: Vec<String>) -> anyh
             .collect()
     };
 
-    println!(
+    out.status(&format!(
         "Stopping {} service(s) from state tracker...",
         services_to_stop.len()
-    );
+    ));
 
     for (name, state) in &services_to_stop {
-        let is_active = matches!(state.status.as_str(), "running" | "healthy" | "starting");
+        let is_active = matches!(
+            state.status,
+            Status::Running | Status::Healthy | Status::Starting
+        );
         if !is_active {
             continue;
         }
 
-        print!("  Stopping {}...", name);
+        out.progress(&format!("  Stopping {}...", name));
 
-        let mut note: Option<String> = None;
-        let stopped = if let Some(container_id) = state.container_id.as_deref() {
-            graceful_docker_stop(container_id).await
-        } else if let Some(pid) = state.pid {
-            if !validate_pid_start_time(pid, state.started_at) {
-                note = Some(format!(
-                    "skipped (PID {} was reused by another process)",
-                    pid
-                ));
-                true
-            } else {
-                graceful_process_kill(pid).await
+        match stop_service_by_state(name, state).await {
+            StopResult::Stopped => {
+                out.finish_progress(" done");
             }
-        } else {
-            note = Some("skipped (no PID/container)".to_string());
-            true
-        };
-
-        if stopped {
-            if let Some(note) = note {
-                println!(" {}", note);
-            } else {
-                println!(" done");
+            StopResult::Skipped(reason) => {
+                out.finish_progress(&format!(" skipped ({})", reason));
             }
-        } else {
-            println!(" failed");
+            StopResult::Failed => {
+                out.finish_progress(" failed");
+            }
         }
     }
 
@@ -214,50 +201,12 @@ pub async fn run_stop_from_state(work_dir: &Path, services: Vec<String>) -> anyh
     }
 
     // Also remove any orphaned containers not in state DB
-    let work_dir_hash = hash_work_dir(work_dir);
-    let prefix = format!("fed-{}-", work_dir_hash);
-
-    let output = tokio::process::Command::new("docker")
-        .args([
-            "ps",
-            "-a",
-            "--filter",
-            &format!("name=^{}", prefix),
-            "--format",
-            "{{.Names}}",
-        ])
-        .output()
-        .await;
-
-    if let Ok(output) = output {
-        if output.status.success() {
-            let containers: Vec<String> = String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-
-            let mut removed = 0;
-            for container in containers {
-                let rm_output = tokio::process::Command::new("docker")
-                    .args(["rm", "-f", &container])
-                    .output()
-                    .await;
-
-                if let Ok(out) = rm_output {
-                    if out.status.success() {
-                        removed += 1;
-                    }
-                }
-            }
-
-            if removed > 0 {
-                println!("Removed {} orphaned container(s)", removed);
-            }
-        }
+    let removed = remove_orphan_containers_for_workdir(work_dir).await;
+    if removed > 0 {
+        out.status(&format!("Removed {} orphaned container(s)", removed));
     }
 
-    println!("Services stopped");
+    out.success("Services stopped");
 
     Ok(())
 }

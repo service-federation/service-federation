@@ -6,6 +6,7 @@
 /// - PID is always cleared when status is "Stopped"
 /// - No services leak (state tracker matches reality)
 use proptest::prelude::*;
+use service_federation::service::Status;
 use service_federation::state::{ServiceState, StateTracker};
 use tempfile::TempDir;
 
@@ -73,28 +74,28 @@ async fn apply_operation(tracker: &mut StateTracker, op: &Operation) {
                 tracker.register_service(state).await.unwrap();
             }
             // Transition to Starting
-            let _ = tracker.update_service_status(name, "starting").await;
+            let _ = tracker.update_service_status(name, Status::Starting).await;
         }
         Operation::Stop(name) => {
             // Transition to Stopping
-            let _ = tracker.update_service_status(name, "stopping").await;
+            let _ = tracker.update_service_status(name, Status::Stopping).await;
         }
         Operation::MarkRunning(name, pid) => {
             // Transition to Running with PID
-            let _ = tracker.update_service_status(name, "running").await;
+            let _ = tracker.update_service_status(name, Status::Running).await;
             let _ = tracker.update_service_pid(name, *pid).await;
         }
         Operation::MarkStopped(name) => {
             // Transition to Stopped - PID will be cleared by state transition
-            let _ = tracker.update_service_status(name, "stopped").await;
+            let _ = tracker.update_service_status(name, Status::Stopped).await;
             // Note: In production, PID clearing happens through StateTransition
             // For this test, we'll just set status to stopped
         }
         Operation::MarkHealthy(name) => {
-            let _ = tracker.update_service_status(name, "healthy").await;
+            let _ = tracker.update_service_status(name, Status::Healthy).await;
         }
         Operation::MarkFailing(name) => {
-            let _ = tracker.update_service_status(name, "failing").await;
+            let _ = tracker.update_service_status(name, Status::Failing).await;
         }
         Operation::HealthCheckPass(name) => {
             let _ = tracker.reset_consecutive_failures(name).await;
@@ -110,8 +111,8 @@ async fn check_invariants(tracker: &StateTracker) {
     let services = tracker.get_services().await;
 
     for (name, service) in services {
-        // Invariant 1: If status is "stopped", PID must be None
-        if service.status == "stopped" {
+        // Invariant 1: If status is Stopped, PID must be None
+        if service.status == Status::Stopped {
             assert!(
                 service.pid.is_none(),
                 "Service {} has status 'stopped' but PID is {:?}",
@@ -120,24 +121,17 @@ async fn check_invariants(tracker: &StateTracker) {
             );
         }
 
-        // Invariant 2: If PID exists, status must NOT be "stopped"
+        // Invariant 2: If PID exists, status must NOT be Stopped
         if service.pid.is_some() {
             assert!(
-                service.status != "stopped",
+                service.status != Status::Stopped,
                 "Service {} has PID {:?} but status is 'stopped'",
                 name,
                 service.pid
             );
         }
 
-        // Invariant 3: Status should be one of the valid states
-        assert!(
-            ["stopped", "starting", "running", "healthy", "failing", "stopping"]
-                .contains(&service.status.as_str()),
-            "Service {} has invalid status: {}",
-            name,
-            service.status
-        );
+        // Invariant 3: Status is always valid (enforced by the Status enum itself)
 
         // Invariant 4: consecutive_failures should be >= 0 (u32 ensures this, but verify)
         // This is a sanity check
@@ -207,12 +201,12 @@ proptest! {
             for (idx, should_start) in operations.iter().enumerate() {
                 let name = &service_names[idx % service_names.len()];
                 if *should_start {
-                    let _ = tracker.update_service_status(name, "starting").await;
-                    let _ = tracker.update_service_status(name, "running").await;
+                    let _ = tracker.update_service_status(name, Status::Starting).await;
+                    let _ = tracker.update_service_status(name, Status::Running).await;
                     let _ = tracker.update_service_pid(name, 1000 + idx as u32).await;
                 } else {
-                    let _ = tracker.update_service_status(name, "stopping").await;
-                    let _ = tracker.update_service_status(name, "stopped").await;
+                    let _ = tracker.update_service_status(name, Status::Stopping).await;
+                    let _ = tracker.update_service_status(name, Status::Stopped).await;
                 }
             }
 
@@ -226,16 +220,7 @@ proptest! {
                 );
             }
 
-            // Verify: All services have valid status
-            for (_name, service) in services {
-                assert!(
-                    ["stopped", "starting", "running", "healthy", "failing", "stopping"]
-                        .contains(&service.status.as_str()),
-                    "Service {} has invalid status: {}",
-                    service.id,
-                    service.status
-                );
-            }
+            // Verify: All services have valid status (enforced by Status enum)
         });
     }
 

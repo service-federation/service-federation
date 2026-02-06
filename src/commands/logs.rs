@@ -1,3 +1,4 @@
+use crate::output::UserOutput;
 use service_federation::Orchestrator;
 
 pub async fn run_logs(
@@ -5,10 +6,14 @@ pub async fn run_logs(
     service: &str,
     tail: Option<usize>,
     follow: bool,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     if follow {
-        println!("Following logs for {} (Press Ctrl+C to stop):", service);
-        println!("{:-<50}", "");
+        out.status(&format!(
+            "Following logs for {} (Press Ctrl+C to stop):",
+            service
+        ));
+        out.status(&format!("{:-<50}", ""));
 
         let mut last_line_count = 0;
 
@@ -21,7 +26,7 @@ pub async fn run_logs(
         loop {
             tokio::select! {
                 _ = shutdown_rx.recv() => {
-                    println!("\nStopped following logs");
+                    out.status("\nStopped following logs");
                     break;
                 }
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {
@@ -29,19 +34,19 @@ pub async fn run_logs(
                         Ok(logs) => {
                             if logs.len() > last_line_count {
                                 for line in logs.iter().skip(last_line_count) {
-                                    println!("{}", line);
+                                    out.status(line);
                                 }
                                 last_line_count = logs.len();
                             }
                         }
                         Err(e) => {
-                            eprintln!("Error getting logs: {}", e);
+                            out.error(&format!("Error getting logs: {}", e));
                             if e.to_string().contains("Service not found") {
                                 let status = orchestrator.get_status().await;
                                 if !status.is_empty() {
-                                    eprintln!("\nAvailable services:");
+                                    out.error("\nAvailable services:");
                                     for name in status.keys() {
-                                        eprintln!("  - {}", name);
+                                        out.error(&format!("  - {}", name));
                                     }
                                 }
                             }
@@ -55,23 +60,23 @@ pub async fn run_logs(
         match orchestrator.get_logs(service, tail).await {
             Ok(logs) => {
                 if logs.is_empty() {
-                    println!("No logs available for service '{}'", service);
+                    out.status(&format!("No logs available for service '{}'", service));
                 } else {
-                    println!("Logs for {}:", service);
-                    println!("{:-<50}", "");
+                    out.status(&format!("Logs for {}:", service));
+                    out.status(&format!("{:-<50}", ""));
                     for line in logs {
-                        println!("{}", line);
+                        out.status(&line);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Error getting logs: {}", e);
+                out.error(&format!("Error getting logs: {}", e));
                 if e.to_string().contains("Service not found") {
                     let status = orchestrator.get_status().await;
                     if !status.is_empty() {
-                        eprintln!("\nAvailable services:");
+                        out.error("\nAvailable services:");
                         for name in status.keys() {
-                            eprintln!("  - {}", name);
+                            out.error(&format!("  - {}", name));
                         }
                     }
                 }

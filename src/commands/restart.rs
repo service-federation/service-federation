@@ -1,33 +1,38 @@
+use crate::output::UserOutput;
 use service_federation::{config::Config, Orchestrator};
 
 pub async fn run_restart(
     orchestrator: &mut Orchestrator,
     config: &Config,
     services: Vec<String>,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     if services.is_empty() {
-        println!("Restarting all services in dependency-aware order...");
+        out.status("Restarting all services in dependency-aware order...");
         orchestrator.restart_all().await?;
-        println!("All services restarted successfully!");
+        out.success("All services restarted successfully!");
     } else {
         // Expand tag references (e.g., @backend) into service names
         let services_to_restart = config.expand_service_selection(&services);
 
-        println!("Restarting services: {}", services_to_restart.join(", "));
+        out.status(&format!(
+            "Restarting services: {}",
+            services_to_restart.join(", ")
+        ));
 
         // Phase 1: Stop all services, tracking successes and failures
         let mut stopped_successfully: Vec<String> = Vec::new();
         let mut stop_errors: Vec<(String, String)> = Vec::new();
 
         for service in &services_to_restart {
-            print!("  Stopping {}...", service);
+            out.progress(&format!("  Stopping {}...", service));
             match orchestrator.stop(service).await {
                 Ok(_) => {
-                    println!(" done");
+                    out.finish_progress(" done");
                     stopped_successfully.push(service.clone());
                 }
                 Err(e) => {
-                    println!(" failed ({})", e);
+                    out.finish_progress(&format!(" failed ({})", e));
                     stop_errors.push((service.clone(), e.to_string()));
                 }
             }
@@ -37,11 +42,11 @@ pub async fn run_restart(
         let mut start_errors: Vec<(String, String)> = Vec::new();
 
         for service in &stopped_successfully {
-            print!("  Starting {}...", service);
+            out.progress(&format!("  Starting {}...", service));
             match orchestrator.start(service).await {
-                Ok(_) => println!(" done"),
+                Ok(_) => out.finish_progress(" done"),
                 Err(e) => {
-                    println!(" failed ({})", e);
+                    out.finish_progress(&format!(" failed ({})", e));
                     start_errors.push((service.clone(), e.to_string()));
                 }
             }
@@ -51,19 +56,19 @@ pub async fn run_restart(
         let has_errors = !stop_errors.is_empty() || !start_errors.is_empty();
 
         if has_errors {
-            println!();
+            out.blank();
 
             if !stop_errors.is_empty() {
-                println!("Failed to stop:");
+                out.status("Failed to stop:");
                 for (service, error) in &stop_errors {
-                    println!("  - {}: {}", service, error);
+                    out.status(&format!("  - {}: {}", service, error));
                 }
             }
 
             if !start_errors.is_empty() {
-                println!("Failed to start:");
+                out.status("Failed to start:");
                 for (service, error) in &start_errors {
-                    println!("  - {}: {}", service, error);
+                    out.status(&format!("  - {}: {}", service, error));
                 }
             }
 
@@ -75,7 +80,8 @@ pub async fn run_restart(
             ));
         }
 
-        println!("\nServices restarted successfully!");
+        out.blank();
+        out.success("Services restarted successfully!");
     }
 
     Ok(())

@@ -1,17 +1,112 @@
 use chrono::{DateTime, Utc};
 
+/// Result of attempting to stop a service by its persisted state.
+pub enum StopResult {
+    /// Service was successfully stopped.
+    Stopped,
+    /// Service stop was skipped (e.g., PID reused, no PID/container).
+    Skipped(String),
+    /// Service stop was attempted but failed.
+    Failed,
+}
+
+/// Stop a service using only its persisted state (PID/container ID).
+///
+/// This encapsulates the common pattern shared by `stop_remaining_state_services`
+/// and `run_stop_from_state`: given a `ServiceState`, stop whatever is running.
+pub async fn stop_service_by_state(
+    name: &str,
+    state: &service_federation::state::ServiceState,
+) -> StopResult {
+    if let Some(container_id) = state.container_id.as_deref() {
+        if graceful_docker_stop(container_id).await {
+            StopResult::Stopped
+        } else {
+            StopResult::Failed
+        }
+    } else if let Some(pid) = state.pid {
+        if !validate_pid_start_time(pid, state.started_at) {
+            StopResult::Skipped(format!("PID {} was reused by another process", pid))
+        } else if graceful_process_kill(pid).await {
+            StopResult::Stopped
+        } else {
+            StopResult::Failed
+        }
+    } else {
+        StopResult::Skipped(format!(
+            "no PID or container ID for service '{}'",
+            name
+        ))
+    }
+}
+
+/// Remove orphaned Docker containers for a work directory (no orchestrator needed).
+///
+/// Finds all containers whose name starts with `fed-{hash}-` (where `hash` is
+/// derived from `work_dir`) and force-removes them. Returns the number of
+/// containers successfully removed.
+pub async fn remove_orphan_containers_for_workdir(work_dir: &std::path::Path) -> usize {
+    use service_federation::service::hash_work_dir;
+    use tokio::process::Command;
+
+    let work_dir_hash = hash_work_dir(work_dir);
+    let prefix = format!("fed-{}-", work_dir_hash);
+
+    let output = Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("name=^{}", prefix),
+            "--format",
+            "{{.Names}}",
+        ])
+        .output()
+        .await;
+
+    let Ok(output) = output else {
+        return 0;
+    };
+    if !output.status.success() {
+        return 0;
+    }
+
+    let containers: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut removed = 0;
+    for container in containers {
+        let rm_output = Command::new("docker")
+            .args(["rm", "-f", &container])
+            .output()
+            .await;
+
+        if let Ok(out) = rm_output {
+            if out.status.success() {
+                removed += 1;
+            }
+        }
+    }
+
+    removed
+}
+
 /// Gracefully stop a Docker container.
 ///
 /// Tries `docker stop` first (sends SIGTERM, waits), then `docker rm -f`.
 pub async fn graceful_docker_stop(container_id: &str) -> bool {
-    use std::process::Command;
+    use tokio::process::Command;
 
     // Try graceful stop first (SIGTERM with 10 second timeout)
     let stop_result = Command::new("docker")
         .args(["stop", "-t", "10", container_id])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .await;
 
     if let Ok(status) = stop_result {
         if status.success() {
@@ -20,7 +115,8 @@ pub async fn graceful_docker_stop(container_id: &str) -> bool {
                 .args(["rm", "-f", container_id])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .status();
+                .status()
+                .await;
             return true;
         }
     }
@@ -30,7 +126,8 @@ pub async fn graceful_docker_stop(container_id: &str) -> bool {
         .args(["rm", "-f", container_id])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .await;
 
     rm_result.map(|s| s.success()).unwrap_or(false)
 }
@@ -153,7 +250,7 @@ pub fn validate_pid_start_time(pid: u32, expected_start: DateTime<Utc>) -> bool 
 ///
 /// Sends SIGTERM first, waits up to 5 seconds, then sends SIGKILL.
 pub async fn graceful_process_kill(pid: u32) -> bool {
-    use std::process::Command;
+    use tokio::process::Command;
     use std::time::Duration;
 
     // Check if process exists first
@@ -162,6 +259,7 @@ pub async fn graceful_process_kill(pid: u32) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
+        .await
         .map(|s| s.success())
         .unwrap_or(false);
 
@@ -175,7 +273,8 @@ pub async fn graceful_process_kill(pid: u32) -> bool {
         .args(["-TERM", &pid.to_string()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .await;
 
     if term_result.is_err() {
         return false;
@@ -190,6 +289,7 @@ pub async fn graceful_process_kill(pid: u32) -> bool {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
+            .await
             .map(|s| s.success())
             .unwrap_or(false);
 
@@ -203,7 +303,8 @@ pub async fn graceful_process_kill(pid: u32) -> bool {
         .args(["-KILL", &pid.to_string()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .await;
 
     // Wait a bit more for SIGKILL to take effect
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -214,6 +315,7 @@ pub async fn graceful_process_kill(pid: u32) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
+        .await
         .map(|s| s.success())
         .unwrap_or(false);
 

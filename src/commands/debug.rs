@@ -1,3 +1,4 @@
+use crate::output::UserOutput;
 use serde::Serialize;
 use service_federation::config::Config;
 use service_federation::error::{Error, Result};
@@ -67,15 +68,16 @@ pub async fn run_debug(
     _config: &Config,
     work_dir: PathBuf,
     json: bool,
+    out: &dyn UserOutput,
 ) -> Result<()> {
     match command {
         DebugCommand::State => {
             let state = collect_state_info(work_dir).await?;
 
             if json {
-                println!("{}", serde_json::to_string_pretty(&state)?);
+                out.status(&serde_json::to_string_pretty(&state)?);
             } else {
-                print_state_human_readable(&state);
+                print_state_human_readable(&state, out);
             }
         }
         DebugCommand::Ports => {
@@ -83,18 +85,18 @@ pub async fn run_debug(
 
             if json {
                 let ports: Vec<_> = state.allocated_ports.clone();
-                println!("{}", serde_json::to_string_pretty(&ports)?);
+                out.status(&serde_json::to_string_pretty(&ports)?);
             } else {
-                print_ports_human_readable(&state.allocated_ports);
+                print_ports_human_readable(&state.allocated_ports, out);
             }
         }
         DebugCommand::CircuitBreaker { service } => {
             let info = collect_circuit_breaker_info(work_dir, &service).await?;
 
             if json {
-                println!("{}", serde_json::to_string_pretty(&info)?);
+                out.status(&serde_json::to_string_pretty(&info)?);
             } else {
-                print_circuit_breaker_human_readable(&info);
+                print_circuit_breaker_human_readable(&info, out);
             }
         }
     }
@@ -120,7 +122,7 @@ async fn collect_state_info(work_dir: PathBuf) -> Result<StateDebugOutput> {
 
         services.push(ServiceDebugInfo {
             name: service_state.id.clone(),
-            status: service_state.status.clone(),
+            status: service_state.status.to_string(),
             service_type: service_state.service_type.clone(),
             pid: service_state.pid,
             container_id: service_state.container_id.clone(),
@@ -197,103 +199,115 @@ async fn get_recent_restarts(
         .collect())
 }
 
-fn print_state_human_readable(state: &StateDebugOutput) {
-    println!("\nService Federation State Tracker");
-    println!("================================\n");
+fn print_state_human_readable(state: &StateDebugOutput, out: &dyn UserOutput) {
+    out.status("\nService Federation State Tracker");
+    out.status("================================\n");
 
     if state.services.is_empty() {
-        println!("No services are currently tracked.\n");
+        out.status("No services are currently tracked.\n");
     } else {
-        println!("Services:\n");
+        out.status("Services:\n");
         for service in &state.services {
-            println!("  {} ({})", service.name, service.status);
-            println!("    Type: {}", service.service_type);
+            out.status(&format!("  {} ({})", service.name, service.status));
+            out.status(&format!("    Type: {}", service.service_type));
 
             if let Some(pid) = service.pid {
-                println!("    PID: {}", pid);
+                out.status(&format!("    PID: {}", pid));
             }
             if let Some(container_id) = &service.container_id {
-                println!("    Container: {}", container_id);
+                out.status(&format!("    Container: {}", container_id));
             }
 
-            println!("    Started: {}", service.started_at);
-            println!("    Restarts: {}", service.restart_count);
+            out.status(&format!("    Started: {}", service.started_at));
+            out.status(&format!("    Restarts: {}", service.restart_count));
 
             if let Some(last_restart) = &service.last_restart_at {
-                println!("    Last Restart: {}", last_restart);
+                out.status(&format!("    Last Restart: {}", last_restart));
             }
 
             if service.consecutive_failures > 0 {
-                println!("    Consecutive Failures: {}", service.consecutive_failures);
+                out.status(&format!(
+                    "    Consecutive Failures: {}",
+                    service.consecutive_failures
+                ));
             }
 
-            println!("    Circuit Breaker: {}", service.circuit_breaker_state);
+            out.status(&format!(
+                "    Circuit Breaker: {}",
+                service.circuit_breaker_state
+            ));
 
             if !service.port_allocations.is_empty() {
-                println!("    Ports:");
+                out.status("    Ports:");
                 for (param, port) in &service.port_allocations {
-                    println!("      {} = {}", param, port);
+                    out.status(&format!("      {} = {}", param, port));
                 }
             }
 
-            println!();
+            out.blank();
         }
     }
 
     if !state.allocated_ports.is_empty() {
-        println!("Allocated Ports:\n");
+        out.status("Allocated Ports:\n");
         for port_info in &state.allocated_ports {
-            println!(
-                "  {} → {} (parameter: {})",
+            out.status(&format!(
+                "  {} -> {} (parameter: {})",
                 port_info.port, port_info.service, port_info.parameter
-            );
+            ));
         }
-        println!();
+        out.blank();
     }
 }
 
-fn print_ports_human_readable(ports: &[PortDebugInfo]) {
-    println!("\nPort Allocations");
-    println!("================\n");
+fn print_ports_human_readable(ports: &[PortDebugInfo], out: &dyn UserOutput) {
+    out.status("\nPort Allocations");
+    out.status("================\n");
 
     if ports.is_empty() {
-        println!("No ports are currently allocated.\n");
+        out.status("No ports are currently allocated.\n");
         return;
     }
 
     for port_info in ports {
-        println!(
+        out.status(&format!(
             "  Port {}: {} (parameter: {})",
             port_info.port, port_info.service, port_info.parameter
-        );
+        ));
     }
-    println!();
+    out.blank();
 }
 
-fn print_circuit_breaker_human_readable(info: &CircuitBreakerDebugOutput) {
-    println!("\nCircuit Breaker Status for '{}'", info.service);
-    println!("=====================================\n");
+fn print_circuit_breaker_human_readable(info: &CircuitBreakerDebugOutput, out: &dyn UserOutput) {
+    out.status(&format!(
+        "\nCircuit Breaker Status for '{}'",
+        info.service
+    ));
+    out.status("=====================================\n");
 
-    println!("Status: {}", info.status);
+    out.status(&format!("Status: {}", info.status));
 
     if let Some(ref open_until) = info.open_until {
-        println!("Open Until: {}", open_until);
+        out.status(&format!("Open Until: {}", open_until));
     }
 
-    println!("Total Restarts: {}", info.restart_count);
-    println!("Consecutive Failures: {}", info.consecutive_failures);
+    out.status(&format!("Total Restarts: {}", info.restart_count));
+    out.status(&format!(
+        "Consecutive Failures: {}",
+        info.consecutive_failures
+    ));
 
     if !info.recent_restarts.is_empty() {
-        println!(
+        out.status(&format!(
             "\nRecent Restarts (last {} events):",
             info.recent_restarts.len()
-        );
+        ));
         for event in &info.recent_restarts {
-            println!("  - {}", event.timestamp);
+            out.status(&format!("  - {}", event.timestamp));
         }
     } else {
-        println!("\nNo recent restarts recorded.");
+        out.status("\nNo recent restarts recorded.");
     }
 
-    println!();
+    out.blank();
 }

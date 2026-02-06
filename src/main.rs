@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod output;
 
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands};
@@ -92,10 +93,10 @@ async fn run() -> anyhow::Result<()> {
     // Handle commands that don't need orchestrator first
     match &cli.command {
         Commands::Init { output, force } => {
-            return commands::run_init(output, *force);
+            return commands::run_init(output, *force, &output::CliOutput);
         }
         Commands::Validate => {
-            return commands::run_validate(cli.config.clone());
+            return commands::run_validate(cli.config.clone(), &output::CliOutput);
         }
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
@@ -104,19 +105,19 @@ async fn run() -> anyhow::Result<()> {
             return Ok(());
         }
         Commands::Doctor => {
-            return commands::run_doctor().await;
+            return commands::run_doctor(&output::CliOutput).await;
         }
         Commands::Session(session_cmd) => {
-            return commands::run_session(session_cmd, cli.workdir.clone(), cli.profile.clone())
+            return commands::run_session(session_cmd, cli.workdir.clone(), cli.profile.clone(), &output::CliOutput)
                 .await;
         }
         Commands::Package(package_cmd) => {
-            return commands::run_package(package_cmd)
+            return commands::run_package(package_cmd, &output::CliOutput)
                 .await
                 .map_err(|e| anyhow::anyhow!(e));
         }
         Commands::Ports(ref ports_cmd) => {
-            return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone()).await;
+            return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone(), &output::CliOutput).await;
         }
         Commands::Docker(docker_cmd) => {
             let parser = ConfigParser::new();
@@ -153,6 +154,7 @@ async fn run() -> anyhow::Result<()> {
                         tag.clone(),
                         build_args.clone(),
                         *json,
+                        &output::CliOutput,
                     )
                     .await;
                 }
@@ -162,6 +164,7 @@ async fn run() -> anyhow::Result<()> {
                         &work_dir,
                         services.clone(),
                         tag.clone(),
+                        &output::CliOutput,
                     )
                     .await;
                 }
@@ -208,7 +211,7 @@ async fn run() -> anyhow::Result<()> {
                 cli::DebugCommands::CircuitBreaker { json, .. } => *json,
             };
 
-            return commands::run_debug(debug_command, &config, work_dir, json)
+            return commands::run_debug(debug_command, &config, work_dir, json, &output::CliOutput)
                 .await
                 .map_err(|e| anyhow::anyhow!(e));
         }
@@ -247,34 +250,27 @@ async fn run() -> anyhow::Result<()> {
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
             });
-            commands::run_stop_from_state(&work_dir, services.clone()).await?;
+            commands::run_stop_from_state(&work_dir, services.clone(), &output::CliOutput).await?;
             return Ok(());
         }
         (_, Err(e)) => return Err(e),
         (_, Ok(config)) => config,
     };
 
-    // Create orchestrator with profiles
-    let mut orchestrator = Orchestrator::new(config.clone(), std::path::PathBuf::from("."))
-        .await?
-        .with_profiles(cli.profile.clone());
-
-    if let Some(workdir) = cli.workdir {
-        orchestrator.set_work_dir(workdir).await?;
-    } else {
-        // Use config file's directory as working directory
-        if let Some(parent) = config_path.parent() {
-            if parent.as_os_str().is_empty() {
-                orchestrator.set_work_dir(std::env::current_dir()?).await?;
-            } else {
-                orchestrator.set_work_dir(parent.to_path_buf()).await?;
-            }
+    // Determine work directory from CLI or config path
+    let work_dir = if let Some(workdir) = cli.workdir {
+        workdir
+    } else if let Some(parent) = config_path.parent() {
+        if parent.as_os_str().is_empty() {
+            std::env::current_dir()?
         } else {
-            orchestrator.set_work_dir(std::env::current_dir()?).await?;
+            parent.to_path_buf()
         }
-    }
+    } else {
+        std::env::current_dir()?
+    };
 
-    // Set output mode BEFORE initializing
+    // Determine output mode before initializing.
     // File mode (background) disables the monitoring task since we don't need it for:
     // - Start without watch (we exit immediately after starting)
     // - Stop (we're stopping services, not monitoring them)
@@ -319,27 +315,29 @@ async fn run() -> anyhow::Result<()> {
         Commands::Tui { .. } => OutputMode::Captured,
         _ => OutputMode::Captured,
     };
-    orchestrator.set_output_mode(output_mode);
+
+    // Read-only commands skip parameter resolution and Docker cleanup
+    // to avoid interactive prompts and stale service recreation.
+    let readonly = matches!(
+        cli.command,
+        Commands::Status { .. } | Commands::Logs { .. } | Commands::Stop { .. }
+    );
 
     // --randomize allocates fresh random ports (same as `fed ports randomize` + `fed start`)
-    if matches!(
+    let randomize = matches!(
         &cli.command,
         Commands::Start {
             randomize: true,
             ..
         }
-    ) {
-        orchestrator.set_randomize_ports(true);
-    }
+    );
 
     // --replace kills blocking processes/containers and uses original ports
-    if matches!(&cli.command, Commands::Start { replace: true, .. }) {
-        orchestrator.set_replace_mode(true);
-    }
+    let replace = matches!(&cli.command, Commands::Start { replace: true, .. });
 
     // For script commands, check if the script has isolated: true
     // If so, set auto_resolve_conflicts to avoid prompts for ports that will be re-allocated anyway
-    let is_isolated_script = match &cli.command {
+    let auto_resolve = match &cli.command {
         Commands::Run { name, .. } => config
             .scripts
             .get(name)
@@ -352,21 +350,19 @@ async fn run() -> anyhow::Result<()> {
             .unwrap_or(false),
         _ => false,
     };
-    if is_isolated_script {
-        orchestrator.set_auto_resolve_conflicts(true);
-    }
 
-    // Read-only commands and stop skip parameter resolution and Docker cleanup
-    // to avoid interactive prompts and stale service recreation.
-    let readonly = matches!(
-        cli.command,
-        Commands::Status { .. } | Commands::Logs { .. } | Commands::Stop { .. }
-    );
-    if readonly {
-        orchestrator.initialize_readonly().await?;
-    } else {
-        orchestrator.initialize().await?;
-    }
+    // Build orchestrator with all settings applied and initialized
+    let mut orchestrator = Orchestrator::builder()
+        .config(config.clone())
+        .work_dir(work_dir)
+        .profiles(cli.profile.clone())
+        .output_mode(output_mode)
+        .randomize_ports(randomize)
+        .replace_mode(replace)
+        .auto_resolve_conflicts(auto_resolve)
+        .readonly(readonly)
+        .build()
+        .await?;
 
     match cli.command {
         Commands::Start {
@@ -385,24 +381,25 @@ async fn run() -> anyhow::Result<()> {
                 replace,
                 dry_run,
                 &config_path,
+                &output::CliOutput,
             )
             .await?;
         }
         Commands::Stop { services } => {
-            commands::run_stop(&mut orchestrator, &config, services).await?;
+            commands::run_stop(&mut orchestrator, &config, services, &output::CliOutput).await?;
         }
         Commands::Restart { services } => {
-            commands::run_restart(&mut orchestrator, &config, services).await?;
+            commands::run_restart(&mut orchestrator, &config, services, &output::CliOutput).await?;
         }
         Commands::Status { json, tag } => {
-            commands::run_status(&orchestrator, &config, json, tag).await?;
+            commands::run_status(&orchestrator, &config, json, tag, &output::CliOutput).await?;
         }
         Commands::Logs {
             service,
             tail,
             follow,
         } => {
-            commands::run_logs(&orchestrator, &service, tail, follow).await?;
+            commands::run_logs(&orchestrator, &service, tail, follow, &output::CliOutput).await?;
         }
         Commands::Tui { watch } => {
             commands::run_tui(orchestrator, watch, Some(&config)).await?;
@@ -410,7 +407,7 @@ async fn run() -> anyhow::Result<()> {
         Commands::Run { name, args } => {
             // Strip leading "--" from args (clap captures it literally)
             let extra_args: Vec<String> = args.into_iter().skip_while(|arg| arg == "--").collect();
-            commands::run_script(&mut orchestrator, &name, &extra_args, false).await?;
+            commands::run_script(&mut orchestrator, &name, &extra_args, false, &output::CliOutput).await?;
         }
         Commands::External(args) => {
             // Handle `fed <script>` shorthand - first arg is the script name
@@ -432,7 +429,7 @@ async fn run() -> anyhow::Result<()> {
 
             let available_scripts = orchestrator.list_scripts();
             if available_scripts.contains(script_name) {
-                commands::run_script(&mut orchestrator, script_name, &extra_args, false).await?;
+                commands::run_script(&mut orchestrator, script_name, &extra_args, false, &output::CliOutput).await?;
             } else {
                 eprintln!("Unknown command or script: '{}'", script_name);
                 eprintln!("\nAvailable scripts:");
@@ -444,10 +441,10 @@ async fn run() -> anyhow::Result<()> {
             }
         }
         Commands::Install { services } => {
-            commands::run_install(&orchestrator, &config, services).await?;
+            commands::run_install(&orchestrator, &config, services, &output::CliOutput).await?;
         }
         Commands::Clean { services } => {
-            commands::run_clean(&orchestrator, &config, services).await?;
+            commands::run_clean(&orchestrator, &config, services, &output::CliOutput).await?;
         }
         Commands::Build {
             services,
@@ -455,10 +452,10 @@ async fn run() -> anyhow::Result<()> {
             build_args,
             json,
         } => {
-            commands::run_build(&orchestrator, &config, services, tag, build_args, json).await?;
+            commands::run_build(&orchestrator, &config, services, tag, build_args, json, &output::CliOutput).await?;
         }
         Commands::Top { interval } => {
-            commands::run_top(&orchestrator, interval).await?;
+            commands::run_top(&orchestrator, interval, &output::CliOutput).await?;
         }
         // These are handled earlier
         Commands::Session(_)

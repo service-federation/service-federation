@@ -1,5 +1,6 @@
 use super::types::{LockFile, ServiceState};
 use crate::error::{validate_pid_for_check, Error, Result};
+use crate::service::Status;
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use std::collections::HashMap;
@@ -168,14 +169,16 @@ impl SqliteStateTracker {
 
                 let services_iter = stmt.query_map([], |row| {
                     let id: String = row.get(0)?;
+                    let status_str: String = row.get(1)?;
                     let started_at_str: String = row.get(5)?;
                     let last_restart_str: Option<String> = row.get(9)?;
 
                     Ok((
                         id.clone(),
+                        status_str.clone(),
                         ServiceState {
                             id,
-                            status: row.get(1)?,
+                            status: status_str.parse::<Status>().unwrap_or(Status::Stopped),
                             service_type: row.get(2)?,
                             pid: row.get(3)?,
                             container_id: row.get(4)?,
@@ -194,8 +197,11 @@ impl SqliteStateTracker {
                     ))
                 })?;
 
+                // Filter out stale DB-only statuses before constructing the map
                 let mut services: HashMap<String, ServiceState> = services_iter
                     .filter_map(|r| r.ok())
+                    .filter(|(_, raw_status, _)| !Self::status_is_stale(raw_status))
+                    .map(|(id, _, state)| (id, state))
                     .collect();
 
                 // Validate PIDs - filter out invalid ones (don't delete, just skip)
@@ -722,8 +728,8 @@ impl SqliteStateTracker {
     /// one process may have registered the service but not yet assigned a PID,
     /// while another process reads the state. We don't want to clean up services
     /// that are legitimately in the process of starting.
-    fn status_indicates_should_be_running(status: &str) -> bool {
-        matches!(status, "running" | "healthy" | "failing")
+    fn status_indicates_should_be_running(status: Status) -> bool {
+        matches!(status, Status::Running | Status::Healthy | Status::Failing)
     }
 
     /// Check if a status indicates the service is stale (marked for cleanup).
@@ -738,7 +744,7 @@ impl SqliteStateTracker {
         debug!("Registering service: {}", service_state.id);
 
         let id = service_state.id.clone();
-        let status = service_state.status.clone();
+        let status = service_state.status.to_string();
         let service_type = service_state.service_type.clone();
         let namespace = service_state.namespace.clone();
         let started_at = service_state.started_at.to_rfc3339();
@@ -808,7 +814,7 @@ impl SqliteStateTracker {
 
     /// Update service status
     #[must_use = "ignoring this result may cause state loss - the status update will not be persisted"]
-    pub async fn update_service_status(&mut self, service_id: &str, status: &str) -> Result<()> {
+    pub async fn update_service_status(&mut self, service_id: &str, status: Status) -> Result<()> {
         let service_id = service_id.to_string();
         let service_id_for_tx = service_id.clone();
         let status = status.to_string();
@@ -936,24 +942,8 @@ impl SqliteStateTracker {
                 .status
         };
 
-        // Convert status string to Status enum for validation
-        let current_status_enum = match current_status.as_str() {
-            "stopped" => crate::service::Status::Stopped,
-            "starting" => crate::service::Status::Starting,
-            "running" => crate::service::Status::Running,
-            "healthy" => crate::service::Status::Healthy,
-            "failing" => crate::service::Status::Failing,
-            "stopping" => crate::service::Status::Stopping,
-            _ => {
-                return Err(Error::Validation(format!(
-                    "Unknown status '{}' for service '{}'",
-                    current_status, service_id
-                )));
-            }
-        };
-
         // Validate the transition
-        transition.validate(current_status_enum)?;
+        transition.validate(current_status)?;
 
         // Apply the transition atomically
         let status_str = transition.status.to_string();
@@ -1581,14 +1571,16 @@ impl SqliteStateTracker {
 
             let services_iter = stmt.query_map([], |row| {
                 let id: String = row.get(0)?;
+                let status_str: String = row.get(1)?;
                 let started_at_str: String = row.get(5)?;
                 let last_restart_str: Option<String> = row.get(9)?;
 
                 Ok((
                     id.clone(),
+                    status_str.clone(),
                     ServiceState {
                         id,
-                        status: row.get(1)?,
+                        status: status_str.parse::<Status>().unwrap_or(Status::Stopped),
                         service_type: row.get(2)?,
                         pid: row.get(3)?,
                         container_id: row.get(4)?,
@@ -1606,8 +1598,11 @@ impl SqliteStateTracker {
                 ))
             })?;
 
+            // Filter out stale DB-only statuses before constructing the map
             let mut services: HashMap<String, ServiceState> = services_iter
                 .filter_map(|r| r.ok())
+                .filter(|(_, raw_status, _)| !Self::status_is_stale(raw_status))
+                .map(|(id, _, state)| (id, state))
                 .collect();
 
             // Validate and remove services with invalid PIDs
@@ -1668,12 +1663,13 @@ impl SqliteStateTracker {
                 rusqlite::params![&service_id],
                 |row| {
                     let id: String = row.get(0)?;
+                    let status_str: String = row.get(1)?;
                     let started_at_str: String = row.get(5)?;
                     let last_restart_str: Option<String> = row.get(9)?;
 
                     Ok(ServiceState {
                         id,
-                        status: row.get(1)?,
+                        status: status_str.parse::<Status>().unwrap_or(Status::Stopped),
                         service_type: row.get(2)?,
                         pid: row.get(3)?,
                         container_id: row.get(4)?,
@@ -1792,10 +1788,7 @@ impl SqliteStateTracker {
         }
 
         for (service_id, service_state) in &services {
-            // Skip already-stale services
-            if Self::status_is_stale(&service_state.status) {
-                continue;
-            }
+            // Stale services are already filtered out at the DB read boundary
 
             let is_stale = if let Some(pid) = service_state.pid {
                 !Self::is_process_running(pid).await
@@ -1811,7 +1804,7 @@ impl SqliteStateTracker {
                 // Service has no PID and no container_id.
                 // Only consider stale if its status indicates it SHOULD be running.
                 // Services that are "stopped" or were never started are not stale.
-                Self::status_indicates_should_be_running(&service_state.status)
+                Self::status_indicates_should_be_running(service_state.status)
             };
 
             if is_stale {
@@ -2023,7 +2016,7 @@ mod tests {
     async fn register_test_service(tracker: &mut SqliteStateTracker, service_id: &str) {
         let state = ServiceState {
             id: service_id.to_string(),
-            status: "Running".to_string(),
+            status: Status::Running,
             service_type: "Process".to_string(),
             pid: Some(12345),
             container_id: None,
