@@ -1349,6 +1349,28 @@ impl Orchestrator {
     }
 }
 
+/// Check if a PID is alive (signal 0 check).
+///
+/// This is a free function shared across orchestrator submodules.
+/// Both `orphans` (orphan process detection) and `ports` (managed port
+/// collection) need it, so it lives here to avoid cross-module dependencies.
+pub(super) fn is_pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        use crate::error::validate_pid_for_check;
+        use nix::sys::signal::kill;
+        if let Some(nix_pid) = validate_pid_for_check(pid) {
+            return kill(nix_pid, None).is_ok();
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true // Can't check on non-unix, assume alive
+    }
+}
+
 impl Drop for Orchestrator {
     fn drop(&mut self) {
         // Cancel the token so the monitoring loop breaks on its next select! iteration.

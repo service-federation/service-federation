@@ -115,7 +115,7 @@ impl<'a> OrphanCleaner<'a> {
                     Status::Stopped | Status::Failing
                 );
 
-                if is_stopped && is_pid_alive(pid) {
+                if is_stopped && super::core::is_pid_alive(pid) {
                     orphans.push((name, pid));
                 }
             }
@@ -217,23 +217,3 @@ impl<'a> OrphanCleaner<'a> {
     }
 }
 
-/// Check if a PID is alive (signal 0 check).
-///
-/// This is a free function because it doesn't need any Orchestrator state.
-/// It's `pub(super)` because `collect_managed_ports` in core.rs also uses it.
-pub(super) fn is_pid_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        use crate::error::validate_pid_for_check;
-        use nix::sys::signal::kill;
-        if let Some(nix_pid) = validate_pid_for_check(pid) {
-            return kill(nix_pid, None).is_ok();
-        }
-        false
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        true // Can't check on non-unix, assume alive
-    }
-}

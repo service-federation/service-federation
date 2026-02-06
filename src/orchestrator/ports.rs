@@ -40,7 +40,7 @@ pub(super) async fn collect_managed_ports(
 
         // Verify the process/container is actually alive before trusting the port
         let is_alive = if let Some(pid) = svc.pid {
-            super::orphans::is_pid_alive(pid)
+            super::core::is_pid_alive(pid)
         } else if svc.container_id.is_some() {
             // Can't cheaply verify container without Docker — trust the status.
             // If Docker is down, mark_dead_services will skip container checks anyway.
