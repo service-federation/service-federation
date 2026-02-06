@@ -112,9 +112,7 @@ async fn run() -> anyhow::Result<()> {
                 .await;
         }
         Commands::Package(package_cmd) => {
-            return commands::run_package(package_cmd, &output::CliOutput)
-                .await
-                .map_err(|e| anyhow::anyhow!(e));
+            return commands::run_package(package_cmd, &output::CliOutput).await;
         }
         Commands::Ports(ref ports_cmd) => {
             return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone(), &output::CliOutput).await;
@@ -212,8 +210,7 @@ async fn run() -> anyhow::Result<()> {
             };
 
             return commands::run_debug(debug_command, &config, work_dir, json, &output::CliOutput)
-                .await
-                .map_err(|e| anyhow::anyhow!(e));
+                .await;
         }
         _ => {}
     }
