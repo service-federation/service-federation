@@ -1,13 +1,13 @@
 use crate::output::UserOutput;
 use service_federation::{
     config::Config,
-    service::{hash_work_dir, Status},
+    service::Status,
     state::StateTracker,
     Orchestrator,
 };
 use std::path::Path;
 
-use super::lifecycle::{graceful_docker_stop, graceful_process_kill, validate_pid_start_time};
+use super::lifecycle::{remove_orphan_containers_for_workdir, stop_service_by_state, StopResult};
 
 pub async fn run_stop(
     orchestrator: &mut Orchestrator,
@@ -105,35 +105,18 @@ async fn stop_remaining_state_services(
         // Stop by state (PID/container) and unregister regardless of config.
         out.progress(&format!("  Stopping {} (from state)...", name));
 
-        let mut note: Option<String> = None;
-        let success = if let Some(container_id) = state.container_id.as_deref() {
-            graceful_docker_stop(container_id).await
-        } else if let Some(pid) = state.pid {
-            if !validate_pid_start_time(pid, state.started_at) {
-                // The recorded PID is not safe to signal; drop this state entry.
-                note = Some(format!(
-                    "skipped (PID {} was reused by another process)",
-                    pid
-                ));
-                true
-            } else {
-                graceful_process_kill(pid).await
-            }
-        } else {
-            // No PID/container - nothing to stop
-            note = Some("skipped (no PID/container)".to_string());
-            true
-        };
-
-        if success {
-            if let Some(note) = note {
-                out.finish_progress(&format!(" {}", note));
-            } else {
+        match stop_service_by_state(&name, &state).await {
+            StopResult::Stopped => {
                 out.finish_progress(" done");
+                stopped_names.push(name);
             }
-            stopped_names.push(name);
-        } else {
-            out.finish_progress(" failed");
+            StopResult::Skipped(reason) => {
+                out.finish_progress(&format!(" skipped ({})", reason));
+                stopped_names.push(name);
+            }
+            StopResult::Failed => {
+                out.finish_progress(" failed");
+            }
         }
     }
 
@@ -192,32 +175,16 @@ pub async fn run_stop_from_state(
 
         out.progress(&format!("  Stopping {}...", name));
 
-        let mut note: Option<String> = None;
-        let stopped = if let Some(container_id) = state.container_id.as_deref() {
-            graceful_docker_stop(container_id).await
-        } else if let Some(pid) = state.pid {
-            if !validate_pid_start_time(pid, state.started_at) {
-                note = Some(format!(
-                    "skipped (PID {} was reused by another process)",
-                    pid
-                ));
-                true
-            } else {
-                graceful_process_kill(pid).await
-            }
-        } else {
-            note = Some("skipped (no PID/container)".to_string());
-            true
-        };
-
-        if stopped {
-            if let Some(note) = note {
-                out.finish_progress(&format!(" {}", note));
-            } else {
+        match stop_service_by_state(name, state).await {
+            StopResult::Stopped => {
                 out.finish_progress(" done");
             }
-        } else {
-            out.finish_progress(" failed");
+            StopResult::Skipped(reason) => {
+                out.finish_progress(&format!(" skipped ({})", reason));
+            }
+            StopResult::Failed => {
+                out.finish_progress(" failed");
+            }
         }
     }
 
@@ -234,47 +201,9 @@ pub async fn run_stop_from_state(
     }
 
     // Also remove any orphaned containers not in state DB
-    let work_dir_hash = hash_work_dir(work_dir);
-    let prefix = format!("fed-{}-", work_dir_hash);
-
-    let output = tokio::process::Command::new("docker")
-        .args([
-            "ps",
-            "-a",
-            "--filter",
-            &format!("name=^{}", prefix),
-            "--format",
-            "{{.Names}}",
-        ])
-        .output()
-        .await;
-
-    if let Ok(output) = output {
-        if output.status.success() {
-            let containers: Vec<String> = String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-
-            let mut removed = 0;
-            for container in containers {
-                let rm_output = tokio::process::Command::new("docker")
-                    .args(["rm", "-f", &container])
-                    .output()
-                    .await;
-
-                if let Ok(out) = rm_output {
-                    if out.status.success() {
-                        removed += 1;
-                    }
-                }
-            }
-
-            if removed > 0 {
-                out.status(&format!("Removed {} orphaned container(s)", removed));
-            }
-        }
+    let removed = remove_orphan_containers_for_workdir(work_dir).await;
+    if removed > 0 {
+        out.status(&format!("Removed {} orphaned container(s)", removed));
     }
 
     out.success("Services stopped");
