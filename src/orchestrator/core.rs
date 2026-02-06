@@ -1139,11 +1139,6 @@ impl Orchestrator {
         self.resolver.get_resolved_parameters().clone()
     }
 
-    /// Get names of parameters with `type: port`.
-    pub fn get_port_parameter_names(&self) -> &[String] {
-        self.resolver.get_port_parameter_names()
-    }
-
     /// Get port resolution decisions for display in dry-run and status commands.
     pub fn get_port_resolutions(&self) -> &[crate::parameter::PortResolution] {
         self.resolver.get_port_resolutions()
