@@ -201,19 +201,8 @@ impl Orchestrator {
     }
 
     /// Release port listeners once, just before services start.
-    /// This minimizes the TOCTOU race window between port allocation and service bind.
-    ///
-    /// Uses atomic compare_exchange to ensure idempotency - only releases once
-    /// even if called from multiple concurrent start operations.
     fn release_port_listeners_once(&self) {
-        // Use compare_exchange to ensure we only release once
-        if self
-            .port_listeners_released
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            self.resolver.release_port_listeners();
-        }
+        super::ports::release_port_listeners_once(&self.port_listeners_released, &self.resolver);
     }
 
     /// Cancel all in-progress operations.
@@ -319,67 +308,15 @@ impl Orchestrator {
     /// 1. State tracker `port_allocations` table (per-service, populated for Docker)
     /// 2. Session port cache (`ports.json`) — global port→parameter mapping
     ///
-    /// If ANY service is alive, all session-cached ports are trusted as managed.
-    /// This handles process services which don't write to `port_allocations`.
+    /// Collect ports owned by running managed services so the resolver can
+    /// avoid re-allocating them.
     async fn collect_managed_ports(&mut self) {
-        let state = self.state_tracker.read().await;
-        let services = state.get_services().await;
-        let mut managed_ports = std::collections::HashSet::new();
-        let mut has_live_service = false;
-
-        for svc in services.values() {
-            if !matches!(svc.status, Status::Running | Status::Healthy) {
-                continue;
-            }
-
-            // Verify the process/container is actually alive before trusting the port
-            let is_alive = if let Some(pid) = svc.pid {
-                super::orphans::is_pid_alive(pid)
-            } else if svc.container_id.is_some() {
-                // Can't cheaply verify container without Docker — trust the status.
-                // If Docker is down, mark_dead_services will skip container checks anyway.
-                true
-            } else {
-                false
-            };
-
-            if is_alive {
-                has_live_service = true;
-                for &port in svc.port_allocations.values() {
-                    managed_ports.insert(port);
-                }
-            }
-        }
-
-        // If any real service is alive, trust globally persisted port resolutions.
-        // These cover all port parameters including process/Gradle services.
-        if has_live_service {
-            let global_ports = state.get_global_port_allocations().await;
-            for port in global_ports.values() {
-                managed_ports.insert(*port);
-            }
-
-            // Fallback: also check session port cache for backwards compatibility
-            // with sessions that predate global port persistence.
-            if global_ports.is_empty() {
-                if let Ok(Some(session)) =
-                    crate::session::Session::current_for_workdir(Some(self.work_dir.as_path()))
-                {
-                    for &port in session.get_all_ports().values() {
-                        managed_ports.insert(port);
-                    }
-                }
-            }
-        }
-
-        if !managed_ports.is_empty() {
-            tracing::debug!(
-                "Found {} managed port(s) from running services: {:?}",
-                managed_ports.len(),
-                managed_ports
-            );
-        }
-        self.resolver.set_managed_ports(managed_ports);
+        super::ports::collect_managed_ports(
+            &mut self.resolver,
+            &self.state_tracker,
+            &self.work_dir,
+        )
+        .await;
     }
 
     /// Lightweight initialization for read-only commands (status, logs).

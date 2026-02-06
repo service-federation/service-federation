@@ -5,6 +5,7 @@ mod health;
 mod lifecycle;
 mod monitoring;
 mod orphans;
+mod ports;
 mod scripts;
 
 pub use builder::OrchestratorBuilder;
