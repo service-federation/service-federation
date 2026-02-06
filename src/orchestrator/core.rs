@@ -23,9 +23,9 @@ pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 pub const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Type alias for the shared service registry
-type ServiceRegistry = HashMap<String, Arc<tokio::sync::Mutex<Box<dyn ServiceManager>>>>;
+pub(super) type ServiceRegistry = HashMap<String, Arc<tokio::sync::Mutex<Box<dyn ServiceManager>>>>;
 /// Type alias for the shared, async-safe service registry
-type SharedServiceRegistry = Arc<tokio::sync::RwLock<ServiceRegistry>>;
+pub(super) type SharedServiceRegistry = Arc<tokio::sync::RwLock<ServiceRegistry>>;
 /// Type alias for the health checker registry.
 /// Uses `Arc` so checkers can be cloned out without holding the read lock.
 type HealthCheckerRegistry = HashMap<String, Arc<dyn HealthChecker>>;
@@ -84,12 +84,12 @@ pub struct Orchestrator {
     pub(super) config: Config,
     /// Original unresolved config - used by isolated to create child orchestrators
     /// that can re-resolve templates with fresh port allocations.
-    original_config: Option<Config>,
-    resolver: Resolver,
+    pub(super) original_config: Option<Config>,
+    pub(super) resolver: Resolver,
     dep_graph: Graph,
     pub(super) services: SharedServiceRegistry,
     pub(super) health_checkers: SharedHealthCheckerRegistry,
-    work_dir: PathBuf,
+    pub(super) work_dir: PathBuf,
     pub state_tracker: Arc<tokio::sync::RwLock<StateTracker>>,
     namespace: String,
     /// Output mode for process services.
@@ -1680,93 +1680,12 @@ impl Orchestrator {
         Ok(manager.get_pid())
     }
 
-    /// Run a script by name
+    /// Run a script non-interactively, capturing output.
+    ///
+    /// Delegates to [`ScriptRunner`](super::scripts::ScriptRunner).
     pub async fn run_script(&self, script_name: &str) -> Result<std::process::Output> {
-        let script = self
-            .config
-            .scripts
-            .get(script_name)
-            .ok_or_else(|| Error::ScriptNotFound(script_name.to_string()))?
-            .clone();
-
-        // Resolve dependencies - can be services or other scripts (SF-00035)
-        // Note: We handle script deps by running them via run_script_interactive
-        // since run_script can't easily be made recursive without boxing
-        for dep in &script.depends_on {
-            if self.config.scripts.contains_key(dep) {
-                // Dependency is a script - run it via interactive runner
-                // (which handles recursion via Box::pin)
-                self.run_script_interactive(dep, &[]).await?;
-            } else {
-                // Dependency is a service - start it if not running
-                if !self.is_service_running(dep).await {
-                    self.start(dep).await?;
-                }
-            }
-        }
-
-        // Resolve script at execution time (scripts are not pre-resolved to support isolated)
-        let params = self.resolver.get_resolved_parameters().clone();
-        let resolved_env = self
-            .resolver
-            .resolve_environment(&script.environment, &params)
-            .map_err(|e| {
-                Error::Config(format!(
-                    "Failed to resolve environment for script '{}': {}",
-                    script_name, e
-                ))
-            })?;
-
-        let resolved_script_cmd = self
-            .resolver
-            .resolve_template_shell_safe(&script.script, &params)
-            .map_err(|e| {
-                Error::Config(format!("Failed to resolve script '{}': {}", script_name, e))
-            })?;
-
-        // Determine working directory
-        let work_dir = if let Some(ref cwd) = script.cwd {
-            std::path::Path::new(cwd).to_path_buf()
-        } else {
-            self.work_dir.clone()
-        };
-
-        // Build command - handle both single commands and shell scripts
-        let mut command = if cfg!(target_os = "windows") {
-            let mut cmd = tokio::process::Command::new("cmd");
-            cmd.args(["/C", &resolved_script_cmd]);
-            cmd
-        } else {
-            let mut cmd = tokio::process::Command::new("sh");
-            cmd.args(["-c", &resolved_script_cmd]);
-            cmd
-        };
-
-        command.current_dir(&work_dir);
-        command.envs(&resolved_env);
-
-        // Execute with timeout - default 5 minutes to prevent hanging
-        let timeout = std::time::Duration::from_secs(300);
-        let output_result = tokio::time::timeout(timeout, command.output()).await;
-
-        let output = match output_result {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => {
-                return Err(Error::Config(format!(
-                    "Failed to execute script '{}': {}",
-                    script_name, e
-                )));
-            }
-            Err(_) => {
-                return Err(Error::Config(format!(
-                    "Script '{}' exceeded timeout of {} seconds",
-                    script_name,
-                    timeout.as_secs()
-                )));
-            }
-        };
-
-        Ok(output)
+        let runner = super::scripts::ScriptRunner::new(self);
+        runner.run_script(script_name, self).await
     }
 
     /// Run a script interactively with stdin/stdout/stderr passthrough.
@@ -1778,345 +1697,33 @@ impl Orchestrator {
     ///
     /// If the script has `isolated: true`, it runs in an isolated context
     /// with fresh port allocations and isolated service instances.
+    ///
+    /// Delegates to [`ScriptRunner`](super::scripts::ScriptRunner).
     pub async fn run_script_interactive(
         &self,
         script_name: &str,
         extra_args: &[String],
     ) -> Result<std::process::ExitStatus> {
-        let script = self
-            .config
-            .scripts
-            .get(script_name)
-            .ok_or_else(|| Error::ScriptNotFound(script_name.to_string()))?
-            .clone();
-
-        if script.isolated {
-            // Execute in isolated context with fresh port allocations
-            self.run_script_isolated(script_name, &script, extra_args)
-                .await
-        } else {
-            // Execute in shared context (existing behavior)
-            self.run_script_shared(script_name, &script, extra_args)
-                .await
-        }
+        let runner = super::scripts::ScriptRunner::new(self);
+        runner
+            .run_script_interactive(script_name, extra_args, self)
+            .await
     }
 
-    /// Run a script in shared context (reuses session ports and services).
-    async fn run_script_shared(
-        &self,
-        script_name: &str,
-        script: &crate::config::Script,
-        extra_args: &[String],
-    ) -> Result<std::process::ExitStatus> {
-        // Resolve dependencies - can be services or other scripts (SF-00035)
-        for dep in &script.depends_on {
-            if self.config.scripts.contains_key(dep) {
-                // Dependency is a script - run it recursively
-                // Note: Circular dependencies are caught by graph validation during config parsing
-                // Use Box::pin to enable async recursion (avoids infinite future size)
-                Box::pin(self.run_script_interactive(dep, &[])).await?;
-            } else {
-                // Dependency is a service - start it if not running
-                if !self.is_service_running(dep).await {
-                    self.start(dep).await?;
-                }
-            }
-        }
-
-        // Resolve script at execution time (scripts are not pre-resolved to support isolated)
-        let params = self.resolver.get_resolved_parameters().clone();
-        let resolved_env = self
-            .resolver
-            .resolve_environment(&script.environment, &params)
-            .map_err(|e| {
-                Error::Config(format!(
-                    "Failed to resolve environment for script '{}': {}",
-                    script_name, e
-                ))
-            })?;
-
-        let resolved_script = self
-            .resolver
-            .resolve_template_shell_safe(&script.script, &params)
-            .map_err(|e| {
-                Error::Config(format!("Failed to resolve script '{}': {}", script_name, e))
-            })?;
-
-        // Create resolved script for execution
-        let resolved = crate::config::Script {
-            cwd: script.cwd.clone(),
-            depends_on: vec![], // Already resolved above
-            environment: resolved_env,
-            script: resolved_script,
-            isolated: false,
-        };
-
-        // Execute the script command
-        Self::execute_script_command(&resolved, extra_args, &self.work_dir).await
-    }
-
-    /// Run a script in isolated context with fresh port allocations (SF-00034).
+    /// Check if a service is running.
     ///
-    /// Creates a child orchestrator that:
-    /// 1. Allocates fresh random ports for all port-type parameters
-    /// 2. Starts dependencies with the new ports
-    /// 3. Runs the script in isolation
-    /// 4. Cleans up all services after completion
-    async fn run_script_isolated(
-        &self,
-        script_name: &str,
-        _script: &crate::config::Script, // Unused - we get the script from original_config
-        extra_args: &[String],
-    ) -> Result<std::process::ExitStatus> {
-        tracing::info!(
-            "Running script '{}' in isolated context (isolated: true)",
-            script_name
-        );
-
-        // Use the ORIGINAL unresolved config so the child can re-resolve templates
-        // with fresh port allocations. If original_config is None (shouldn't happen),
-        // fall back to cloning the resolved config.
-        let child_config = self
-            .original_config
-            .clone()
-            .unwrap_or_else(|| self.config.clone());
-
-        // Get the script from the original config (has unresolved templates)
-        let original_script = child_config
-            .scripts
-            .get(script_name)
-            .ok_or_else(|| Error::ScriptNotFound(script_name.to_string()))?
-            .clone();
-
-        let mut child_orchestrator = Orchestrator::new(child_config, self.work_dir.clone()).await?;
-        child_orchestrator.output_mode = self.output_mode;
-
-        // Enable isolated mode to skip session port cache and allocate fresh ports
-        child_orchestrator.resolver.set_isolated_mode(true);
-
-        // Clear the state tracker before initialization so the child doesn't restore
-        // old container IDs from previous runs. Each isolated run should start fresh.
-        child_orchestrator
-            .state_tracker
-            .write()
-            .await
-            .clear()
-            .await?;
-
-        // Initialize child orchestrator (allocates fresh ports due to isolated mode)
-        child_orchestrator.initialize().await?;
-
-        // Run script dependencies in the child context
-        // Script-to-script dependencies run in parent context (they don't need isolation
-        // unless they also have isolated)
-        let mut service_deps = Vec::new();
-        for dep in &original_script.depends_on {
-            if self.config.scripts.contains_key(dep) {
-                // Script dependency: run in parent context
-                // (nested scripts get their own isolation if they have isolated)
-                Box::pin(self.run_script_interactive(dep, &[])).await?;
-            } else {
-                // Service dependency: start in child context with isolated ports
-                child_orchestrator.start(dep).await?;
-                service_deps.push(dep.clone());
-            }
-        }
-
-        // Wait for service dependencies to become healthy
-        // This is important for isolated scripts that need DB connections etc.
-        for dep in &service_deps {
-            child_orchestrator
-                .wait_for_healthy(dep, Duration::from_secs(60))
-                .await?;
-        }
-
-        // Get the child's resolved parameters for the script environment
-        let child_params = child_orchestrator
-            .resolver
-            .get_resolved_parameters()
-            .clone();
-
-        // Re-resolve the script's environment and command with child parameters
-        // Using original_script which has unresolved templates like {{DB_PORT}}
-        let resolved_env = child_orchestrator
-            .resolver
-            .resolve_environment(&original_script.environment, &child_params)
-            .map_err(|e| {
-                Error::Config(format!(
-                    "Failed to resolve environment for script '{}': {}",
-                    script_name, e
-                ))
-            })?;
-
-        let resolved_script_cmd = child_orchestrator
-            .resolver
-            .resolve_template_shell_safe(&original_script.script, &child_params)
-            .map_err(|e| {
-                Error::Config(format!("Failed to resolve script '{}': {}", script_name, e))
-            })?;
-
-        // Create a modified script with resolved environment and command
-        let isolated_script = crate::config::Script {
-            cwd: original_script.cwd.clone(),
-            depends_on: vec![], // Already resolved
-            environment: resolved_env,
-            script: resolved_script_cmd,
-            isolated: false, // Don't recurse
-        };
-
-        // Execute script in child context
-        let result =
-            Self::execute_script_command(&isolated_script, extra_args, &self.work_dir).await;
-
-        // Cleanup child orchestrator (stops all services started in isolation)
-        tracing::debug!("Cleaning up isolated context for script '{}'", script_name);
-        child_orchestrator.cleanup().await;
-
-        // Log which ports were used (helpful for debugging)
-        if !child_params.is_empty() {
-            let port_params: Vec<_> = child_params
-                .iter()
-                .filter(|(k, _)| k.to_uppercase().contains("PORT"))
-                .collect();
-            if !port_params.is_empty() {
-                tracing::debug!("Isolated ports released: {:?}", port_params);
-            }
-        }
-
-        result
+    /// Delegates to [`ScriptRunner`](super::scripts::ScriptRunner).
+    pub async fn is_service_running(&self, service_name: &str) -> bool {
+        let runner = super::scripts::ScriptRunner::new(self);
+        runner.is_service_running(service_name).await
     }
 
-    /// Execute a script command with the given environment.
-    /// This is the common script execution logic shared by both shared and isolated contexts.
-    async fn execute_script_command(
-        script: &crate::config::Script,
-        extra_args: &[String],
-        work_dir: &std::path::Path,
-    ) -> Result<std::process::ExitStatus> {
-        use crate::parameter::shell_escape;
-        use std::process::Stdio;
-
-        // Determine working directory
-        let script_work_dir = if let Some(ref cwd) = script.cwd {
-            std::path::Path::new(cwd).to_path_buf()
-        } else {
-            work_dir.to_path_buf()
-        };
-
-        // Check if script uses positional parameters ($@, $*, $1, $2, etc.)
-        // If not, we'll auto-append arguments to the command for convenience
-        let uses_positional_params = Self::script_uses_positional_params(&script.script);
-
-        // Build command with inherited stdio for full TTY passthrough
-        let mut command = if cfg!(target_os = "windows") {
-            let mut cmd = tokio::process::Command::new("cmd");
-            if extra_args.is_empty() {
-                cmd.args(["/C", &script.script]);
-            } else {
-                // Windows: append args to the command
-                let escaped_args: Vec<String> =
-                    extra_args.iter().map(|arg| shell_escape(arg)).collect();
-                let trimmed_script = script.script.trim_end();
-                let full_script = format!("{} {}", trimmed_script, escaped_args.join(" "));
-                cmd.args(["/C", &full_script]);
-            }
-            cmd
-        } else {
-            let mut cmd = tokio::process::Command::new("sh");
-            cmd.arg("-c");
-
-            if extra_args.is_empty() {
-                // No arguments - just run the script
-                cmd.arg(&script.script);
-            } else if uses_positional_params {
-                // Script uses $@, $1, etc. - pass args as positional parameters
-                // Use: sh -c 'script' script_name arg1 arg2
-                // This makes $@, $1, $2, etc. work properly in the script
-                // The first arg after the script becomes $0 (shown in error messages)
-                cmd.arg(&script.script);
-                cmd.arg("script"); // $0 - appears in error messages
-                cmd.args(extra_args); // $1, $2, ... and $@
-            } else {
-                // Script doesn't use positional params - auto-append args to command
-                // This allows `script: prisma` to work with `fed prisma generate`
-                let escaped_args: Vec<String> =
-                    extra_args.iter().map(|arg| shell_escape(arg)).collect();
-                let trimmed_script = script.script.trim_end();
-                let full_script = format!("{} {}", trimmed_script, escaped_args.join(" "));
-                cmd.arg(&full_script);
-            }
-            cmd
-        };
-
-        command.current_dir(&script_work_dir);
-        command.envs(&script.environment);
-
-        // Inherit stdio for interactive use - enables TUI, colors, and user input
-        command.stdin(Stdio::inherit());
-        command.stdout(Stdio::inherit());
-        command.stderr(Stdio::inherit());
-
-        // Spawn and wait for completion (no timeout for interactive scripts)
-        let mut child = command
-            .spawn()
-            .map_err(|e| Error::Config(format!("Failed to spawn script: {}", e)))?;
-
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| Error::Config(format!("Failed to wait for script: {}", e)))?;
-
-        Ok(status)
-    }
-
-    /// Check if a script uses positional parameters ($@, $*, $1, $2, etc.)
-    /// Used to decide whether to pass args via positional params or auto-append.
-    fn script_uses_positional_params(script: &str) -> bool {
-        // Match common positional parameter patterns:
-        // $@ $* $1 $2 ... $9 ${1} ${@} ${*} ${10} etc.
-        // Also match "$@" "$*" etc. (quoted forms)
-        let patterns = [
-            "$@", "$*", "$1", "$2", "$3", "$4", "$5", "$6", "$7", "$8", "$9", "${@}", "${*}",
-        ];
-
-        for pattern in patterns {
-            if script.contains(pattern) {
-                return true;
-            }
-        }
-
-        // Check for ${N} where N is a number (handles $10, $11, etc.)
-        // Simple check: look for ${ followed by a digit
-        let bytes = script.as_bytes();
-        for i in 0..bytes.len().saturating_sub(2) {
-            if bytes[i] == b'$' && bytes[i + 1] == b'{' {
-                if let Some(&next) = bytes.get(i + 2) {
-                    if next.is_ascii_digit() {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        false
-    }
-
-    /// Check if a service is running
-    async fn is_service_running(&self, service_name: &str) -> bool {
-        let services = self.services.read().await;
-        match services.get(service_name) {
-            Some(arc) => {
-                let manager = arc.lock().await;
-                let status = manager.status();
-                status == Status::Running || status == Status::Healthy
-            }
-            None => false,
-        }
-    }
-
-    /// Get list of available scripts
+    /// Get list of available scripts.
+    ///
+    /// Delegates to [`ScriptRunner`](super::scripts::ScriptRunner).
     pub fn list_scripts(&self) -> Vec<String> {
-        self.config.scripts.keys().cloned().collect()
+        let runner = super::scripts::ScriptRunner::new(self);
+        runner.list_scripts()
     }
 
     /// Mark startup as complete - allows monitoring to clean up dead services
