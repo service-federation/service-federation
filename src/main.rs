@@ -257,27 +257,20 @@ async fn run() -> anyhow::Result<()> {
         (_, Ok(config)) => config,
     };
 
-    // Create orchestrator with profiles
-    let mut orchestrator = Orchestrator::new(config.clone(), std::path::PathBuf::from("."))
-        .await?
-        .with_profiles(cli.profile.clone());
-
-    if let Some(workdir) = cli.workdir {
-        orchestrator.set_work_dir(workdir).await?;
-    } else {
-        // Use config file's directory as working directory
-        if let Some(parent) = config_path.parent() {
-            if parent.as_os_str().is_empty() {
-                orchestrator.set_work_dir(std::env::current_dir()?).await?;
-            } else {
-                orchestrator.set_work_dir(parent.to_path_buf()).await?;
-            }
+    // Determine work directory from CLI or config path
+    let work_dir = if let Some(workdir) = cli.workdir {
+        workdir
+    } else if let Some(parent) = config_path.parent() {
+        if parent.as_os_str().is_empty() {
+            std::env::current_dir()?
         } else {
-            orchestrator.set_work_dir(std::env::current_dir()?).await?;
+            parent.to_path_buf()
         }
-    }
+    } else {
+        std::env::current_dir()?
+    };
 
-    // Set output mode BEFORE initializing
+    // Determine output mode before initializing.
     // File mode (background) disables the monitoring task since we don't need it for:
     // - Start without watch (we exit immediately after starting)
     // - Stop (we're stopping services, not monitoring them)
@@ -322,27 +315,29 @@ async fn run() -> anyhow::Result<()> {
         Commands::Tui { .. } => OutputMode::Captured,
         _ => OutputMode::Captured,
     };
-    orchestrator.set_output_mode(output_mode);
+
+    // Read-only commands skip parameter resolution and Docker cleanup
+    // to avoid interactive prompts and stale service recreation.
+    let readonly = matches!(
+        cli.command,
+        Commands::Status { .. } | Commands::Logs { .. } | Commands::Stop { .. }
+    );
 
     // --randomize allocates fresh random ports (same as `fed ports randomize` + `fed start`)
-    if matches!(
+    let randomize = matches!(
         &cli.command,
         Commands::Start {
             randomize: true,
             ..
         }
-    ) {
-        orchestrator.set_randomize_ports(true);
-    }
+    );
 
     // --replace kills blocking processes/containers and uses original ports
-    if matches!(&cli.command, Commands::Start { replace: true, .. }) {
-        orchestrator.set_replace_mode(true);
-    }
+    let replace = matches!(&cli.command, Commands::Start { replace: true, .. });
 
     // For script commands, check if the script has isolated: true
     // If so, set auto_resolve_conflicts to avoid prompts for ports that will be re-allocated anyway
-    let is_isolated_script = match &cli.command {
+    let auto_resolve = match &cli.command {
         Commands::Run { name, .. } => config
             .scripts
             .get(name)
@@ -355,21 +350,19 @@ async fn run() -> anyhow::Result<()> {
             .unwrap_or(false),
         _ => false,
     };
-    if is_isolated_script {
-        orchestrator.set_auto_resolve_conflicts(true);
-    }
 
-    // Read-only commands and stop skip parameter resolution and Docker cleanup
-    // to avoid interactive prompts and stale service recreation.
-    let readonly = matches!(
-        cli.command,
-        Commands::Status { .. } | Commands::Logs { .. } | Commands::Stop { .. }
-    );
-    if readonly {
-        orchestrator.initialize_readonly().await?;
-    } else {
-        orchestrator.initialize().await?;
-    }
+    // Build orchestrator with all settings applied and initialized
+    let mut orchestrator = Orchestrator::builder()
+        .config(config.clone())
+        .work_dir(work_dir)
+        .profiles(cli.profile.clone())
+        .output_mode(output_mode)
+        .randomize_ports(randomize)
+        .replace_mode(replace)
+        .auto_resolve_conflicts(auto_resolve)
+        .readonly(readonly)
+        .build()
+        .await?;
 
     match cli.command {
         Commands::Start {
