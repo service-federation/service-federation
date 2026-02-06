@@ -529,7 +529,7 @@ impl Orchestrator {
     /// Create health checkers for services.
     ///
     /// Delegates to [`HealthCheckRunner`](super::health::HealthCheckRunner).
-    async fn create_health_checkers(&self) {
+    async fn create_health_checkers(&mut self) {
         let runner = super::health::HealthCheckRunner::new(self);
         runner.create_health_checkers().await;
     }
