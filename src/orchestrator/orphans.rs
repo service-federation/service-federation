@@ -7,32 +7,20 @@
 
 use crate::error::{Error, Result};
 use crate::service::Status;
-use crate::state::StateTracker;
-use std::path::Path;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 use super::core::Orchestrator;
 
-/// Type alias for the shared state tracker reference.
-type StateTrackerRef = Arc<RwLock<StateTracker>>;
-
 /// Short-lived helper for detecting and removing orphaned containers and processes.
 ///
-/// Constructed on-demand from `Orchestrator` fields, similar to how
-/// `ScriptRunner` works for script execution. Orphan methods on
+/// Constructed on-demand from an `Orchestrator` reference. Orphan methods on
 /// `Orchestrator` delegate here after constructing an `OrphanCleaner`.
 pub(super) struct OrphanCleaner<'a> {
-    work_dir: &'a Path,
-    state_tracker: &'a StateTrackerRef,
+    orchestrator: &'a Orchestrator,
 }
 
 impl<'a> OrphanCleaner<'a> {
     pub fn new(orchestrator: &'a Orchestrator) -> Self {
-        Self {
-            work_dir: &orchestrator.work_dir,
-            state_tracker: &orchestrator.state_tracker,
-        }
+        Self { orchestrator }
     }
 
     /// Detect Docker containers for this project that aren't tracked in state DB.
@@ -45,7 +33,7 @@ impl<'a> OrphanCleaner<'a> {
         use crate::service::{hash_work_dir, sanitize_container_name_component};
         use std::collections::HashSet;
 
-        let work_dir_hash = hash_work_dir(self.work_dir);
+        let work_dir_hash = hash_work_dir(&self.orchestrator.work_dir);
         let prefix = format!("fed-{}-", work_dir_hash);
 
         // List all containers matching our project prefix
@@ -76,7 +64,7 @@ impl<'a> OrphanCleaner<'a> {
         }
 
         // Get tracked services from state DB
-        let state = self.state_tracker.read().await;
+        let state = self.orchestrator.state_tracker.read().await;
         let tracked_services = state.get_services().await;
 
         // Build set of expected container names for tracked Docker services
@@ -103,7 +91,7 @@ impl<'a> OrphanCleaner<'a> {
     ///
     /// Returns a list of (service_name, pid) tuples for orphaned processes.
     pub async fn detect_orphan_processes(&self) -> Vec<(String, u32)> {
-        let state = self.state_tracker.read().await;
+        let state = self.orchestrator.state_tracker.read().await;
         let services = state.get_services().await;
         let mut orphans = Vec::new();
 
@@ -206,7 +194,7 @@ impl<'a> OrphanCleaner<'a> {
 
         // Clear the PIDs from state
         if killed > 0 {
-            let mut state = self.state_tracker.write().await;
+            let mut state = self.orchestrator.state_tracker.write().await;
             for (name, _) in &orphans {
                 let _ = state.unregister_service(name).await;
             }
