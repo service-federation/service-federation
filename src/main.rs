@@ -90,7 +90,7 @@ async fn run() -> anyhow::Result<()> {
         tracing::warn!("Failed to cleanup orphaned sessions: {}", e);
     }
 
-    // Handle commands that don't need orchestrator first
+    // ── Tier 1: Commands that need NO config ──────────────────────────
     match &cli.command {
         Commands::Init { output, force } => {
             return commands::run_init(output, *force, &output::CliOutput);
@@ -117,27 +117,22 @@ async fn run() -> anyhow::Result<()> {
         Commands::Ports(ref ports_cmd) => {
             return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone(), &output::CliOutput).await;
         }
+        _ => {} // fall through to config-loading path
+    }
+
+    // ── Load config ─────────────────────────────────────────────────
+    let parser = ConfigParser::new();
+    let config_path = if let Some(path) = cli.config.clone() {
+        path
+    } else {
+        parser.find_config_file()?
+    };
+
+    // ── Tier 2: Commands that need config but NOT orchestrator ──────
+    match &cli.command {
         Commands::Docker(docker_cmd) => {
-            let parser = ConfigParser::new();
-            let config_path = if let Some(path) = cli.config.clone() {
-                path
-            } else {
-                parser.find_config_file()?
-            };
             let config = parser.load_config(&config_path)?;
-            let work_dir = if let Some(workdir) = cli.workdir {
-                workdir
-            } else {
-                if let Some(parent) = config_path.parent() {
-                    if parent.as_os_str().is_empty() {
-                        std::env::current_dir()?
-                    } else {
-                        parent.to_path_buf()
-                    }
-                } else {
-                    std::env::current_dir()?
-                }
-            };
+            let work_dir = resolve_work_dir(cli.workdir, &config_path)?;
             match docker_cmd {
                 cli::DockerCommands::Build {
                     services,
@@ -169,29 +164,8 @@ async fn run() -> anyhow::Result<()> {
             }
         }
         Commands::Debug(debug_cmd) => {
-            // Debug commands only need config and work_dir
-            let parser = ConfigParser::new();
-            let config_path = if let Some(path) = cli.config.clone() {
-                path
-            } else {
-                parser.find_config_file()?
-            };
             let config = parser.load_config(&config_path)?;
-
-            let work_dir = if let Some(workdir) = cli.workdir {
-                workdir
-            } else {
-                // Use config file's directory as working directory
-                if let Some(parent) = config_path.parent() {
-                    if parent.as_os_str().is_empty() {
-                        std::env::current_dir()?
-                    } else {
-                        parent.to_path_buf()
-                    }
-                } else {
-                    std::env::current_dir()?
-                }
-            };
+            let work_dir = resolve_work_dir(cli.workdir, &config_path)?;
 
             let debug_command = match debug_cmd {
                 cli::DebugCommands::State { .. } => commands::DebugCommand::State,
@@ -212,18 +186,10 @@ async fn run() -> anyhow::Result<()> {
             return commands::run_debug(debug_command, &config, work_dir, json, &output::CliOutput)
                 .await;
         }
-        _ => {}
+        _ => {} // fall through to orchestrator path
     }
 
-    // Load configuration
-    let parser = ConfigParser::new();
-    let config_path = if let Some(path) = cli.config.clone() {
-        path
-    } else {
-        parser.find_config_file()?
-    };
-
-    // Load config with package resolution (uses cache-only in offline mode)
+    // ── Load config with package resolution (uses cache-only in offline mode) ──
     let config_result = async {
         let config = parser
             .load_config_with_packages_offline(&config_path, cli.offline)
@@ -240,12 +206,8 @@ async fn run() -> anyhow::Result<()> {
                 "Warning: Config invalid ({}), stopping from state tracker",
                 config_err
             );
-            let work_dir = cli.workdir.unwrap_or_else(|| {
-                config_path
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            let work_dir = resolve_work_dir(cli.workdir, &config_path).unwrap_or_else(|_| {
+                std::env::current_dir().unwrap_or_default()
             });
             commands::run_stop_from_state(&work_dir, services.clone(), &output::CliOutput).await?;
             return Ok(());
@@ -254,18 +216,9 @@ async fn run() -> anyhow::Result<()> {
         (_, Ok(config)) => config,
     };
 
-    // Determine work directory from CLI or config path
-    let work_dir = if let Some(workdir) = cli.workdir {
-        workdir
-    } else if let Some(parent) = config_path.parent() {
-        if parent.as_os_str().is_empty() {
-            std::env::current_dir()?
-        } else {
-            parent.to_path_buf()
-        }
-    } else {
-        std::env::current_dir()?
-    };
+    let work_dir = resolve_work_dir(cli.workdir, &config_path)?;
+
+    // ── Tier 3: Commands that need orchestrator ─────────────────────
 
     // Determine output mode before initializing.
     // File mode (background) disables the monitoring task since we don't need it for:
@@ -454,21 +407,40 @@ async fn run() -> anyhow::Result<()> {
         Commands::Top { interval } => {
             commands::run_top(&orchestrator, interval, &output::CliOutput).await?;
         }
-        // These are handled earlier
-        Commands::Session(_)
-        | Commands::Package(_)
-        | Commands::Ports(_)
-        | Commands::Init { .. }
+        // Handled in earlier tiers
+        Commands::Init { .. }
         | Commands::Validate
         | Commands::Completions { .. }
         | Commands::Doctor
-        | Commands::Debug(_)
-        | Commands::Docker(_) => {
-            unreachable!("These commands should have been handled earlier");
+        | Commands::Session(_)
+        | Commands::Package(_)
+        | Commands::Ports(_)
+        | Commands::Docker(_)
+        | Commands::Debug(_) => {
+            unreachable!("handled in earlier dispatch tiers");
         }
     }
 
     Ok(())
+}
+
+/// Resolve the work directory from CLI `--workdir` or the config file's parent directory.
+fn resolve_work_dir(
+    workdir: Option<std::path::PathBuf>,
+    config_path: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    if let Some(workdir) = workdir {
+        return Ok(workdir);
+    }
+    if let Some(parent) = config_path.parent() {
+        if parent.as_os_str().is_empty() {
+            Ok(std::env::current_dir()?)
+        } else {
+            Ok(parent.to_path_buf())
+        }
+    } else {
+        Ok(std::env::current_dir()?)
+    }
 }
 
 fn init_tracing(is_tui: bool) -> anyhow::Result<()> {
