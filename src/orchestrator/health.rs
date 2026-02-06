@@ -5,51 +5,38 @@
 //! part of the main Orchestrator. Extracting these operations improves separation
 //! of concerns and keeps the orchestrator core focused on service coordination.
 
-use crate::config::{Config, HealthCheckType};
+use crate::config::HealthCheckType;
 use crate::error::{Error, Result};
 use crate::healthcheck::{CommandChecker, DockerCommandChecker, HealthChecker, HttpChecker};
 use crate::service::{ServiceManager, Status};
-use crate::state::StateTracker;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_util::sync::CancellationToken;
+
+use super::core::Orchestrator;
 
 /// Type alias for the health checker registry.
 /// Uses `Arc` so checkers can be cloned out without holding the read lock.
 pub(super) type HealthCheckerRegistry = HashMap<String, Arc<dyn HealthChecker>>;
 /// Type alias for the shared health checker registry
 pub(super) type SharedHealthCheckerRegistry = Arc<tokio::sync::RwLock<HealthCheckerRegistry>>;
-/// Type alias for the shared state tracker reference.
-type StateTrackerRef = Arc<tokio::sync::RwLock<StateTracker>>;
 
 /// Short-lived helper for health check operations.
 ///
-/// Constructed on-demand from `Orchestrator` fields, similar to how
-/// `ScriptRunner` works for script execution. Health-check methods on
-/// `Orchestrator` delegate here after constructing a `HealthCheckRunner`.
+/// Constructed on-demand from an `Orchestrator` reference. Health-check methods
+/// on `Orchestrator` delegate here after constructing a `HealthCheckRunner`.
 pub(super) struct HealthCheckRunner<'a> {
-    config: &'a Config,
-    work_dir: &'a std::path::Path,
-    health_checkers: &'a SharedHealthCheckerRegistry,
-    state_tracker: &'a StateTrackerRef,
-    cancellation_token: &'a CancellationToken,
+    orchestrator: &'a Orchestrator,
 }
 
 impl<'a> HealthCheckRunner<'a> {
-    pub fn new(orchestrator: &'a super::core::Orchestrator) -> Self {
-        Self {
-            config: &orchestrator.config,
-            work_dir: &orchestrator.work_dir,
-            health_checkers: &orchestrator.health_checkers,
-            state_tracker: &orchestrator.state_tracker,
-            cancellation_token: &orchestrator.cancellation_token,
-        }
+    pub fn new(orchestrator: &'a Orchestrator) -> Self {
+        Self { orchestrator }
     }
 
     /// Create health checkers for all configured services and register them.
     pub async fn create_health_checkers(&self) {
-        for (name, service) in &self.config.services {
+        for (name, service) in &self.orchestrator.config.services {
             if let Some(ref healthcheck) = service.healthcheck {
                 // Use configured timeout or default (5 seconds)
                 let timeout = healthcheck.get_timeout();
@@ -89,7 +76,7 @@ impl<'a> HealthCheckRunner<'a> {
                                 let container_name = crate::service::docker_container_name(
                                     name,
                                     session_id.as_deref(),
-                                    self.work_dir,
+                                    &self.orchestrator.work_dir,
                                 );
                                 Arc::new(DockerCommandChecker::new(
                                     container_name,
@@ -111,7 +98,8 @@ impl<'a> HealthCheckRunner<'a> {
                     HealthCheckType::None => continue,
                 };
 
-                self.health_checkers
+                self.orchestrator
+                    .health_checkers
                     .write()
                     .await
                     .insert(name.clone(), checker);
@@ -127,7 +115,7 @@ impl<'a> HealthCheckRunner<'a> {
         timeout: Duration,
     ) -> Result<()> {
         let checker = {
-            let health_checkers = self.health_checkers.read().await;
+            let health_checkers = self.orchestrator.health_checkers.read().await;
             match health_checkers.get(service_name) {
                 Some(c) => Arc::clone(c),
                 None => {
@@ -184,7 +172,7 @@ impl<'a> HealthCheckRunner<'a> {
     ) -> Result<()> {
         // Clone the Arc and drop the read lock immediately
         let checker = {
-            let health_checkers = self.health_checkers.read().await;
+            let health_checkers = self.orchestrator.health_checkers.read().await;
             match health_checkers.get(name) {
                 Some(c) => Arc::clone(c),
                 None => return Ok(()), // No healthcheck configured -- nothing to wait for
@@ -214,7 +202,7 @@ impl<'a> HealthCheckRunner<'a> {
             }
 
             // Respond to Ctrl-C promptly instead of waiting for timeout
-            if self.cancellation_token.is_cancelled() {
+            if self.orchestrator.cancellation_token.is_cancelled() {
                 tracing::debug!("Healthcheck wait for '{}' cancelled", name);
                 return Err(Error::Cancelled(name.to_string()));
             }
@@ -238,7 +226,7 @@ impl<'a> HealthCheckRunner<'a> {
                         name,
                         pid
                     );
-                    let mut tracker = self.state_tracker.write().await;
+                    let mut tracker = self.orchestrator.state_tracker.write().await;
                     tracker.update_service_status(name, Status::Stopped).await?;
                     tracker.save().await?;
                     return Err(Error::ServiceStartFailed(
@@ -267,7 +255,7 @@ impl<'a> HealthCheckRunner<'a> {
                         name,
                         container_id
                     );
-                    let mut tracker = self.state_tracker.write().await;
+                    let mut tracker = self.orchestrator.state_tracker.write().await;
                     tracker.update_service_status(name, Status::Stopped).await?;
                     tracker.save().await?;
                     return Err(Error::ServiceStartFailed(
@@ -284,7 +272,7 @@ impl<'a> HealthCheckRunner<'a> {
             match checker.check().await {
                 Ok(true) => {
                     tracing::info!("Service '{}' is healthy", name);
-                    let mut tracker = self.state_tracker.write().await;
+                    let mut tracker = self.orchestrator.state_tracker.write().await;
                     tracker.update_service_status(name, Status::Healthy).await?;
                     tracker.save().await?;
                     return Ok(());
