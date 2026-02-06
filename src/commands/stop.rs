@@ -1,5 +1,8 @@
 use service_federation::{
-    config::Config, service::hash_work_dir, state::StateTracker, Orchestrator,
+    config::Config,
+    service::{hash_work_dir, Status},
+    state::StateTracker,
+    Orchestrator,
 };
 use std::path::Path;
 
@@ -58,10 +61,10 @@ pub async fn run_stop(
     Ok(())
 }
 
-fn state_status_is_active(status: &str) -> bool {
+fn state_status_is_active(status: Status) -> bool {
     matches!(
         status,
-        "running" | "healthy" | "starting" | "failing" | "stopping"
+        Status::Running | Status::Healthy | Status::Starting | Status::Failing | Status::Stopping
     )
 }
 
@@ -83,7 +86,7 @@ async fn stop_remaining_state_services(orchestrator: &Orchestrator) -> usize {
     let mut stopped_names: Vec<String> = Vec::new();
 
     for (name, state) in services {
-        if !state_status_is_active(state.status.as_str()) {
+        if !state_status_is_active(state.status) {
             continue;
         }
 
@@ -165,7 +168,7 @@ pub async fn run_stop_from_state(work_dir: &Path, services: Vec<String>) -> anyh
     );
 
     for (name, state) in &services_to_stop {
-        let is_active = matches!(state.status.as_str(), "running" | "healthy" | "starting");
+        let is_active = matches!(state.status, Status::Running | Status::Healthy | Status::Starting);
         if !is_active {
             continue;
         }

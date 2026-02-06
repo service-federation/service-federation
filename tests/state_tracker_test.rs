@@ -1,3 +1,4 @@
+use service_federation::service::Status;
 use service_federation::state::{ServiceState, StateTracker};
 use tempfile::TempDir;
 
@@ -94,12 +95,12 @@ async fn test_update_service_status() {
     tracker.register_service(service_state).await.unwrap();
 
     let result = tracker
-        .update_service_status("test-service", "running")
+        .update_service_status("test-service", Status::Running)
         .await;
     assert!(result.is_ok());
 
     let service = tracker.get_service("test-service").await.unwrap();
-    assert_eq!(service.status, "running");
+    assert_eq!(service.status, Status::Running);
 }
 
 #[tokio::test]
@@ -111,7 +112,7 @@ async fn test_update_nonexistent_service_status() {
     tracker.initialize().await.expect("Init failed");
 
     let result = tracker
-        .update_service_status("nonexistent", "running")
+        .update_service_status("nonexistent", Status::Running)
         .await;
     assert!(result.is_err());
 }
@@ -202,7 +203,7 @@ async fn test_save_and_load_lock_file() {
         tracker.register_service(service_state).await.unwrap();
         tracker.track_port(8080).await;
         tracker
-            .update_service_status("test-service", "running")
+            .update_service_status("test-service", Status::Running)
             .await
             .expect("Update failed");
 
@@ -336,7 +337,7 @@ async fn test_service_state_creation() {
     assert_eq!(state.id, "my-service");
     assert_eq!(state.service_type, "Docker");
     assert_eq!(state.namespace, "production");
-    assert_eq!(state.status, "starting");
+    assert_eq!(state.status, Status::Starting);
     assert_eq!(state.pid, None);
     assert_eq!(state.container_id, None);
     assert!(state.port_allocations.is_empty());
@@ -411,20 +412,20 @@ async fn test_update_service_multiple_times() {
 
     // Multiple status updates
     tracker
-        .update_service_status("test-service", "starting")
+        .update_service_status("test-service", Status::Starting)
         .await
         .expect("Update 1 failed");
     tracker
-        .update_service_status("test-service", "running")
+        .update_service_status("test-service", Status::Running)
         .await
         .expect("Update 2 failed");
     tracker
-        .update_service_status("test-service", "healthy")
+        .update_service_status("test-service", Status::Healthy)
         .await
         .expect("Update 3 failed");
 
     let service = tracker.get_service("test-service").await.unwrap();
-    assert_eq!(service.status, "healthy");
+    assert_eq!(service.status, Status::Healthy);
 }
 
 #[tokio::test]
@@ -550,13 +551,13 @@ async fn test_regression_update_status_requires_plain_name() {
 
     // Update with plain name should succeed
     assert!(tracker
-        .update_service_status("my-service", "running")
+        .update_service_status("my-service", Status::Running)
         .await
         .is_ok());
 
     // Update with namespaced ID should fail (service not found)
     assert!(tracker
-        .update_service_status("root/my-service", "healthy")
+        .update_service_status("root/my-service", Status::Healthy)
         .await
         .is_err());
 }

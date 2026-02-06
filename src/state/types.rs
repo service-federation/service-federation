@@ -1,3 +1,4 @@
+use crate::service::Status;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -40,7 +41,7 @@ pub struct ServiceState {
     pub id: String,
 
     /// Current status
-    pub status: String,
+    pub status: Status,
 
     /// Service type (process, docker, external, etc.)
     pub service_type: String,
@@ -84,7 +85,7 @@ impl ServiceState {
     pub fn new(id: String, service_type: String, namespace: String) -> Self {
         Self {
             id,
-            status: "starting".to_string(),
+            status: Status::Starting,
             service_type,
             pid: None,
             container_id: None,

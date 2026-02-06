@@ -454,7 +454,7 @@ async fn handle_dependency_health_propagation(
 
                 let is_running = matches!(
                     dependent_status,
-                    Some(status) if status == "running" || status == "healthy"
+                    Some(status) if status == Status::Running || status == Status::Healthy
                 );
 
                 if !is_running {
@@ -487,7 +487,7 @@ async fn handle_dependency_health_propagation(
                                 // Update state tracker
                                 let mut tracker = state_tracker.write().await;
                                 let _ = tracker
-                                    .update_service_status(dependent_name, "stopped")
+                                    .update_service_status(dependent_name, Status::Stopped)
                                     .await;
                             }
                         }
@@ -521,7 +521,7 @@ async fn handle_dependency_health_propagation(
                             {
                                 let mut tracker = state_tracker.write().await;
                                 let _ = tracker
-                                    .update_service_status(dependent_name, "stopped")
+                                    .update_service_status(dependent_name, Status::Stopped)
                                     .await;
                             }
 
@@ -536,7 +536,7 @@ async fn handle_dependency_health_propagation(
                                 // Update state to Starting (monitoring will transition to Running)
                                 let mut tracker = state_tracker.write().await;
                                 let _ = tracker
-                                    .update_service_status(dependent_name, "starting")
+                                    .update_service_status(dependent_name, Status::Starting)
                                     .await;
                             }
                         }

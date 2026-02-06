@@ -882,7 +882,7 @@ async fn stop_previous_session_services(orchestrator: &Orchestrator) -> usize {
 
     for (name, state) in &services {
         // Skip services that aren't running
-        if state.status != "running" && state.status != "healthy" {
+        if !matches!(state.status, Status::Running | Status::Healthy) {
             continue;
         }
 

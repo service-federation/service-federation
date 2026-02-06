@@ -48,6 +48,21 @@ impl fmt::Display for Status {
     }
 }
 
+impl std::str::FromStr for Status {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "stopped" => Ok(Status::Stopped),
+            "starting" => Ok(Status::Starting),
+            "running" => Ok(Status::Running),
+            "healthy" => Ok(Status::Healthy),
+            "failing" => Ok(Status::Failing),
+            "stopping" => Ok(Status::Stopping),
+            other => Err(format!("Unknown status: {}", other)),
+        }
+    }
+}
+
 impl Status {
     /// Check if a status transition is valid according to the state machine.
     ///
@@ -499,6 +514,17 @@ mod tests {
         assert_eq!(OutputMode::File.to_string(), "file");
         assert_eq!(OutputMode::Captured.to_string(), "captured");
         assert_eq!(OutputMode::Passthrough.to_string(), "passthrough");
+    }
+
+    #[test]
+    fn test_status_from_str() {
+        assert_eq!("stopped".parse::<Status>(), Ok(Status::Stopped));
+        assert_eq!("starting".parse::<Status>(), Ok(Status::Starting));
+        assert_eq!("running".parse::<Status>(), Ok(Status::Running));
+        assert_eq!("healthy".parse::<Status>(), Ok(Status::Healthy));
+        assert_eq!("failing".parse::<Status>(), Ok(Status::Failing));
+        assert_eq!("stopping".parse::<Status>(), Ok(Status::Stopping));
+        assert!("unknown".parse::<Status>().is_err());
     }
 
     // ========================================================================

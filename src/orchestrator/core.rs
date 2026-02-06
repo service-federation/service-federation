@@ -376,8 +376,8 @@ impl Orchestrator {
             // Only check services with PIDs that are marked as stopped/stale
             if let Some(pid) = svc.pid {
                 let is_stopped = matches!(
-                    svc.status.as_str(),
-                    "stopped" | "stale" | "failing" | "unknown"
+                    svc.status,
+                    Status::Stopped | Status::Failing
                 );
 
                 if is_stopped && Self::is_pid_alive(pid) {
@@ -464,7 +464,7 @@ impl Orchestrator {
         let mut has_live_service = false;
 
         for svc in services.values() {
-            if svc.status != "running" && svc.status != "healthy" {
+            if !matches!(svc.status, Status::Running | Status::Healthy) {
                 continue;
             }
 
@@ -930,7 +930,7 @@ impl Orchestrator {
                         pid
                     );
                     let mut tracker = self.state_tracker.write().await;
-                    tracker.update_service_status(name, "stopped").await?;
+                    tracker.update_service_status(name, Status::Stopped).await?;
                     tracker.save().await?;
                     return Err(Error::ServiceStartFailed(
                         name.to_string(),
@@ -959,7 +959,7 @@ impl Orchestrator {
                         container_id
                     );
                     let mut tracker = self.state_tracker.write().await;
-                    tracker.update_service_status(name, "stopped").await?;
+                    tracker.update_service_status(name, Status::Stopped).await?;
                     tracker.save().await?;
                     return Err(Error::ServiceStartFailed(
                         name.to_string(),
@@ -976,7 +976,7 @@ impl Orchestrator {
                 Ok(true) => {
                     tracing::info!("Service '{}' is healthy", name);
                     let mut tracker = self.state_tracker.write().await;
-                    tracker.update_service_status(name, "healthy").await?;
+                    tracker.update_service_status(name, Status::Healthy).await?;
                     tracker.save().await?;
                     return Ok(());
                 }
@@ -1220,7 +1220,7 @@ impl Orchestrator {
         // when multiple services start concurrently
         async {
             let mut tracker = self.state_tracker.write().await;
-            tracker.update_service_status(name, "running").await?;
+            tracker.update_service_status(name, Status::Running).await?;
 
             // Store PID if available (for process services)
             // Store container ID if available (for docker services)

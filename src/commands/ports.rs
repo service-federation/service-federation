@@ -1,4 +1,5 @@
 use crate::cli::PortsCommands;
+use service_federation::service::Status;
 use service_federation::state::StateTracker;
 use service_federation::{Orchestrator, Parser as ConfigParser};
 use std::io::Write;
@@ -132,7 +133,7 @@ async fn ensure_services_stopped(work_dir: &std::path::Path, force: bool) -> any
 
     let running: Vec<_> = services
         .iter()
-        .filter(|(_, state)| matches!(state.status.as_str(), "running" | "healthy" | "starting"))
+        .filter(|(_, state)| matches!(state.status, Status::Running | Status::Healthy | Status::Starting))
         .map(|(name, _)| name.clone())
         .collect();
 

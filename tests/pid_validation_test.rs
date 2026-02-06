@@ -3,6 +3,7 @@
 //! These tests verify that PIDs are properly validated before storage and use,
 //! preventing potential signal misdirection bugs when PIDs exceed i32::MAX.
 
+use service_federation::service::Status;
 use service_federation::state::{ServiceState, StateTracker};
 use tempfile::TempDir;
 
@@ -322,7 +323,7 @@ async fn test_pid_flow_through_state_tracker() {
         .expect("Valid PID update");
 
     tracker
-        .update_service_status("lifecycle-service", "running")
+        .update_service_status("lifecycle-service", Status::Running)
         .await
         .expect("Status update");
 

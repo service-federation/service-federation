@@ -120,7 +120,7 @@ async fn collect_state_info(work_dir: PathBuf) -> Result<StateDebugOutput> {
 
         services.push(ServiceDebugInfo {
             name: service_state.id.clone(),
-            status: service_state.status.clone(),
+            status: service_state.status.to_string(),
             service_type: service_state.service_type.clone(),
             pid: service_state.pid,
             container_id: service_state.container_id.clone(),
