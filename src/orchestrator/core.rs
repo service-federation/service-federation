@@ -300,149 +300,17 @@ impl Orchestrator {
         self
     }
 
-    /// Detect Docker containers for this project that aren't tracked in state DB.
-    ///
-    /// Returns a list of container names that match this project's naming pattern
-    /// (fed-{work_dir_hash}-*) but aren't found in the state tracker.
-    ///
-    /// This is a conservative detection - we don't auto-remove, just warn.
-    async fn detect_untracked_containers(&self) -> Result<Vec<String>> {
-        use crate::service::{hash_work_dir, sanitize_container_name_component};
-        use std::collections::HashSet;
-
-        let work_dir_hash = hash_work_dir(&self.work_dir);
-        let prefix = format!("fed-{}-", work_dir_hash);
-
-        // List all containers matching our project prefix
-        let output = tokio::process::Command::new("docker")
-            .args([
-                "ps",
-                "-a",
-                "--filter",
-                &format!("name=^{}", prefix),
-                "--format",
-                "{{.Names}}",
-            ])
-            .output()
-            .await?;
-
-        if !output.status.success() {
-            return Err(Error::Config("Failed to list Docker containers".to_string()));
-        }
-
-        let all_containers: HashSet<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if all_containers.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Get tracked services from state DB
-        let state = self.state_tracker.read().await;
-        let tracked_services = state.get_services().await;
-
-        // Build set of expected container names for tracked Docker services
-        let tracked_containers: HashSet<String> = tracked_services
-            .iter()
-            .filter(|(_, svc)| svc.service_type == "docker")
-            .map(|(name, _)| {
-                let sanitized = sanitize_container_name_component(name);
-                format!("{}{}", prefix, sanitized)
-            })
-            .collect();
-
-        // Find containers that exist but aren't tracked
-        let orphans: Vec<String> = all_containers
-            .difference(&tracked_containers)
-            .cloned()
-            .collect();
-
-        Ok(orphans)
-    }
-
-    /// Detect orphaned processes - PIDs in state that are still running
-    /// but the service is marked as stopped/stale.
-    ///
-    /// Returns a list of (service_name, pid) tuples for orphaned processes.
-    async fn detect_orphan_processes(&self) -> Vec<(String, u32)> {
-        let state = self.state_tracker.read().await;
-        let services = state.get_services().await;
-        let mut orphans = Vec::new();
-
-        for (name, svc) in services {
-            // Only check services with PIDs that are marked as stopped/stale
-            if let Some(pid) = svc.pid {
-                let is_stopped = matches!(
-                    svc.status,
-                    Status::Stopped | Status::Failing
-                );
-
-                if is_stopped && Self::is_pid_alive(pid) {
-                    orphans.push((name, pid));
-                }
-            }
-        }
-
-        orphans
-    }
-
     /// Remove orphaned processes for this project.
     ///
     /// Finds processes with PIDs in state DB that are still running
     /// but the service is marked as stopped. Kills them with SIGKILL.
     ///
     /// Returns the number of processes killed.
+    ///
+    /// Delegates to [`OrphanCleaner`](super::orphans::OrphanCleaner).
     pub async fn remove_orphaned_processes(&self) -> usize {
-        let orphans = self.detect_orphan_processes().await;
-
-        if orphans.is_empty() {
-            return 0;
-        }
-
-        let mut killed = 0;
-        for (name, pid) in &orphans {
-            tracing::info!("Killing orphaned process: {} (PID {})", name, pid);
-
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{self, Signal};
-                use nix::unistd::Pid;
-
-                let nix_pid = Pid::from_raw(*pid as i32);
-
-                // Try SIGTERM first
-                if signal::kill(nix_pid, Signal::SIGTERM).is_ok() {
-                    // Wait briefly for graceful shutdown
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-                    // If still alive, SIGKILL
-                    if signal::kill(nix_pid, None).is_ok() {
-                        let _ = signal::kill(nix_pid, Signal::SIGKILL);
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                    killed += 1;
-                }
-            }
-
-            #[cfg(not(unix))]
-            {
-                tracing::warn!("Cannot kill orphaned process on non-Unix platform");
-            }
-        }
-
-        // Clear the PIDs from state
-        if killed > 0 {
-            let mut state = self.state_tracker.write().await;
-            for (name, _) in &orphans {
-                let _ = state.unregister_service(name).await;
-            }
-            let _ = state.save().await;
-        }
-
-        killed
+        let cleaner = super::orphans::OrphanCleaner::new(self);
+        cleaner.remove_orphaned_processes().await
     }
 
     /// Collect ports owned by running managed services.
@@ -470,7 +338,7 @@ impl Orchestrator {
 
             // Verify the process/container is actually alive before trusting the port
             let is_alive = if let Some(pid) = svc.pid {
-                Self::is_pid_alive(pid)
+                super::orphans::is_pid_alive(pid)
             } else if svc.container_id.is_some() {
                 // Can't cheaply verify container without Docker — trust the status.
                 // If Docker is down, mark_dead_services will skip container checks anyway.
@@ -516,24 +384,6 @@ impl Orchestrator {
             );
         }
         self.resolver.set_managed_ports(managed_ports);
-    }
-
-    /// Check if a PID is alive (signal 0 check).
-    fn is_pid_alive(pid: u32) -> bool {
-        #[cfg(unix)]
-        {
-            use crate::error::validate_pid_for_check;
-            use nix::sys::signal::kill;
-            if let Some(nix_pid) = validate_pid_for_check(pid) {
-                return kill(nix_pid, None).is_ok();
-            }
-            false
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = pid;
-            true // Can't check on non-unix, assume alive
-        }
     }
 
     /// Lightweight initialization for read-only commands (status, logs).
@@ -608,7 +458,8 @@ impl Orchestrator {
 
         // Detect containers for this project that aren't tracked in state DB
         // (Conservative approach: warn but don't auto-remove)
-        match self.detect_untracked_containers().await {
+        let cleaner = super::orphans::OrphanCleaner::new(self);
+        match cleaner.detect_untracked_containers().await {
             Ok(orphans) if !orphans.is_empty() => {
                 for container in &orphans {
                     tracing::warn!(
@@ -1468,34 +1319,11 @@ impl Orchestrator {
     /// in the state database and removes them with `docker rm -f`.
     ///
     /// Returns the number of containers removed.
+    ///
+    /// Delegates to [`OrphanCleaner`](super::orphans::OrphanCleaner).
     pub async fn remove_orphaned_containers(&self) -> Result<usize> {
-        let orphans = self.detect_untracked_containers().await?;
-
-        if orphans.is_empty() {
-            return Ok(0);
-        }
-
-        let mut removed = 0;
-        for container in &orphans {
-            tracing::info!("Removing orphaned container: {}", container);
-            let output = tokio::process::Command::new("docker")
-                .args(["rm", "-f", container])
-                .output()
-                .await
-                .map_err(|e| Error::Config(format!("Failed to remove container: {}", e)))?;
-
-            if output.status.success() {
-                removed += 1;
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                // Ignore "No such container" - already gone
-                if !stderr.contains("No such container") {
-                    tracing::warn!("Failed to remove orphaned container '{}': {}", container, stderr.trim());
-                }
-            }
-        }
-
-        Ok(removed)
+        let cleaner = super::orphans::OrphanCleaner::new(self);
+        cleaner.remove_orphaned_containers().await
     }
 
     /// Restart all services in dependency-aware order.
