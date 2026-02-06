@@ -1231,7 +1231,7 @@ impl Orchestrator {
     /// Delegates to [`ScriptRunner`](super::scripts::ScriptRunner).
     pub async fn run_script(&self, script_name: &str) -> Result<std::process::Output> {
         let runner = super::scripts::ScriptRunner::new(self);
-        runner.run_script(script_name, self).await
+        runner.run_script(script_name).await
     }
 
     /// Run a script interactively with stdin/stdout/stderr passthrough.
@@ -1252,7 +1252,7 @@ impl Orchestrator {
     ) -> Result<std::process::ExitStatus> {
         let runner = super::scripts::ScriptRunner::new(self);
         runner
-            .run_script_interactive(script_name, extra_args, self)
+            .run_script_interactive(script_name, extra_args)
             .await
     }
 

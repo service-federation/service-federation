@@ -5,39 +5,25 @@
 //! these operations improves separation of concerns and keeps the orchestrator
 //! core focused on service coordination.
 
-use crate::config::{Config, Script};
+use crate::config::Script;
 use crate::error::{Error, Result};
-use crate::parameter::Resolver;
-use crate::service::{OutputMode, Status};
+use crate::service::Status;
 use std::path::Path;
 use std::time::Duration;
 
-use super::core::{Orchestrator, SharedServiceRegistry};
+use super::core::Orchestrator;
 
 /// Short-lived runner for script execution.
 ///
-/// Constructed on-demand from `Orchestrator` fields, similar to how
-/// `ServiceLifecycleCommands` works for install/clean. Script methods on
+/// Constructed on-demand from an `Orchestrator` reference. Script methods on
 /// `Orchestrator` delegate here after constructing a `ScriptRunner`.
 pub(super) struct ScriptRunner<'a> {
-    config: &'a Config,
-    original_config: Option<&'a Config>,
-    resolver: &'a Resolver,
-    work_dir: &'a Path,
-    output_mode: OutputMode,
-    services: &'a SharedServiceRegistry,
+    orchestrator: &'a Orchestrator,
 }
 
 impl<'a> ScriptRunner<'a> {
     pub fn new(orchestrator: &'a Orchestrator) -> Self {
-        Self {
-            config: &orchestrator.config,
-            original_config: orchestrator.original_config.as_ref(),
-            resolver: &orchestrator.resolver,
-            work_dir: &orchestrator.work_dir,
-            output_mode: orchestrator.output_mode,
-            services: &orchestrator.services,
-        }
+        Self { orchestrator }
     }
 
     /// Run a script non-interactively, capturing output.
@@ -47,9 +33,9 @@ impl<'a> ScriptRunner<'a> {
     pub async fn run_script(
         &self,
         script_name: &str,
-        orchestrator: &Orchestrator,
     ) -> Result<std::process::Output> {
         let script = self
+            .orchestrator
             .config
             .scripts
             .get(script_name)
@@ -60,21 +46,22 @@ impl<'a> ScriptRunner<'a> {
         // Note: We handle script deps by running them via run_script_interactive
         // since run_script can't easily be made recursive without boxing
         for dep in &script.depends_on {
-            if self.config.scripts.contains_key(dep) {
+            if self.orchestrator.config.scripts.contains_key(dep) {
                 // Dependency is a script - run it via interactive runner
                 // (which handles recursion via Box::pin)
-                orchestrator.run_script_interactive(dep, &[]).await?;
+                self.orchestrator.run_script_interactive(dep, &[]).await?;
             } else {
                 // Dependency is a service - start it if not running
                 if !self.is_service_running(dep).await {
-                    orchestrator.start(dep).await?;
+                    self.orchestrator.start(dep).await?;
                 }
             }
         }
 
         // Resolve script at execution time (scripts are not pre-resolved to support isolated)
-        let params = self.resolver.get_resolved_parameters().clone();
+        let params = self.orchestrator.resolver.get_resolved_parameters().clone();
         let resolved_env = self
+            .orchestrator
             .resolver
             .resolve_environment(&script.environment, &params)
             .map_err(|e| {
@@ -85,6 +72,7 @@ impl<'a> ScriptRunner<'a> {
             })?;
 
         let resolved_script_cmd = self
+            .orchestrator
             .resolver
             .resolve_template_shell_safe(&script.script, &params)
             .map_err(|e| {
@@ -95,7 +83,7 @@ impl<'a> ScriptRunner<'a> {
         let work_dir = if let Some(ref cwd) = script.cwd {
             std::path::Path::new(cwd).to_path_buf()
         } else {
-            self.work_dir.to_path_buf()
+            self.orchestrator.work_dir.to_path_buf()
         };
 
         // Build command - handle both single commands and shell scripts
@@ -149,9 +137,9 @@ impl<'a> ScriptRunner<'a> {
         &self,
         script_name: &str,
         extra_args: &[String],
-        orchestrator: &Orchestrator,
     ) -> Result<std::process::ExitStatus> {
         let script = self
+            .orchestrator
             .config
             .scripts
             .get(script_name)
@@ -161,11 +149,11 @@ impl<'a> ScriptRunner<'a> {
         if script.isolated {
             // Execute in isolated context with fresh port allocations
             // Delegated back to Orchestrator since it needs to create a child Orchestrator
-            self.run_script_isolated(script_name, &script, extra_args, orchestrator)
+            self.run_script_isolated(script_name, &script, extra_args)
                 .await
         } else {
             // Execute in shared context (existing behavior)
-            self.run_script_shared(script_name, &script, extra_args, orchestrator)
+            self.run_script_shared(script_name, &script, extra_args)
                 .await
         }
     }
@@ -176,26 +164,26 @@ impl<'a> ScriptRunner<'a> {
         script_name: &str,
         script: &Script,
         extra_args: &[String],
-        orchestrator: &Orchestrator,
     ) -> Result<std::process::ExitStatus> {
         // Resolve dependencies - can be services or other scripts (SF-00035)
         for dep in &script.depends_on {
-            if self.config.scripts.contains_key(dep) {
+            if self.orchestrator.config.scripts.contains_key(dep) {
                 // Dependency is a script - run it recursively
                 // Note: Circular dependencies are caught by graph validation during config parsing
                 // Use Box::pin to enable async recursion (avoids infinite future size)
-                Box::pin(orchestrator.run_script_interactive(dep, &[])).await?;
+                Box::pin(self.orchestrator.run_script_interactive(dep, &[])).await?;
             } else {
                 // Dependency is a service - start it if not running
                 if !self.is_service_running(dep).await {
-                    orchestrator.start(dep).await?;
+                    self.orchestrator.start(dep).await?;
                 }
             }
         }
 
         // Resolve script at execution time (scripts are not pre-resolved to support isolated)
-        let params = self.resolver.get_resolved_parameters().clone();
+        let params = self.orchestrator.resolver.get_resolved_parameters().clone();
         let resolved_env = self
+            .orchestrator
             .resolver
             .resolve_environment(&script.environment, &params)
             .map_err(|e| {
@@ -206,6 +194,7 @@ impl<'a> ScriptRunner<'a> {
             })?;
 
         let resolved_script = self
+            .orchestrator
             .resolver
             .resolve_template_shell_safe(&script.script, &params)
             .map_err(|e| {
@@ -222,7 +211,7 @@ impl<'a> ScriptRunner<'a> {
         };
 
         // Execute the script command
-        execute_script_command(&resolved, extra_args, self.work_dir).await
+        execute_script_command(&resolved, extra_args, &self.orchestrator.work_dir).await
     }
 
     /// Run a script in isolated context with fresh port allocations (SF-00034).
@@ -237,7 +226,6 @@ impl<'a> ScriptRunner<'a> {
         script_name: &str,
         _script: &Script, // Unused - we get the script from original_config
         extra_args: &[String],
-        orchestrator: &Orchestrator,
     ) -> Result<std::process::ExitStatus> {
         tracing::info!(
             "Running script '{}' in isolated context (isolated: true)",
@@ -248,9 +236,11 @@ impl<'a> ScriptRunner<'a> {
         // with fresh port allocations. If original_config is None (shouldn't happen),
         // fall back to cloning the resolved config.
         let child_config = self
+            .orchestrator
             .original_config
+            .as_ref()
             .cloned()
-            .unwrap_or_else(|| self.config.clone());
+            .unwrap_or_else(|| self.orchestrator.config.clone());
 
         // Get the script from the original config (has unresolved templates)
         let original_script = child_config
@@ -260,8 +250,8 @@ impl<'a> ScriptRunner<'a> {
             .clone();
 
         let mut child_orchestrator =
-            Orchestrator::new(child_config, self.work_dir.to_path_buf()).await?;
-        child_orchestrator.output_mode = self.output_mode;
+            Orchestrator::new(child_config, self.orchestrator.work_dir.clone()).await?;
+        child_orchestrator.output_mode = self.orchestrator.output_mode;
 
         // Enable isolated mode to skip session port cache and allocate fresh ports
         child_orchestrator.resolver.set_isolated_mode(true);
@@ -283,10 +273,10 @@ impl<'a> ScriptRunner<'a> {
         // unless they also have isolated)
         let mut service_deps = Vec::new();
         for dep in &original_script.depends_on {
-            if self.config.scripts.contains_key(dep) {
+            if self.orchestrator.config.scripts.contains_key(dep) {
                 // Script dependency: run in parent context
                 // (nested scripts get their own isolation if they have isolated)
-                Box::pin(orchestrator.run_script_interactive(dep, &[])).await?;
+                Box::pin(self.orchestrator.run_script_interactive(dep, &[])).await?;
             } else {
                 // Service dependency: start in child context with isolated ports
                 child_orchestrator.start(dep).await?;
@@ -337,7 +327,7 @@ impl<'a> ScriptRunner<'a> {
         };
 
         // Execute script in child context
-        let result = execute_script_command(&isolated_script, extra_args, self.work_dir).await;
+        let result = execute_script_command(&isolated_script, extra_args, &self.orchestrator.work_dir).await;
 
         // Cleanup child orchestrator (stops all services started in isolation)
         tracing::debug!("Cleaning up isolated context for script '{}'", script_name);
@@ -359,7 +349,7 @@ impl<'a> ScriptRunner<'a> {
 
     /// Check if a service is running.
     pub async fn is_service_running(&self, service_name: &str) -> bool {
-        let services = self.services.read().await;
+        let services = self.orchestrator.services.read().await;
         match services.get(service_name) {
             Some(arc) => {
                 let manager = arc.lock().await;
@@ -372,7 +362,7 @@ impl<'a> ScriptRunner<'a> {
 
     /// Get list of available scripts.
     pub fn list_scripts(&self) -> Vec<String> {
-        self.config.scripts.keys().cloned().collect()
+        self.orchestrator.config.scripts.keys().cloned().collect()
     }
 }
 
