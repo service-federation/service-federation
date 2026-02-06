@@ -4,14 +4,15 @@ use chrono::{DateTime, Utc};
 ///
 /// Tries `docker stop` first (sends SIGTERM, waits), then `docker rm -f`.
 pub async fn graceful_docker_stop(container_id: &str) -> bool {
-    use std::process::Command;
+    use tokio::process::Command;
 
     // Try graceful stop first (SIGTERM with 10 second timeout)
     let stop_result = Command::new("docker")
         .args(["stop", "-t", "10", container_id])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .await;
 
     if let Ok(status) = stop_result {
         if status.success() {
@@ -20,7 +21,8 @@ pub async fn graceful_docker_stop(container_id: &str) -> bool {
                 .args(["rm", "-f", container_id])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .status();
+                .status()
+                .await;
             return true;
         }
     }
@@ -30,7 +32,8 @@ pub async fn graceful_docker_stop(container_id: &str) -> bool {
         .args(["rm", "-f", container_id])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .await;
 
     rm_result.map(|s| s.success()).unwrap_or(false)
 }
@@ -153,7 +156,7 @@ pub fn validate_pid_start_time(pid: u32, expected_start: DateTime<Utc>) -> bool 
 ///
 /// Sends SIGTERM first, waits up to 5 seconds, then sends SIGKILL.
 pub async fn graceful_process_kill(pid: u32) -> bool {
-    use std::process::Command;
+    use tokio::process::Command;
     use std::time::Duration;
 
     // Check if process exists first
@@ -162,6 +165,7 @@ pub async fn graceful_process_kill(pid: u32) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
+        .await
         .map(|s| s.success())
         .unwrap_or(false);
 
@@ -175,7 +179,8 @@ pub async fn graceful_process_kill(pid: u32) -> bool {
         .args(["-TERM", &pid.to_string()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .await;
 
     if term_result.is_err() {
         return false;
@@ -190,6 +195,7 @@ pub async fn graceful_process_kill(pid: u32) -> bool {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
+            .await
             .map(|s| s.success())
             .unwrap_or(false);
 
@@ -203,7 +209,8 @@ pub async fn graceful_process_kill(pid: u32) -> bool {
         .args(["-KILL", &pid.to_string()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .await;
 
     // Wait a bit more for SIGKILL to take effect
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -214,6 +221,7 @@ pub async fn graceful_process_kill(pid: u32) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
+        .await
         .map(|s| s.success())
         .unwrap_or(false);
 
