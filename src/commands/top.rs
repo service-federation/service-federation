@@ -1,12 +1,17 @@
+use crate::output::UserOutput;
 use service_federation::Orchestrator;
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 
-pub async fn run_top(orchestrator: &Orchestrator, interval: u64) -> anyhow::Result<()> {
-    println!(
+pub async fn run_top(
+    orchestrator: &Orchestrator,
+    interval: u64,
+    out: &dyn UserOutput,
+) -> anyhow::Result<()> {
+    out.status(&format!(
         "Service Federation - Resource Monitor (refresh every {}s, press Ctrl+C to exit)\n",
         interval
-    );
+    ));
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
     tokio::spawn(async move {
@@ -17,25 +22,26 @@ pub async fn run_top(orchestrator: &Orchestrator, interval: u64) -> anyhow::Resu
     loop {
         tokio::select! {
             _ = shutdown_rx.recv() => {
-                println!("\nStopped monitoring");
+                out.status("\nStopped monitoring");
                 break;
             }
             _ = sleep(Duration::from_secs(interval)) => {
                 // Clear screen (ANSI escape code)
-                print!("\x1B[2J\x1B[1;1H");
+                out.progress("\x1B[2J\x1B[1;1H");
+                out.finish_progress("");
 
-                println!("Service Federation - Resource Monitor (refresh every {}s, press Ctrl+C to exit)\n", interval);
+                out.status(&format!("Service Federation - Resource Monitor (refresh every {}s, press Ctrl+C to exit)\n", interval));
 
                 let status = orchestrator.get_status().await;
 
                 if status.is_empty() {
-                    println!("No services running");
+                    out.status("No services running");
                     continue;
                 }
 
                 // Header
-                println!("{:<20} {:<12} {:<10} {:<10} {:<10}", "SERVICE", "STATUS", "CPU %", "MEM (MB)", "PID");
-                println!("{:-<62}", "");
+                out.status(&format!("{:<20} {:<12} {:<10} {:<10} {:<10}", "SERVICE", "STATUS", "CPU %", "MEM (MB)", "PID"));
+                out.status(&format!("{:-<62}", ""));
 
                 let mut stats: HashMap<String, (String, String, String, String)> = HashMap::new();
 
@@ -84,11 +90,11 @@ pub async fn run_top(orchestrator: &Orchestrator, interval: u64) -> anyhow::Resu
 
                 for name in sorted_names {
                     let (status, cpu, mem, pid) = &stats[&name];
-                    println!("{:<20} {:<12} {:<10} {:<10} {:<10}", name, status, cpu, mem, pid);
+                    out.status(&format!("{:<20} {:<12} {:<10} {:<10} {:<10}", name, status, cpu, mem, pid));
                 }
 
-                println!();
-                println!("Next refresh in {}s...", interval);
+                out.blank();
+                out.status(&format!("Next refresh in {}s...", interval));
             }
         }
     }

@@ -1,9 +1,11 @@
+use crate::output::UserOutput;
 use service_federation::{config::Config, Orchestrator};
 
 pub async fn run_clean(
     orchestrator: &Orchestrator,
     config: &Config,
     services: Vec<String>,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     let cleaning_all = services.is_empty();
 
@@ -12,17 +14,20 @@ pub async fn run_clean(
     if cleaning_all {
         match orchestrator.remove_orphaned_containers().await {
             Ok(count) if count > 0 => {
-                println!("Removed {} orphaned container(s)", count);
+                out.status(&format!("Removed {} orphaned container(s)", count));
             }
             Ok(_) => {}
             Err(e) => {
-                eprintln!("Warning: Failed to clean orphaned containers: {}", e);
+                out.warning(&format!(
+                    "Warning: Failed to clean orphaned containers: {}",
+                    e
+                ));
             }
         }
 
         let process_count = orchestrator.remove_orphaned_processes().await;
         if process_count > 0 {
-            println!("Killed {} orphaned process(es)", process_count);
+            out.status(&format!("Killed {} orphaned process(es)", process_count));
         }
     }
 
@@ -39,19 +44,19 @@ pub async fn run_clean(
     };
 
     if services_to_clean.is_empty() {
-        println!("No services with clean field or Docker volumes found");
+        out.status("No services with clean field or Docker volumes found");
         return Ok(());
     }
 
-    println!(
+    out.status(&format!(
         "Running clean for services: {}",
         services_to_clean.join(", ")
-    );
+    ));
 
     for service in &services_to_clean {
-        println!("\n[clean] {}", service);
+        out.status(&format!("\n[clean] {}", service));
         if let Err(e) = orchestrator.run_clean(service).await {
-            println!("[clean] {} failed: {}", service, e);
+            out.status(&format!("[clean] {} failed: {}", service, e));
             return Err(e.into());
         }
     }
@@ -67,7 +72,7 @@ pub async fn run_clean(
             .await?;
     }
 
-    println!("\nAll clean commands completed successfully.");
+    out.success("\nAll clean commands completed successfully.");
 
     Ok(())
 }

@@ -1,3 +1,4 @@
+use crate::output::UserOutput;
 use service_federation::{config::Config, Orchestrator};
 
 pub async fn run_status(
@@ -5,6 +6,7 @@ pub async fn run_status(
     config: &Config,
     json: bool,
     tag: Option<String>,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     let mut status = orchestrator.get_status().await;
 
@@ -37,13 +39,13 @@ pub async fn run_status(
             })
             .collect::<serde_json::Map<_, _>>();
 
-        println!("{}", serde_json::to_string_pretty(&status_obj)?);
+        out.status(&serde_json::to_string_pretty(&status_obj)?);
     } else {
-        println!("Service Status:");
-        println!("{:-<50}", "");
+        out.status("Service Status:");
+        out.status(&format!("{:-<50}", ""));
 
         if status.is_empty() {
-            println!("  No services configured");
+            out.status("  No services configured");
         } else {
             for (name, stat) in status {
                 let status_icon = match stat {
@@ -55,7 +57,7 @@ pub async fn run_status(
                     service_federation::Status::Failing => "x",
                     service_federation::Status::Stopping => ".",
                 };
-                println!("  {} {:<30} {:?}", status_icon, name, stat);
+                out.status(&format!("  {} {:<30} {:?}", status_icon, name, stat));
             }
         }
     }

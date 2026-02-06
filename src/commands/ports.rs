@@ -1,21 +1,24 @@
 use crate::cli::PortsCommands;
+use crate::output::UserOutput;
 use service_federation::service::Status;
 use service_federation::state::StateTracker;
 use service_federation::{Orchestrator, Parser as ConfigParser};
-use std::io::Write;
 use std::path::PathBuf;
 
 pub async fn run_ports(
     cmd: &PortsCommands,
     workdir: Option<PathBuf>,
     config_path: Option<PathBuf>,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     let work_dir = resolve_work_dir(workdir, config_path.as_deref())?;
 
     match cmd {
-        PortsCommands::List { json } => list_ports(&work_dir, *json).await,
-        PortsCommands::Randomize { force } => randomize_ports(&work_dir, config_path, *force).await,
-        PortsCommands::Reset { force } => reset_ports(&work_dir, *force).await,
+        PortsCommands::List { json } => list_ports(&work_dir, *json, out).await,
+        PortsCommands::Randomize { force } => {
+            randomize_ports(&work_dir, config_path, *force, out).await
+        }
+        PortsCommands::Reset { force } => reset_ports(&work_dir, *force, out).await,
     }
 }
 
@@ -44,19 +47,23 @@ fn resolve_work_dir(
     }
 }
 
-async fn list_ports(work_dir: &std::path::Path, json: bool) -> anyhow::Result<()> {
+async fn list_ports(
+    work_dir: &std::path::Path,
+    json: bool,
+    out: &dyn UserOutput,
+) -> anyhow::Result<()> {
     let tracker = StateTracker::new(work_dir.to_path_buf()).await?;
     let ports = tracker.get_global_port_allocations().await;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&ports)?);
+        out.status(&serde_json::to_string_pretty(&ports)?);
     } else {
-        println!("\nPort Allocations");
-        println!("================\n");
+        out.status("\nPort Allocations");
+        out.status("================\n");
 
         if ports.is_empty() {
-            println!("No ports are currently allocated.");
-            println!("Ports are allocated on `fed start` or `fed ports randomize`.\n");
+            out.status("No ports are currently allocated.");
+            out.status("Ports are allocated on `fed start` or `fed ports randomize`.\n");
             return Ok(());
         }
 
@@ -64,9 +71,9 @@ async fn list_ports(work_dir: &std::path::Path, json: bool) -> anyhow::Result<()
         sorted.sort_by_key(|(_, port)| *port);
 
         for (param, port) in &sorted {
-            println!("  {:>5}  {}", port, param);
+            out.status(&format!("  {:>5}  {}", port, param));
         }
-        println!();
+        out.blank();
     }
 
     Ok(())
@@ -76,8 +83,9 @@ async fn randomize_ports(
     work_dir: &std::path::Path,
     config_path: Option<PathBuf>,
     force: bool,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
-    ensure_services_stopped(work_dir, force).await?;
+    ensure_services_stopped(work_dir, force, out).await?;
 
     // Load config
     let parser = ConfigParser::new();
@@ -100,40 +108,53 @@ async fn randomize_ports(
     let ports = tracker.get_global_port_allocations().await;
     drop(tracker);
 
-    println!("\nRandomized port allocations:");
+    out.status("\nRandomized port allocations:");
     let mut sorted: Vec<_> = ports.iter().collect();
     sorted.sort_by_key(|(_, port)| *port);
     for (param, port) in &sorted {
-        println!("  {:>5}  {}", port, param);
+        out.status(&format!("  {:>5}  {}", port, param));
     }
-    println!();
-    println!("Ports persisted. Next `fed start` will use these allocations.");
-    println!("Use `fed ports reset` to clear and return to defaults.\n");
+    out.blank();
+    out.status("Ports persisted. Next `fed start` will use these allocations.");
+    out.status("Use `fed ports reset` to clear and return to defaults.\n");
 
     Ok(())
 }
 
-async fn reset_ports(work_dir: &std::path::Path, force: bool) -> anyhow::Result<()> {
-    ensure_services_stopped(work_dir, force).await?;
+async fn reset_ports(
+    work_dir: &std::path::Path,
+    force: bool,
+    out: &dyn UserOutput,
+) -> anyhow::Result<()> {
+    ensure_services_stopped(work_dir, force, out).await?;
 
     let mut tracker = StateTracker::new(work_dir.to_path_buf()).await?;
     tracker.initialize().await?;
     tracker.clear_port_resolutions().await?;
 
-    println!("Port allocations cleared. Next `fed start` will use default ports.\n");
+    out.success("Port allocations cleared. Next `fed start` will use default ports.\n");
 
     Ok(())
 }
 
 /// Ensure no services are running. With --force, auto-stop them.
 /// Without --force, prompt the user.
-async fn ensure_services_stopped(work_dir: &std::path::Path, force: bool) -> anyhow::Result<()> {
+async fn ensure_services_stopped(
+    work_dir: &std::path::Path,
+    force: bool,
+    out: &dyn UserOutput,
+) -> anyhow::Result<()> {
     let tracker = StateTracker::new(work_dir.to_path_buf()).await?;
     let services = tracker.get_services().await;
 
     let running: Vec<_> = services
         .iter()
-        .filter(|(_, state)| matches!(state.status, Status::Running | Status::Healthy | Status::Starting))
+        .filter(|(_, state)| {
+            matches!(
+                state.status,
+                Status::Running | Status::Healthy | Status::Starting
+            )
+        })
         .map(|(name, _)| name.clone())
         .collect();
 
@@ -142,13 +163,18 @@ async fn ensure_services_stopped(work_dir: &std::path::Path, force: bool) -> any
     }
 
     if force {
-        println!("Stopping {} running service(s)...", running.len());
+        out.status(&format!(
+            "Stopping {} running service(s)...",
+            running.len()
+        ));
         // Use the state-tracker-based stop (no config needed)
-        super::run_stop_from_state(work_dir, vec![]).await?;
+        super::run_stop_from_state(work_dir, vec![], out).await?;
     } else {
-        println!("The following services are running: {}", running.join(", "));
-        print!("Stop them to continue? [y/N] ");
-        std::io::stdout().flush()?;
+        out.status(&format!(
+            "The following services are running: {}",
+            running.join(", ")
+        ));
+        out.progress("Stop them to continue? [y/N] ");
 
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
@@ -156,7 +182,7 @@ async fn ensure_services_stopped(work_dir: &std::path::Path, force: bool) -> any
             anyhow::bail!("Aborted: services must be stopped first");
         }
 
-        super::run_stop_from_state(work_dir, vec![]).await?;
+        super::run_stop_from_state(work_dir, vec![], out).await?;
     }
 
     Ok(())

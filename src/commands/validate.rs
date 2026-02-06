@@ -1,7 +1,8 @@
+use crate::output::UserOutput;
 use service_federation::Parser as ConfigParser;
 use std::path::PathBuf;
 
-pub fn run_validate(config_path: Option<PathBuf>) -> anyhow::Result<()> {
+pub fn run_validate(config_path: Option<PathBuf>, out: &dyn UserOutput) -> anyhow::Result<()> {
     let parser = ConfigParser::new();
     let config_path = if let Some(path) = config_path {
         path
@@ -9,36 +10,34 @@ pub fn run_validate(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         match parser.find_config_file() {
             Ok(path) => path,
             Err(_) => {
-                eprintln!("Error: No configuration file found");
-                eprintln!("\nSearched for service-federation.yaml in:");
-                eprintln!(
-                    "  - Current directory: {}",
+                out.error("Error: No configuration file found");
+                out.error(&format!(
+                    "\nSearched for service-federation.yaml in:\n  - Current directory: {}\n  - Parent directories up to root",
                     std::env::current_dir()?.display()
-                );
-                eprintln!("  - Parent directories up to root");
-                eprintln!("\nHint: Run 'fed init' to create a starter configuration");
+                ));
+                out.error("\nHint: Run 'fed init' to create a starter configuration");
                 return Err(anyhow::anyhow!("Configuration file not found"));
             }
         }
     };
 
-    println!("Validating {}...", config_path.display());
+    out.status(&format!("Validating {}...", config_path.display()));
 
     let config = match parser.load_config(&config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("Configuration failed to load");
-            eprintln!("\nError: {}", e);
+            out.error("Configuration failed to load");
+            out.error(&format!("\nError: {}", e));
             return Err(e.into());
         }
     };
 
     config.validate()?;
 
-    println!("Configuration is valid\n");
+    out.success("Configuration is valid\n");
 
     // Show summary
-    println!("Services: {}", config.services.len());
+    out.status(&format!("Services: {}", config.services.len()));
     for (name, service) in &config.services {
         let service_type = if service.process.is_some() {
             "process"
@@ -51,24 +50,27 @@ pub fn run_validate(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         } else {
             "unknown"
         };
-        println!("  - {} ({})", name, service_type);
+        out.status(&format!("  - {} ({})", name, service_type));
     }
 
     if !config.parameters.is_empty() {
-        println!("\nParameters: {}", config.parameters.len());
+        out.status(&format!("\nParameters: {}", config.parameters.len()));
         for (name, param) in &config.parameters {
             if let Some(param_type) = &param.param_type {
-                println!("  - {} (type: {})", name, param_type);
+                out.status(&format!("  - {} (type: {})", name, param_type));
             } else {
-                println!("  - {} (string)", name);
+                out.status(&format!("  - {} (string)", name));
             }
         }
     }
 
     if let Some(ref ep) = config.entrypoint {
-        println!("\nEntrypoint: {}", ep);
+        out.status(&format!("\nEntrypoint: {}", ep));
     } else if !config.entrypoints.is_empty() {
-        println!("\nEntrypoints: {}", config.entrypoints.join(", "));
+        out.status(&format!(
+            "\nEntrypoints: {}",
+            config.entrypoints.join(", ")
+        ));
     }
 
     Ok(())

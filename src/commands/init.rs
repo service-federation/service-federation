@@ -1,3 +1,4 @@
+use crate::output::UserOutput;
 use std::path::Path;
 
 const TEMPLATE: &str = r#"# Service Federation Configuration
@@ -107,21 +108,24 @@ scripts:
       psql postgres://{{DB_USER}}:password@localhost:{{DB_PORT}}/{{DB_NAME}} -f seed.sql
 "#;
 
-pub fn run_init(output: &Path, force: bool) -> anyhow::Result<()> {
+pub fn run_init(output: &Path, force: bool, out: &dyn UserOutput) -> anyhow::Result<()> {
     // Check if file exists and force flag not set
     if output.exists() && !force {
-        eprintln!("Error: {} already exists", output.display());
-        eprintln!("Use --force to overwrite");
+        out.error(&format!("Error: {} already exists", output.display()));
+        out.error("Use --force to overwrite");
         return Err(anyhow::anyhow!("File already exists"));
     }
 
     std::fs::write(output, TEMPLATE)?;
-    println!("Created {}", output.display());
-    println!("\nNext steps:");
-    println!("  1. Edit {} to match your services", output.display());
-    println!("  2. Create a session: fed session start --id my-project");
-    println!("  3. Add .fed/ to .gitignore");
-    println!("  4. Run: fed start");
+    out.success(&format!("Created {}", output.display()));
+    out.status("\nNext steps:");
+    out.status(&format!(
+        "  1. Edit {} to match your services",
+        output.display()
+    ));
+    out.status("  2. Create a session: fed session start --id my-project");
+    out.status("  3. Add .fed/ to .gitignore");
+    out.status("  4. Run: fed start");
 
     Ok(())
 }

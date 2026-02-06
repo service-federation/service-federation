@@ -1,3 +1,4 @@
+use crate::output::UserOutput;
 use service_federation::{
     config::{BuildConfig, Config, DockerBuildResult},
     Orchestrator,
@@ -10,6 +11,7 @@ pub async fn run_build(
     tag: Option<String>,
     cli_build_args: Vec<String>,
     json: bool,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     let services_to_build = if services.is_empty() {
         config
@@ -23,7 +25,7 @@ pub async fn run_build(
     };
 
     if services_to_build.is_empty() {
-        println!("No services with build field found");
+        out.status("No services with build field found");
         return Ok(());
     }
 
@@ -41,35 +43,38 @@ pub async fn run_build(
         super::docker::warn_if_dirty_tree();
     }
 
-    println!(
+    out.status(&format!(
         "Running build for services: {}",
         services_to_build.join(", ")
-    );
+    ));
 
     let mut results: Vec<DockerBuildResult> = Vec::new();
 
     for service in &services_to_build {
-        println!("\n[build] {}", service);
+        out.status(&format!("\n[build] {}", service));
         match orchestrator
             .run_build(service, tag.as_deref(), &cli_build_args)
             .await
         {
             Ok(Some(result)) => {
-                println!("[build] {} -> {}:{}", service, result.image, result.tag);
+                out.status(&format!(
+                    "[build] {} -> {}:{}",
+                    service, result.image, result.tag
+                ));
                 results.push(result);
             }
             Ok(None) => {}
             Err(e) => {
-                println!("[build] {} failed: {}", service, e);
+                out.status(&format!("[build] {} failed: {}", service, e));
                 return Err(e.into());
             }
         }
     }
 
-    println!("\nAll builds completed successfully.");
+    out.success("\nAll builds completed successfully.");
 
     if json && !results.is_empty() {
-        println!("{}", serde_json::to_string_pretty(&results)?);
+        out.status(&serde_json::to_string_pretty(&results)?);
     }
 
     Ok(())

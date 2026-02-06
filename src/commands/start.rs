@@ -1,3 +1,4 @@
+use crate::output::UserOutput;
 use service_federation::{
     config::{Config, ServiceType},
     parameter::PortResolutionReason,
@@ -18,6 +19,7 @@ pub async fn run_start(
     replace: bool,
     dry_run: bool,
     config_path: &std::path::Path,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
     let services_to_start = if services.is_empty() {
         // Use entrypoint
@@ -26,7 +28,7 @@ pub async fn run_start(
         } else if !config.entrypoints.is_empty() {
             config.entrypoints.clone()
         } else {
-            println!("No services specified and no entrypoint configured");
+            out.status("No services specified and no entrypoint configured");
             return Ok(());
         }
     } else {
@@ -36,19 +38,19 @@ pub async fn run_start(
 
     // Handle dry run mode - show what would happen without starting services
     if dry_run {
-        return run_dry_run(orchestrator, config, services_to_start).await;
+        return run_dry_run(orchestrator, config, services_to_start, out).await;
     }
 
     // If --replace is set, first stop any fed-managed services gracefully,
     // then kill any remaining external processes occupying required ports
     if replace {
         // First, gracefully stop services from previous sessions
-        let stopped_services = stop_previous_session_services(orchestrator).await;
+        let stopped_services = stop_previous_session_services(orchestrator, out).await;
         if stopped_services > 0 {
-            println!(
+            out.status(&format!(
                 "Stopped {} service(s) from previous session\n",
                 stopped_services
-            );
+            ));
             // Give a moment for ports to be fully released
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
@@ -70,20 +72,20 @@ pub async fn run_start(
                     continue;
                 };
 
-                print!("Freeing port {} ({})... ", port, name);
+                out.progress(&format!("Freeing port {} ({})... ", port, name));
                 match conflict.free_port() {
                     Ok(msg) => {
-                        println!("{}", msg);
+                        out.finish_progress(&msg);
                         freed_any = true;
                     }
                     Err(e) => {
-                        println!("\x1b[31mfailed: {}\x1b[0m", e);
+                        out.error(&format!("failed: {}", e));
                     }
                 }
             }
 
             if freed_any {
-                println!();
+                out.blank();
             }
         }
     }
@@ -93,12 +95,16 @@ pub async fn run_start(
     for service in &services_to_start {
         let deps = dep_graph.get_dependencies(service);
         if deps.is_empty() {
-            println!("Starting: {}", service);
+            out.status(&format!("Starting: {}", service));
         } else {
-            println!("Starting: {} (with deps: {})", service, deps.join(", "));
+            out.status(&format!(
+                "Starting: {} (with deps: {})",
+                service,
+                deps.join(", ")
+            ));
         }
     }
-    println!();
+    out.blank();
 
     // Set up Ctrl+C handler during startup to allow aborting
     let startup_abort = Arc::new(AtomicBool::new(false));
@@ -114,9 +120,9 @@ pub async fn run_start(
     for service in &services_to_start {
         // Check if user aborted during startup
         if startup_abort.load(Ordering::SeqCst) {
-            println!("\n\nStartup aborted. Cleaning up...");
+            out.status("\n\nStartup aborted. Cleaning up...");
             orchestrator.cleanup().await;
-            println!("Cleanup complete");
+            out.status("Cleanup complete");
             return Ok(());
         }
 
@@ -128,19 +134,18 @@ pub async fn run_start(
         // Start dependencies first (show progress)
         for dep in &deps {
             if !started.contains(dep) {
-                print!("  {} (dependency)...", dep);
-                std::io::Write::flush(&mut std::io::stdout())?;
+                out.progress(&format!("  {} (dependency)...", dep));
                 match orchestrator.start(dep).await {
                     Ok(_) => {
-                        println!(" ready");
+                        out.finish_progress(" ready");
                         started.insert(dep.clone());
                     }
                     Err(e) => {
-                        println!(" \x1b[31mfailed\x1b[0m");
-                        eprintln!(
-                            "\n\x1b[31mError starting dependency '{}': {}\x1b[0m",
+                        out.error(" failed");
+                        out.error(&format!(
+                            "\nError starting dependency '{}': {}",
                             dep, e
-                        );
+                        ));
                         orchestrator.cleanup().await;
                         return Err(e.into());
                     }
@@ -150,28 +155,27 @@ pub async fn run_start(
 
         // Start the main service
         if !started.contains(service) {
-            print!("  {}...", service);
-            std::io::Write::flush(&mut std::io::stdout())?;
+            out.progress(&format!("  {}...", service));
             match orchestrator.start(service).await {
                 Ok(_) => {
-                    println!(" ready");
+                    out.finish_progress(" ready");
                     started.insert(service.clone());
                 }
                 Err(e) => {
-                    println!(" \x1b[31mfailed\x1b[0m");
-                    eprintln!("\n\x1b[31mError: {}\x1b[0m", e);
+                    out.error(" failed");
+                    out.error(&format!("\nError: {}", e));
 
                     // If service not found, show available services
                     if e.to_string().contains("Service not found") {
                         let status = orchestrator.get_status().await;
                         if !status.is_empty() {
-                            eprintln!("\nAvailable services:");
+                            out.error("\nAvailable services:");
                             for name in status.keys() {
-                                eprintln!("  - {}", name);
+                                out.error(&format!("  - {}", name));
                             }
                         }
-                        eprintln!(
-                            "\nHint: Check your service-federation.yaml or run 'fed validate'"
+                        out.error(
+                            "\nHint: Check your service-federation.yaml or run 'fed validate'",
                         );
                     }
 
@@ -182,10 +186,10 @@ pub async fn run_start(
         }
     }
 
-    println!("\nAll services started successfully!");
+    out.success("\nAll services started successfully!");
 
     // Print startup messages from the resolved config (templates substituted)
-    print_startup_messages(orchestrator.get_config(), &started);
+    print_startup_messages(orchestrator.get_config(), &started, out);
 
     // Mark startup complete - enables monitoring to clean up dead services
     orchestrator.mark_startup_complete();
@@ -193,16 +197,16 @@ pub async fn run_start(
     // Print resolved parameters
     let params = orchestrator.get_resolved_parameters();
     if !params.is_empty() {
-        println!("\nResolved parameters:");
+        out.status("\nResolved parameters:");
         for (key, value) in params {
-            println!("  {}: {}", key, value);
+            out.status(&format!("  {}: {}", key, value));
         }
     }
 
     // Brief delay to let processes bind ports and potentially fail with EADDRINUSE.
     // Then use active status check to detect processes that crashed after spawn.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    println!("\nService Status:");
+    out.status("\nService Status:");
     let status = orchestrator.get_status().await;
     let params = orchestrator.get_resolved_parameters();
 
@@ -219,7 +223,7 @@ pub async fn run_start(
             Status::Starting => "Starting",
             Status::Stopping => "Stopping",
         };
-        println!("  {}: {}", name, status_str);
+        out.status(&format!("  {}: {}", name, status_str));
     }
 
     // If any services are failing, check ALL port parameters for conflicts
@@ -312,25 +316,25 @@ pub async fn run_start(
             }
         }
 
-        println!();
+        out.blank();
         if !port_conflicts.is_empty() {
-            eprintln!("\x1b[31m⚠️  Port conflicts detected:\x1b[0m");
+            out.error("Port conflicts detected:");
             for (param_name, port, process_name, pid) in &port_conflicts {
                 if let Some(p) = pid {
-                    eprintln!(
-                        "\x1b[31m  {} (port {}) - occupied by '{}' (PID {})\x1b[0m",
+                    out.error(&format!(
+                        "  {} (port {}) - occupied by '{}' (PID {})",
                         param_name, port, process_name, p
-                    );
+                    ));
                 } else {
-                    eprintln!(
-                        "\x1b[31m  {} (port {}) - occupied by external process\x1b[0m",
+                    out.error(&format!(
+                        "  {} (port {}) - occupied by external process",
                         param_name, port
-                    );
+                    ));
                 }
             }
-            println!();
-            println!("Hint: Run 'fed start --replace' to kill conflicting processes");
-            println!("      Or manually stop the external services first");
+            out.blank();
+            out.status("Hint: Run 'fed start --replace' to kill conflicting processes");
+            out.status("      Or manually stop the external services first");
         }
 
         // Show per-service failure details
@@ -341,33 +345,33 @@ pub async fn run_start(
             .collect();
 
         if !failing_services.is_empty() {
-            eprintln!("\x1b[31m⚠️  Failing services:\x1b[0m");
+            out.error("Failing services:");
             for name in &failing_services {
-                eprintln!("\x1b[31m  ✗ {}\x1b[0m", name);
+                out.error(&format!("  {}", name));
                 if let Some(error) = orchestrator.get_last_error(name).await {
                     for line in error.lines() {
-                        eprintln!("    {}", line);
+                        out.status(&format!("    {}", line));
                     }
                 } else if let Ok(logs) = orchestrator.get_logs(name, Some(5)).await {
                     if !logs.is_empty() {
-                        eprintln!("    Recent logs:");
+                        out.status("    Recent logs:");
                         for line in &logs {
-                            eprintln!("      {}", line);
+                            out.status(&format!("      {}", line));
                         }
                     }
                 }
             }
-            eprintln!();
-            eprintln!("Use 'fed logs <service>' for full logs");
+            out.blank();
+            out.status("Use 'fed logs <service>' for full logs");
         }
     }
 
     if !watch {
-        println!("\nServices running in background");
-        println!("  Use 'fed stop' to stop them");
-        println!("  Use 'fed tui' for interactive mode");
+        out.status("\nServices running in background");
+        out.status("  Use 'fed stop' to stop them");
+        out.status("  Use 'fed tui' for interactive mode");
     } else {
-        run_watch_mode(orchestrator, config, config_path).await?;
+        run_watch_mode(orchestrator, config, config_path, out).await?;
     }
 
     Ok(())
@@ -377,7 +381,11 @@ pub async fn run_start(
 ///
 /// Collects `startup_message` from started services, sorts entrypoint messages
 /// last, and renders them in a bordered box.
-fn print_startup_messages(config: &Config, started: &std::collections::HashSet<String>) {
+fn print_startup_messages(
+    config: &Config,
+    started: &std::collections::HashSet<String>,
+    out: &dyn UserOutput,
+) {
     // Collect (service_name, message) pairs for started services
     let mut messages: Vec<(&str, &str)> = Vec::new();
     for (name, service) in &config.services {
@@ -411,26 +419,31 @@ fn print_startup_messages(config: &Config, started: &std::collections::HashSet<S
     let max_len = messages.iter().map(|(_, msg)| msg.len()).max().unwrap_or(0);
     let box_width = max_len + 2; // 1 space padding on each side
 
-    let horizontal = "─".repeat(box_width);
+    let horizontal = "\u{2500}".repeat(box_width);
 
-    println!();
-    println!("╭{}╮", horizontal);
+    out.blank();
+    out.status(&format!("\u{256d}{}\u{256e}", horizontal));
     for (i, (_, msg)) in messages.iter().enumerate() {
         if i > 0 {
-            println!("├{}┤", horizontal);
+            out.status(&format!("\u{251c}{}\u{2524}", horizontal));
         }
-        println!("│ {:width$} │", msg, width = max_len);
+        out.status(&format!(
+            "\u{2502} {:width$} \u{2502}",
+            msg,
+            width = max_len
+        ));
     }
-    println!("╰{}╯", horizontal);
+    out.status(&format!("\u{2570}{}\u{256f}", horizontal));
 }
 
 async fn run_watch_mode(
     orchestrator: &mut Orchestrator,
     config: &Config,
     config_path: &std::path::Path,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
-    println!("\nServices running with watch mode enabled");
-    println!("  Files will be monitored for changes. Press Ctrl+C to stop...");
+    out.status("\nServices running with watch mode enabled");
+    out.status("  Files will be monitored for changes. Press Ctrl+C to stop...");
 
     // Set up watch mode
     let work_dir = if let Some(parent) = config_path.parent() {
@@ -445,12 +458,12 @@ async fn run_watch_mode(
 
     let mut watch_mode = match WatchMode::new(config, &work_dir) {
         Ok(wm) => {
-            println!("  Watching for file changes...");
+            out.status("  Watching for file changes...");
             Some(wm)
         }
         Err(e) => {
-            eprintln!("Failed to start watch mode: {}", e);
-            eprintln!("  Continuing without file watching...");
+            out.warning(&format!("Failed to start watch mode: {}", e));
+            out.warning("  Continuing without file watching...");
             None
         }
     };
@@ -465,6 +478,8 @@ async fn run_watch_mode(
     let cancel_token_clone = orchestrator.child_token();
     let services_clone = orchestrator.get_services_arc();
 
+    // Signal handler runs in a spawned task — uses println! directly since
+    // the `out` reference can't be easily passed to a 'static future.
     tokio::spawn(async move {
         use tokio::signal::unix::{signal, SignalKind};
 
@@ -561,24 +576,24 @@ async fn run_watch_mode(
                 }
             } => {
                 if let Some(event) = event {
-                    println!("\nFile change detected in service '{}': {} file(s) changed",
-                        event.service_name, event.changed_paths.len());
-                    println!("  Restarting {}...", event.service_name);
+                    out.status(&format!("\nFile change detected in service '{}': {} file(s) changed",
+                        event.service_name, event.changed_paths.len()));
+                    out.status(&format!("  Restarting {}...", event.service_name));
 
                     // Stop the service
                     match orchestrator.stop(&event.service_name).await {
                         Ok(_) => {
                             match orchestrator.start(&event.service_name).await {
                                 Ok(_) => {
-                                    println!("  {} restarted successfully", event.service_name);
+                                    out.success(&format!("  {} restarted successfully", event.service_name));
                                 }
                                 Err(e) => {
-                                    eprintln!("  Failed to start {}: {}", event.service_name, e);
+                                    out.error(&format!("  Failed to start {}: {}", event.service_name, e));
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("  Failed to stop {}: {}", event.service_name, e);
+                            out.error(&format!("  Failed to stop {}: {}", event.service_name, e));
                         }
                     }
                 }
@@ -589,7 +604,7 @@ async fn run_watch_mode(
     // Perform cleanup if not force quitting
     if !force_quit.load(Ordering::SeqCst) {
         orchestrator.cleanup().await;
-        println!("All services stopped");
+        out.success("All services stopped");
     }
 
     Ok(())
@@ -609,19 +624,24 @@ async fn run_dry_run(
     orchestrator: &Orchestrator,
     config: &Config,
     services_to_start: Vec<String>,
+    out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
-    println!("=== Dry Run Mode ===\n");
+    out.status("=== Dry Run Mode ===\n");
 
     let dep_graph = orchestrator.get_dependency_graph();
 
     // 1. Show services that would be started with their dependencies
-    println!("Services to start:");
+    out.status("Services to start:");
     for service in &services_to_start {
         let deps = dep_graph.get_dependencies(service);
         if deps.is_empty() {
-            println!("  - {}", service);
+            out.status(&format!("  - {}", service));
         } else {
-            println!("  - {} (depends on: {})", service, deps.join(", "));
+            out.status(&format!(
+                "  - {} (depends on: {})",
+                service,
+                deps.join(", ")
+            ));
         }
     }
 
@@ -640,24 +660,24 @@ async fn run_dry_run(
         }
     }
 
-    println!("\nStart order:");
+    out.status("\nStart order:");
     for (i, service) in all_services.iter().enumerate() {
         let service_config = config.services.get(service);
         let service_type = service_config
             .map(|s| s.service_type())
             .unwrap_or(ServiceType::Undefined);
-        println!("  {}. {} ({:?})", i + 1, service, service_type);
+        out.status(&format!("  {}. {} ({:?})", i + 1, service, service_type));
     }
 
     // 3. Show resolved parameters
     let params = orchestrator.get_resolved_parameters();
     if !params.is_empty() {
-        println!("\nResolved parameters:");
+        out.status("\nResolved parameters:");
         // Sort parameters for consistent output
         let mut sorted_params: Vec<_> = params.iter().collect();
         sorted_params.sort_by_key(|(k, _)| *k);
         for (key, value) in sorted_params {
-            println!("  {}: {}", key, value);
+            out.status(&format!("  {}: {}", key, value));
         }
     }
 
@@ -666,11 +686,11 @@ async fn run_dry_run(
     // Safe in dry-run since we never start services.
     orchestrator.release_port_listeners();
 
-    println!("\nPort availability:");
+    out.status("\nPort availability:");
     let port_resolutions = orchestrator.get_port_resolutions();
     let mut conflicts_found = false;
     if port_resolutions.is_empty() {
-        println!("  No port parameters detected");
+        out.status("  No port parameters detected");
     } else {
         for resolution in port_resolutions {
             match &resolution.reason {
@@ -678,22 +698,25 @@ async fn run_dry_run(
                     // Check if port is still available (it might have been taken since resolution)
                     if let Some(conflict) = PortConflict::check(resolution.resolved_port) {
                         conflicts_found = true;
-                        println!(
+                        out.status(&format!(
                             "  [CONFLICT] Port {} ({}):",
                             resolution.resolved_port, resolution.param_name
-                        );
+                        ));
                         if conflict.processes.is_empty() {
-                            println!("    - Port in use by unknown process");
+                            out.status("    - Port in use by unknown process");
                         } else {
                             for process in &conflict.processes {
-                                println!("    - '{}' (PID {})", process.name, process.pid);
+                                out.status(&format!(
+                                    "    - '{}' (PID {})",
+                                    process.name, process.pid
+                                ));
                             }
                         }
                     } else {
-                        println!(
+                        out.status(&format!(
                             "  [OK] Port {} ({}) is available",
                             resolution.resolved_port, resolution.param_name
-                        );
+                        ));
                     }
                 }
                 PortResolutionReason::ConflictAutoResolved {
@@ -707,48 +730,54 @@ async fn run_dry_run(
                         (Some(pid), None) => format!("PID {}", pid),
                         _ => "unknown process".to_string(),
                     };
-                    println!(
+                    out.status(&format!(
                         "  [CONFLICT] Default port {} ({}) occupied by {} - resolved to {}",
-                        default_port, resolution.param_name, process_info, resolution.resolved_port
-                    );
+                        default_port,
+                        resolution.param_name,
+                        process_info,
+                        resolution.resolved_port
+                    ));
                 }
                 PortResolutionReason::Random => {
-                    println!(
+                    out.status(&format!(
                         "  [OK] Port {} ({}) randomly allocated",
                         resolution.resolved_port, resolution.param_name
-                    );
+                    ));
                 }
             }
         }
         if !conflicts_found {
-            println!("  All {} port(s) available", port_resolutions.len());
+            out.status(&format!(
+                "  All {} port(s) available",
+                port_resolutions.len()
+            ));
         }
     }
 
     // 5. Show environment variables per service (mask sensitive values)
-    println!("\nService configuration:");
+    out.status("\nService configuration:");
     for service_name in &all_services {
         if let Some(service_config) = config.services.get(service_name) {
-            println!("  {}:", service_name);
+            out.status(&format!("  {}:", service_name));
 
             // Show service type
             let service_type = service_config.service_type();
-            println!("    type: {:?}", service_type);
+            out.status(&format!("    type: {:?}", service_type));
 
             // Show process command or image
             if let Some(ref process) = service_config.process {
-                println!("    command: {}", process);
+                out.status(&format!("    command: {}", process));
             }
             if let Some(ref image) = service_config.image {
-                println!("    image: {}", image);
+                out.status(&format!("    image: {}", image));
             }
             if let Some(ref gradle_task) = service_config.gradle_task {
-                println!("    gradle_task: {}", gradle_task);
+                out.status(&format!("    gradle_task: {}", gradle_task));
             }
 
             // Show working directory if set
             if let Some(ref cwd) = service_config.cwd {
-                println!("    cwd: {}", cwd);
+                out.status(&format!("    cwd: {}", cwd));
             }
 
             // Show health check if configured
@@ -756,14 +785,17 @@ async fn run_dry_run(
                 let timeout = healthcheck.get_timeout();
                 match healthcheck.get_http_url() {
                     Some(url) => {
-                        println!("    healthcheck: HTTP GET {} (timeout: {:?})", url, timeout)
+                        out.status(&format!(
+                            "    healthcheck: HTTP GET {} (timeout: {:?})",
+                            url, timeout
+                        ));
                     }
                     None => {
                         if let Some(cmd) = healthcheck.get_command() {
-                            println!(
+                            out.status(&format!(
                                 "    healthcheck: command '{}' (timeout: {:?})",
                                 cmd, timeout
-                            );
+                            ));
                         }
                     }
                 }
@@ -771,61 +803,61 @@ async fn run_dry_run(
 
             // Show environment variables with masked secrets
             if !service_config.environment.is_empty() {
-                println!("    environment:");
+                out.status("    environment:");
                 let mut sorted_env: Vec<_> = service_config.environment.iter().collect();
                 sorted_env.sort_by_key(|(k, _)| *k);
                 for (key, value) in sorted_env {
                     let display_value = mask_sensitive_value(key, value);
-                    println!("      {}: {}", key, display_value);
+                    out.status(&format!("      {}: {}", key, display_value));
                 }
             }
 
             // Show restart policy if configured
             if let Some(ref restart) = service_config.restart {
-                println!("    restart: {:?}", restart);
+                out.status(&format!("    restart: {:?}", restart));
             }
         }
     }
 
     // 6. Show resource limits
-    println!("\nResource limits:");
+    out.status("\nResource limits:");
     let mut any_limits = false;
     for service_name in &all_services {
         if let Some(service_config) = config.services.get(service_name) {
             if let Some(ref resources) = service_config.resources {
                 any_limits = true;
-                println!("  {}:", service_name);
+                out.status(&format!("  {}:", service_name));
                 if let Some(ref mem) = resources.memory {
-                    println!("    memory: {}", mem);
+                    out.status(&format!("    memory: {}", mem));
                 }
                 if let Some(ref cpus) = resources.cpus {
-                    println!("    cpus: {}", cpus);
+                    out.status(&format!("    cpus: {}", cpus));
                 }
                 if let Some(nofile) = resources.nofile {
-                    println!("    nofile: {}", nofile);
+                    out.status(&format!("    nofile: {}", nofile));
                 }
                 if let Some(pids) = resources.pids {
-                    println!("    pids: {}", pids);
+                    out.status(&format!("    pids: {}", pids));
                 }
             }
         }
     }
     if !any_limits {
-        println!("  No resource limits configured");
+        out.status("  No resource limits configured");
     }
 
     // 7. Validation summary
-    println!("\n=== Validation Summary ===");
-    println!("  Configuration: OK (parsed successfully)");
-    println!("  Services to start: {}", all_services.len());
+    out.status("\n=== Validation Summary ===");
+    out.status("  Configuration: OK (parsed successfully)");
+    out.status(&format!("  Services to start: {}", all_services.len()));
     if conflicts_found {
-        println!("  Port conflicts: DETECTED (use --replace to kill conflicting processes)");
+        out.status("  Port conflicts: DETECTED (use --replace to kill conflicting processes)");
     } else {
-        println!("  Port conflicts: None");
+        out.status("  Port conflicts: None");
     }
 
-    println!("\n=== Dry run complete ===");
-    println!("Run without --dry-run to actually start services");
+    out.status("\n=== Dry run complete ===");
+    out.status("Run without --dry-run to actually start services");
 
     Ok(())
 }
@@ -863,7 +895,10 @@ fn mask_sensitive_value(key: &str, value: &str) -> String {
 /// before killing any remaining external processes.
 ///
 /// Returns the number of services stopped.
-async fn stop_previous_session_services(orchestrator: &Orchestrator) -> usize {
+async fn stop_previous_session_services(
+    orchestrator: &Orchestrator,
+    out: &dyn UserOutput,
+) -> usize {
     use service_federation::state::SqliteStateTracker;
 
     // Clone the database connection while briefly holding the read lock.
@@ -886,8 +921,7 @@ async fn stop_previous_session_services(orchestrator: &Orchestrator) -> usize {
             continue;
         }
 
-        print!("Stopping {} ({})... ", name, state.service_type);
-        std::io::Write::flush(&mut std::io::stdout()).ok();
+        out.progress(&format!("Stopping {} ({})... ", name, state.service_type));
 
         let success = if let Some(ref container_id) = state.container_id {
             // Docker service - stop and remove container
@@ -895,22 +929,25 @@ async fn stop_previous_session_services(orchestrator: &Orchestrator) -> usize {
         } else if let Some(pid) = state.pid {
             // Validate PID hasn't been reused by checking process start time
             if !validate_pid_start_time(pid, state.started_at) {
-                println!("skipped (PID {} was reused by another process)", pid);
+                out.finish_progress(&format!(
+                    "skipped (PID {} was reused by another process)",
+                    pid
+                ));
                 continue;
             }
             // Process service - graceful kill
             graceful_process_kill(pid).await
         } else {
             // No PID or container - nothing to stop
-            println!("skipped (no PID/container)");
+            out.finish_progress("skipped (no PID/container)");
             continue;
         };
 
         if success {
-            println!("stopped");
+            out.finish_progress("stopped");
             stopped += 1;
         } else {
-            println!("\x1b[33mfailed\x1b[0m");
+            out.warning("failed");
         }
     }
 
