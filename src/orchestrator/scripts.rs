@@ -8,7 +8,9 @@
 use crate::config::Script;
 use crate::error::{Error, Result};
 use crate::service::Status;
+use crate::state::StateTracker;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::core::Orchestrator;
@@ -256,14 +258,12 @@ impl<'a> ScriptRunner<'a> {
         // Enable isolated mode to skip session port cache and allocate fresh ports
         child_orchestrator.resolver.set_isolated_mode(true);
 
-        // Clear the state tracker before initialization so the child doesn't restore
-        // old container IDs from previous runs. Each isolated run should start fresh.
-        child_orchestrator
-            .state_tracker
-            .write()
-            .await
-            .clear()
-            .await?;
+        // Replace the child's state tracker with an ephemeral in-memory one.
+        // The default file-backed tracker shares the parent's .fed/lock.db, so
+        // any clear() would wipe the parent's service registrations (SF-00104).
+        child_orchestrator.state_tracker = Arc::new(tokio::sync::RwLock::new(
+            StateTracker::new_ephemeral().await?,
+        ));
 
         // Initialize child orchestrator (allocates fresh ports due to isolated mode)
         child_orchestrator.initialize().await?;

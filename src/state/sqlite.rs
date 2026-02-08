@@ -70,6 +70,29 @@ impl SqliteStateTracker {
         })
     }
 
+    /// Create an ephemeral in-memory state tracker.
+    ///
+    /// Uses an in-memory SQLite database with no file lock and no `.fed/` directory.
+    /// Intended for isolated child orchestrators (e.g. `isolated: true` scripts)
+    /// that must not touch the parent's persistent state.
+    pub async fn new_ephemeral() -> Result<Self> {
+        let conn = Connection::open(":memory:").await?;
+
+        conn.call(|conn: &mut rusqlite::Connection| {
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            conn.pragma_update(None, "busy_timeout", 5000)?;
+            Ok(())
+        })
+        .await?;
+
+        Ok(Self {
+            db_path: PathBuf::from(":memory:"),
+            conn,
+            work_dir: String::new(),
+            lock_file: None,
+        })
+    }
+
     /// Try to acquire an advisory file lock.
     ///
     /// Returns the lock file handle if successful, or None if another process
@@ -2292,6 +2315,50 @@ mod tests {
         assert!(
             !should_trip,
             "Non-existent service should not trip circuit breaker"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ephemeral_tracker_works() {
+        let mut tracker = SqliteStateTracker::new_ephemeral().await.unwrap();
+        tracker.initialize().await.unwrap();
+
+        // Register a service
+        register_test_service(&mut tracker, "ephemeral-svc").await;
+
+        // Query it back
+        let services = tracker.get_services().await;
+        assert_eq!(services.len(), 1);
+        assert!(services.contains_key("ephemeral-svc"));
+
+        // Clear and verify empty
+        tracker.clear().await.unwrap();
+        let services = tracker.get_services().await;
+        assert!(services.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ephemeral_tracker_does_not_corrupt_parent() {
+        // Parent: file-backed tracker
+        let temp_dir = TempDir::new().unwrap();
+        let mut parent = SqliteStateTracker::new(temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+        parent.initialize().await.unwrap();
+        register_test_service(&mut parent, "parent-svc").await;
+
+        // Child: ephemeral tracker (simulates isolated script)
+        let mut child = SqliteStateTracker::new_ephemeral().await.unwrap();
+        child.initialize().await.unwrap();
+        register_test_service(&mut child, "child-svc").await;
+        child.clear().await.unwrap();
+
+        // Parent state must be intact
+        let parent_services = parent.get_services().await;
+        assert_eq!(parent_services.len(), 1);
+        assert!(
+            parent_services.contains_key("parent-svc"),
+            "Parent service must survive child clear()"
         );
     }
 }
