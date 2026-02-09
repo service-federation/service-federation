@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "fed")]
+#[command(name = "fed", version)]
 #[command(about = "Service Federation - Orchestrate complex service dependencies")]
 pub struct Cli {
     /// Config file path (defaults to service-federation.yaml)

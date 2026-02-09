@@ -42,3 +42,6 @@
 | SF-00128 | Done | LOW | Low | `OutputMode` has no `FromStr` — Fixed: Added `FromStr` impl to `OutputMode` with case-insensitive matching. Simplified main.rs to use `mode.parse::<OutputMode>()`. |
 | SF-00129 | Done | LOW | Low | ANSI escape codes hardcoded in validation error messages — Fixed: Removed all raw ANSI escape sequences from validation.rs error messages. Box-drawing characters still provide visual structure without terminal dependency. |
 
+| SF-00130 | Done | HIGH | Low | Config-not-found error suggests `fed validate` — Fixed: Error now shows searched directory and suggests `fed init` or `fed -c <path>`. Added guard in `suggestion()` so config-not-found doesn't also get "Validate your config" hint. |
+| SF-00131 | Done | HIGH | Low | `fed doctor` doesn't check Docker daemon health — Fixed: Added `docker info` check after version check succeeds. Shows "Running" or "Not running" with actionable hint to start Docker Desktop or systemctl. |
+| SF-00132 | Done | MEDIUM | Low | No `--version` flag — Fixed: Added `#[command(version)]` to Cli struct. Clap pulls version from Cargo.toml automatically. `fed --version` now prints `fed 2.2.0`. |

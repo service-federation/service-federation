@@ -15,6 +15,24 @@ pub async fn run_doctor(out: &dyn UserOutput) -> anyhow::Result<()> {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             out.finish_progress(&version);
+
+            // Check Docker daemon is actually running
+            out.progress("Docker daemon: ");
+            match tokio::process::Command::new("docker")
+                .arg("info")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await
+            {
+                Ok(status) if status.success() => {
+                    out.finish_progress("Running");
+                }
+                _ => {
+                    out.finish_progress("Not running (start Docker Desktop or run: sudo systemctl start docker)");
+                    all_ok = false;
+                }
+            }
         }
         _ => {
             out.finish_progress("Not found");

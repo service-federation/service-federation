@@ -17,6 +17,10 @@ impl Parser {
     }
 
     pub fn find_config_in_dir(dir: &Path) -> Result<PathBuf> {
+        Self::find_config_in_dir_inner(dir, dir)
+    }
+
+    fn find_config_in_dir_inner(dir: &Path, origin: &Path) -> Result<PathBuf> {
         let config_path = dir.join("service-federation.yaml");
         if config_path.exists() {
             return Ok(config_path);
@@ -30,12 +34,14 @@ impl Parser {
 
         // Try parent directory
         if let Some(parent) = dir.parent() {
-            return Self::find_config_in_dir(parent);
+            return Self::find_config_in_dir_inner(parent, origin);
         }
 
-        Err(Error::Config(
-            "Could not find service-federation.yaml in current directory or any parent".to_string(),
-        ))
+        Err(Error::Config(format!(
+            "Could not find service-federation.yaml in '{}' or any parent directory.\n\
+             Create one with `fed init` or specify a path with `fed -c <path>`",
+            origin.display()
+        )))
     }
 
     /// Load config from file path

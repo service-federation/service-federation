@@ -280,6 +280,7 @@ impl Error {
             Error::Session(msg) if msg.contains("not found") => Some(
                 "Start a session with: fed session start --id <name>".to_string()
             ),
+            Error::Config(msg) if msg.contains("Could not find") => None,
             Error::Config(_) | Error::Validation(_) => Some(
                 "Validate your config with: fed validate".to_string()
             ),
