@@ -64,7 +64,7 @@ impl<'a> ScriptRunner<'a> {
             .resolver
             .resolve_environment(&script.environment, &params)
             .map_err(|e| {
-                Error::Config(format!(
+                Error::TemplateResolution(format!(
                     "Failed to resolve environment for script '{}': {}",
                     script_name, e
                 ))
@@ -75,7 +75,7 @@ impl<'a> ScriptRunner<'a> {
             .resolver
             .resolve_template_shell_safe(&script.script, &params)
             .map_err(|e| {
-                Error::Config(format!("Failed to resolve script '{}': {}", script_name, e))
+                Error::TemplateResolution(format!("Failed to resolve script '{}': {}", script_name, e))
             })?;
 
         // Determine working directory
@@ -190,7 +190,7 @@ impl<'a> ScriptRunner<'a> {
             .resolver
             .resolve_environment(&script.environment, &params)
             .map_err(|e| {
-                Error::Config(format!(
+                Error::TemplateResolution(format!(
                     "Failed to resolve environment for script '{}': {}",
                     script_name, e
                 ))
@@ -201,7 +201,7 @@ impl<'a> ScriptRunner<'a> {
             .resolver
             .resolve_template_shell_safe(&script.script, &params)
             .map_err(|e| {
-                Error::Config(format!("Failed to resolve script '{}': {}", script_name, e))
+                Error::TemplateResolution(format!("Failed to resolve script '{}': {}", script_name, e))
             })?;
 
         // Create resolved script for execution
@@ -299,7 +299,7 @@ impl<'a> ScriptRunner<'a> {
             .resolver
             .resolve_environment(&original_script.environment, &child_params)
             .map_err(|e| {
-                Error::Config(format!(
+                Error::TemplateResolution(format!(
                     "Failed to resolve environment for script '{}': {}",
                     script_name, e
                 ))
@@ -309,7 +309,7 @@ impl<'a> ScriptRunner<'a> {
             .resolver
             .resolve_template_shell_safe(&original_script.script, &child_params)
             .map_err(|e| {
-                Error::Config(format!("Failed to resolve script '{}': {}", script_name, e))
+                Error::TemplateResolution(format!("Failed to resolve script '{}': {}", script_name, e))
             })?;
 
         // Create a modified script with resolved environment and command

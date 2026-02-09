@@ -306,7 +306,7 @@ impl Resolver {
         }
 
         let config_dir = self.work_dir.as_ref().ok_or_else(|| {
-            Error::Config(
+            Error::TemplateResolution(
                 "Work directory not set, cannot resolve global env_file paths".to_string(),
             )
         })?;
@@ -318,7 +318,7 @@ impl Resolver {
         for env_file_path in &config.env_file {
             let full_path = config_dir.join(env_file_path);
             let env_vars = crate::config::env_loader::load_env_file(&full_path).map_err(|e| {
-                Error::Config(format!(
+                Error::TemplateResolution(format!(
                     "Failed to load environment file '{}' (resolved to '{}'): {}",
                     env_file_path,
                     full_path.display(),
@@ -377,14 +377,14 @@ impl Resolver {
                 // Validate port values if parameter is port type
                 if param.is_port_type() {
                     let port_num = value.parse::<u16>().map_err(|_| {
-                        Error::Config(format!(
+                        Error::TemplateResolution(format!(
                             "Parameter '{}' has invalid port value '{}': must be a number between 1 and 65535",
                             name, value
                         ))
                     })?;
 
                     if port_num == 0 {
-                        return Err(Error::Config(format!(
+                        return Err(Error::TemplateResolution(format!(
                             "Parameter '{}' has invalid port value '0': must be between 1 and 65535",
                             name
                         )));
@@ -650,13 +650,13 @@ impl Resolver {
                             // Extract the unresolved variable names
                             let unresolved_vars = self.extract_template_variables(resolved_value);
                             if pass_count >= MAX_PASSES {
-                                return Err(Error::Config(format!(
+                                return Err(Error::TemplateResolution(format!(
                                     "Circular parameter reference detected in parameter '{}'. \
                                      Unresolved variables after {} passes: {:?}",
                                     name, MAX_PASSES, unresolved_vars
                                 )));
                             } else {
-                                return Err(Error::Config(format!(
+                                return Err(Error::TemplateResolution(format!(
                                     "Parameter '{}' has unresolved template variables: {:?}",
                                     name, unresolved_vars
                                 )));
@@ -672,7 +672,7 @@ impl Resolver {
             if !param.either.is_empty() {
                 if let Some(resolved_value) = parameters.get(name) {
                     if !param.either.contains(resolved_value) {
-                        return Err(Error::Config(format!(
+                        return Err(Error::TemplateResolution(format!(
                             "Parameter '{}' has value '{}' which is not in the allowed values: {:?}",
                             name, resolved_value, param.either
                         )));
@@ -715,7 +715,7 @@ impl Resolver {
             service.environment = self
                 .resolve_environment(&service.environment, &parameters)
                 .map_err(|e| {
-                    Error::Config(format!(
+                    Error::TemplateResolution(format!(
                         "Failed to resolve environment for service '{}': {}",
                         name, e
                     ))
@@ -726,7 +726,7 @@ impl Resolver {
                 service.process = Some(
                     self.resolve_template_shell_safe(process, &parameters)
                         .map_err(|e| {
-                            Error::Config(format!(
+                            Error::TemplateResolution(format!(
                                 "Failed to resolve process for service '{}': {}",
                                 name, e
                             ))
@@ -739,7 +739,7 @@ impl Resolver {
                 service.install = Some(
                     self.resolve_template_shell_safe(install, &parameters)
                         .map_err(|e| {
-                            Error::Config(format!(
+                            Error::TemplateResolution(format!(
                                 "Failed to resolve install for service '{}': {}",
                                 name, e
                             ))
@@ -752,7 +752,7 @@ impl Resolver {
                 let mut resolved_ports = Vec::new();
                 for port in &service.ports {
                     resolved_ports.push(self.resolve_template(port, &parameters).map_err(|e| {
-                        Error::Config(format!(
+                        Error::TemplateResolution(format!(
                             "Failed to resolve port for service '{}': {}",
                             name, e
                         ))
@@ -767,7 +767,7 @@ impl Resolver {
                     crate::config::HealthCheck::HttpGet { http_get, timeout } => {
                         let resolved_url =
                             self.resolve_template(http_get, &parameters).map_err(|e| {
-                                Error::Config(format!(
+                                Error::TemplateResolution(format!(
                                     "Failed to resolve health check for service '{}': {}",
                                     name, e
                                 ))
@@ -780,7 +780,7 @@ impl Resolver {
                     crate::config::HealthCheck::CommandMap { command, timeout } => {
                         let resolved_cmd =
                             self.resolve_template(command, &parameters).map_err(|e| {
-                                Error::Config(format!(
+                                Error::TemplateResolution(format!(
                                     "Failed to resolve health check command for service '{}': {}",
                                     name, e
                                 ))
@@ -793,7 +793,7 @@ impl Resolver {
                     crate::config::HealthCheck::Command(cmd) => {
                         let resolved_cmd =
                             self.resolve_template(cmd, &parameters).map_err(|e| {
-                                Error::Config(format!(
+                                Error::TemplateResolution(format!(
                                     "Failed to resolve health check command for service '{}': {}",
                                     name, e
                                 ))
@@ -810,7 +810,7 @@ impl Resolver {
                 for (key, value) in &service.parameters {
                     let resolved_value =
                         self.resolve_template(value, &parameters).map_err(|e| {
-                            Error::Config(format!(
+                            Error::TemplateResolution(format!(
                                 "Failed to resolve parameter '{}' for service '{}': {}",
                                 key, name, e
                             ))
@@ -824,7 +824,7 @@ impl Resolver {
             if let Some(ref msg) = service.startup_message {
                 service.startup_message =
                     Some(self.resolve_template(msg, &parameters).map_err(|e| {
-                        Error::Config(format!(
+                        Error::TemplateResolution(format!(
                             "Failed to resolve startup_message for service '{}': {}",
                             name, e
                         ))
@@ -956,7 +956,7 @@ impl Resolver {
             PortConflictAction::KillAndRetry => {
                 // Kill all blocking processes and verify with retries
                 if let Err(e) = conflict.kill_and_verify(3) {
-                    return Err(Error::Config(e));
+                    return Err(Error::TemplateResolution(e));
                 }
                 // Try to allocate the original port again (dual-stack: checks both IPv4 and 0.0.0.0)
                 match self.port_allocator.try_allocate_port(port) {
