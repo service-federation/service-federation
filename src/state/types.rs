@@ -1,3 +1,4 @@
+use crate::config::ServiceType;
 use crate::service::Status;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -44,7 +45,7 @@ pub struct ServiceState {
     pub status: Status,
 
     /// Service type (process, docker, external, etc.)
-    pub service_type: String,
+    pub service_type: ServiceType,
 
     /// Process ID (if applicable)
     pub pid: Option<u32>,
@@ -82,7 +83,7 @@ pub struct ServiceState {
 }
 
 impl ServiceState {
-    pub fn new(id: String, service_type: String, namespace: String) -> Self {
+    pub fn new(id: String, service_type: ServiceType, namespace: String) -> Self {
         Self {
             id,
             status: Status::Starting,

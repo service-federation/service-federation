@@ -123,7 +123,7 @@ async fn collect_state_info(work_dir: PathBuf) -> anyhow::Result<StateDebugOutpu
         services.push(ServiceDebugInfo {
             name: service_state.id.clone(),
             status: service_state.status.to_string(),
-            service_type: service_state.service_type.clone(),
+            service_type: service_state.service_type.to_string(),
             pid: service_state.pid,
             container_id: service_state.container_id.clone(),
             started_at: service_state.started_at.to_rfc3339(),

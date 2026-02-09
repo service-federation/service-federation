@@ -155,7 +155,7 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// Types of services supported by the federation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ServiceType {
     Process,
     Docker,
@@ -163,6 +163,35 @@ pub enum ServiceType {
     GradleTask,
     DockerCompose,
     Undefined,
+}
+
+impl std::fmt::Display for ServiceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServiceType::Process => write!(f, "process"),
+            ServiceType::Docker => write!(f, "docker"),
+            ServiceType::External => write!(f, "external"),
+            ServiceType::GradleTask => write!(f, "gradle"),
+            ServiceType::DockerCompose => write!(f, "docker-compose"),
+            ServiceType::Undefined => write!(f, "undefined"),
+        }
+    }
+}
+
+impl std::str::FromStr for ServiceType {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "process" => Ok(ServiceType::Process),
+            "docker" => Ok(ServiceType::Docker),
+            "external" => Ok(ServiceType::External),
+            "gradle" | "gradletask" | "gradle_task" => Ok(ServiceType::GradleTask),
+            "docker-compose" | "dockercompose" | "docker_compose" => Ok(ServiceType::DockerCompose),
+            "undefined" => Ok(ServiceType::Undefined),
+            _ => Err(format!("Unknown service type: {}", s)),
+        }
+    }
 }
 
 impl Service {
@@ -332,5 +361,46 @@ environment:
             }
             _ => panic!("Expected DockerBuild variant"),
         }
+    }
+
+    #[test]
+    fn test_service_type_display_roundtrip() {
+        let variants = [
+            ServiceType::Process,
+            ServiceType::Docker,
+            ServiceType::External,
+            ServiceType::GradleTask,
+            ServiceType::DockerCompose,
+            ServiceType::Undefined,
+        ];
+        for variant in &variants {
+            let display = variant.to_string();
+            let parsed: ServiceType = display.parse().unwrap();
+            assert_eq!(*variant, parsed, "roundtrip failed for {}", display);
+        }
+    }
+
+    #[test]
+    fn test_service_type_from_str_case_insensitive() {
+        assert_eq!("PROCESS".parse::<ServiceType>().unwrap(), ServiceType::Process);
+        assert_eq!("Docker".parse::<ServiceType>().unwrap(), ServiceType::Docker);
+        assert_eq!("EXTERNAL".parse::<ServiceType>().unwrap(), ServiceType::External);
+        assert_eq!("Gradle".parse::<ServiceType>().unwrap(), ServiceType::GradleTask);
+        assert_eq!("Docker-Compose".parse::<ServiceType>().unwrap(), ServiceType::DockerCompose);
+        assert_eq!("UNDEFINED".parse::<ServiceType>().unwrap(), ServiceType::Undefined);
+    }
+
+    #[test]
+    fn test_service_type_from_str_backwards_compat() {
+        // Old Debug-formatted values should still parse
+        assert_eq!("GradleTask".parse::<ServiceType>().unwrap(), ServiceType::GradleTask);
+        assert_eq!("gradle_task".parse::<ServiceType>().unwrap(), ServiceType::GradleTask);
+        assert_eq!("DockerCompose".parse::<ServiceType>().unwrap(), ServiceType::DockerCompose);
+        assert_eq!("docker_compose".parse::<ServiceType>().unwrap(), ServiceType::DockerCompose);
+    }
+
+    #[test]
+    fn test_service_type_from_str_unknown() {
+        assert!("bogus".parse::<ServiceType>().is_err());
     }
 }

@@ -1,4 +1,5 @@
 use super::types::{LockFile, ServiceState};
+use crate::config::ServiceType;
 use crate::error::{validate_pid_for_check, Error, Result};
 use crate::service::Status;
 use chrono::{DateTime, Utc};
@@ -193,6 +194,7 @@ impl SqliteStateTracker {
                 let services_iter = stmt.query_map([], |row| {
                     let id: String = row.get(0)?;
                     let status_str: String = row.get(1)?;
+                    let service_type_str: String = row.get(2)?;
                     let started_at_str: String = row.get(5)?;
                     let last_restart_str: Option<String> = row.get(9)?;
 
@@ -202,7 +204,7 @@ impl SqliteStateTracker {
                         ServiceState {
                             id,
                             status: status_str.parse::<Status>().unwrap_or(Status::Stopped),
-                            service_type: row.get(2)?,
+                            service_type: service_type_str.parse::<ServiceType>().unwrap_or(ServiceType::Undefined),
                             pid: row.get(3)?,
                             container_id: row.get(4)?,
                             started_at: started_at_str
@@ -768,7 +770,7 @@ impl SqliteStateTracker {
 
         let id = service_state.id.clone();
         let status = service_state.status.to_string();
-        let service_type = service_state.service_type.clone();
+        let service_type = service_state.service_type.to_string();
         let namespace = service_state.namespace.clone();
         let started_at = service_state.started_at.to_rfc3339();
         let pid = service_state.pid;
@@ -1595,6 +1597,7 @@ impl SqliteStateTracker {
             let services_iter = stmt.query_map([], |row| {
                 let id: String = row.get(0)?;
                 let status_str: String = row.get(1)?;
+                let service_type_str: String = row.get(2)?;
                 let started_at_str: String = row.get(5)?;
                 let last_restart_str: Option<String> = row.get(9)?;
 
@@ -1604,7 +1607,7 @@ impl SqliteStateTracker {
                     ServiceState {
                         id,
                         status: status_str.parse::<Status>().unwrap_or(Status::Stopped),
-                        service_type: row.get(2)?,
+                        service_type: service_type_str.parse::<ServiceType>().unwrap_or(ServiceType::Undefined),
                         pid: row.get(3)?,
                         container_id: row.get(4)?,
                         started_at: started_at_str
@@ -1687,13 +1690,14 @@ impl SqliteStateTracker {
                 |row| {
                     let id: String = row.get(0)?;
                     let status_str: String = row.get(1)?;
+                    let service_type_str: String = row.get(2)?;
                     let started_at_str: String = row.get(5)?;
                     let last_restart_str: Option<String> = row.get(9)?;
 
                     Ok(ServiceState {
                         id,
                         status: status_str.parse::<Status>().unwrap_or(Status::Stopped),
-                        service_type: row.get(2)?,
+                        service_type: service_type_str.parse::<ServiceType>().unwrap_or(ServiceType::Undefined),
                         pid: row.get(3)?,
                         container_id: row.get(4)?,
                         started_at: started_at_str.parse::<DateTime<Utc>>().unwrap_or_else(|_| Utc::now()),
@@ -2040,7 +2044,7 @@ mod tests {
         let state = ServiceState {
             id: service_id.to_string(),
             status: Status::Running,
-            service_type: "Process".to_string(),
+            service_type: ServiceType::Process,
             pid: Some(12345),
             container_id: None,
             started_at: Utc::now(),

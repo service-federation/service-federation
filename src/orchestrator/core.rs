@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, ServiceType};
 use crate::dependency::{ExternalServiceExpander, Graph};
 use crate::error::{Error, Result};
 use crate::parameter::Resolver;
@@ -741,9 +741,9 @@ impl Orchestrator {
 
         // Determine service type
         let service_type = if let Some(service_config) = self.config.services.get(name) {
-            format!("{:?}", service_config.service_type())
+            service_config.service_type()
         } else {
-            "unknown".to_string()
+            ServiceType::Undefined
         };
 
         // Atomically register service in state tracker before starting.

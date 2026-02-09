@@ -5,6 +5,7 @@
 //! Extracting these operations improves separation of concerns and keeps the
 //! orchestrator core focused on service coordination.
 
+use crate::config::ServiceType;
 use crate::error::{Error, Result};
 use crate::service::Status;
 
@@ -70,7 +71,7 @@ impl<'a> OrphanCleaner<'a> {
         // Build set of expected container names for tracked Docker services
         let tracked_containers: HashSet<String> = tracked_services
             .iter()
-            .filter(|(_, svc)| svc.service_type == "docker")
+            .filter(|(_, svc)| svc.service_type == ServiceType::Docker)
             .map(|(name, _)| {
                 let sanitized = sanitize_container_name_component(name);
                 format!("{}{}", prefix, sanitized)

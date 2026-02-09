@@ -732,7 +732,7 @@ impl App {
                         name.clone(),
                         (
                             state.namespace.clone(),
-                            state.service_type.clone(),
+                            state.service_type.to_string(),
                             state.port_allocations.values().next().copied(),
                             state.started_at,
                         ),
