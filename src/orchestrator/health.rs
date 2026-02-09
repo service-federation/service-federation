@@ -248,7 +248,7 @@ impl<'a> HealthCheckRunner<'a> {
                     ])
                     .output()
                     .await;
-                let is_running = output.map(|o| !o.stdout.is_empty()).unwrap_or(true); // assume running if docker cmd fails
+                let is_running = output.map(|o| !o.stdout.is_empty()).unwrap_or(false); // if docker cmd fails, assume dead
                 if !is_running {
                     tracing::warn!(
                         "Service '{}' container {} stopped during healthcheck wait",

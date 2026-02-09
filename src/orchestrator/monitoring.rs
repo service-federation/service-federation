@@ -476,15 +476,21 @@ async fn handle_dependency_health_propagation(
                         };
 
                         if let Some(manager_arc) = manager_opt {
-                            let mut manager = manager_arc.lock().await;
-                            if let Err(e) = manager.stop().await {
+                            // Stop under manager lock, then release before
+                            // acquiring state_tracker (preserves lock ordering:
+                            // state_tracker before service mutex).
+                            let stop_ok = {
+                                let mut manager = manager_arc.lock().await;
+                                manager.stop().await.is_ok()
+                            };
+                            // manager lock released
+
+                            if !stop_ok {
                                 tracing::error!(
-                                    "Failed to stop dependent service '{}': {}",
+                                    "Failed to stop dependent service '{}'",
                                     dependent_name,
-                                    e
                                 );
                             } else {
-                                // Update state tracker
                                 let mut tracker = state_tracker.write().await;
                                 let _ = tracker
                                     .update_service_status(dependent_name, Status::Stopped)
@@ -506,13 +512,19 @@ async fn handle_dependency_health_propagation(
                         };
 
                         if let Some(manager_arc) = manager_opt {
-                            let mut manager = manager_arc.lock().await;
-                            // Stop first
-                            if let Err(e) = manager.stop().await {
+                            // Stop under manager lock, then release before
+                            // acquiring state_tracker (preserves lock ordering:
+                            // state_tracker before service mutex).
+                            let stop_ok = {
+                                let mut manager = manager_arc.lock().await;
+                                manager.stop().await.is_ok()
+                            };
+                            // manager lock released
+
+                            if !stop_ok {
                                 tracing::error!(
-                                    "Failed to stop dependent service '{}' for restart: {}",
+                                    "Failed to stop dependent service '{}' for restart",
                                     dependent_name,
-                                    e
                                 );
                                 continue;
                             }
@@ -525,19 +537,28 @@ async fn handle_dependency_health_propagation(
                                     .await;
                             }
 
-                            // Start again
-                            if let Err(e) = manager.start().await {
-                                tracing::error!(
-                                    "Failed to restart dependent service '{}': {}",
-                                    dependent_name,
-                                    e
-                                );
-                            } else {
-                                // Update state to Starting (monitoring will transition to Running)
-                                let mut tracker = state_tracker.write().await;
-                                let _ = tracker
-                                    .update_service_status(dependent_name, Status::Starting)
-                                    .await;
+                            // Start under manager lock, then release before
+                            // acquiring state_tracker.
+                            let start_result = {
+                                let mut manager = manager_arc.lock().await;
+                                manager.start().await
+                            };
+                            // manager lock released
+
+                            match start_result {
+                                Ok(_) => {
+                                    let mut tracker = state_tracker.write().await;
+                                    let _ = tracker
+                                        .update_service_status(dependent_name, Status::Starting)
+                                        .await;
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to restart dependent service '{}': {}",
+                                        dependent_name,
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
