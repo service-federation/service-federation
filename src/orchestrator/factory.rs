@@ -304,8 +304,13 @@ impl Orchestrator {
 
                 // Restore PID for process and gradle services
                 if let Some(pid) = service_state.pid {
-                    self.restore_process_pid(&mut manager, service_name, pid)
-                        .await;
+                    self.restore_process_pid(
+                        &mut manager,
+                        service_name,
+                        pid,
+                        service_state.started_at,
+                    )
+                    .await;
                     self.restore_gradle_pid(&mut manager, service_name, pid)
                         .await;
                 }
@@ -325,6 +330,7 @@ impl Orchestrator {
         manager: &mut Box<dyn ServiceManager>,
         service_name: &str,
         pid: u32,
+        started_at: chrono::DateTime<chrono::Utc>,
     ) {
         if let Some(process_service) = manager.as_any_mut().downcast_mut::<ProcessService>() {
             #[cfg(unix)]
@@ -336,7 +342,7 @@ impl Orchestrator {
                     if kill(nix_pid, None).is_ok() {
                         // Process exists, restore it
                         tracing::debug!("Restoring PID {} for service '{}'", pid, service_name);
-                        process_service.set_pid(pid);
+                        process_service.set_pid_with_start_time(pid, Some(started_at));
                     } else {
                         // Process doesn't exist, don't restore
                         tracing::warn!(
@@ -389,7 +395,7 @@ impl Orchestrator {
                     "Process validation not available on this platform, restoring PID {}",
                     pid
                 );
-                process_service.set_pid(pid);
+                process_service.set_pid_with_start_time(pid, Some(started_at));
             }
         }
     }
