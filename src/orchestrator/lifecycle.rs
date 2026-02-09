@@ -338,14 +338,14 @@ impl<'a> ServiceLifecycleCommands<'a> {
                     .stderr(Stdio::inherit());
 
                 let status = cmd.status().await.map_err(|e| {
-                    Error::Config(format!(
+                    Error::Docker(format!(
                         "Failed to execute docker build for '{}': {}",
                         service_name, e
                     ))
                 })?;
 
                 if !status.success() {
-                    return Err(Error::Config(format!(
+                    return Err(Error::Docker(format!(
                         "Docker build failed for '{}'",
                         service_name
                     )));

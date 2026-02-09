@@ -828,7 +828,7 @@ impl ServiceManager for DockerService {
                         let mut base = self.base.write();
                         base.set_status(Status::Failing);
                         let error = String::from_utf8_lossy(&output.stderr);
-                        return Err(Error::Config(format!(
+                        return Err(Error::Docker(format!(
                             "Docker stop command failed for container {}: {}",
                             id, error
                         )));
@@ -837,7 +837,7 @@ impl ServiceManager for DockerService {
                 Ok(Err(e)) => {
                     let mut base = self.base.write();
                     base.set_status(Status::Failing);
-                    return Err(Error::Config(format!(
+                    return Err(Error::Docker(format!(
                         "Failed to execute docker stop command: {}",
                         e
                     )));
@@ -864,7 +864,7 @@ impl ServiceManager for DockerService {
                     .output()
                     .await
                     .map_err(|e| {
-                        Error::Config(format!("Failed to execute docker rm command: {}", e))
+                        Error::Docker(format!("Failed to execute docker rm command: {}", e))
                     })?;
 
                 if rm_output.status.success() {
@@ -897,7 +897,7 @@ impl ServiceManager for DockerService {
                     // All retries exhausted - this is a real failure
                     let mut base = self.base.write();
                     base.set_status(Status::Failing);
-                    return Err(Error::Config(format!(
+                    return Err(Error::Docker(format!(
                         "Failed to remove container {} after {} attempts: {}. \
                         Container may be orphaned. Run 'fed stop' or 'fed clean' to retry.",
                         id, MAX_RETRIES, last_error.trim()
@@ -936,7 +936,7 @@ impl ServiceManager for DockerService {
                         if !error.contains("No such container")
                             && !error.contains("is not running")
                         {
-                            return Err(Error::Config(format!(
+                            return Err(Error::Docker(format!(
                                 "Docker kill command failed for container {}: {}",
                                 id, error
                             )));
@@ -944,7 +944,7 @@ impl ServiceManager for DockerService {
                     }
                 }
                 Ok(Err(e)) => {
-                    return Err(Error::Config(format!(
+                    return Err(Error::Docker(format!(
                         "Failed to execute docker kill command: {}",
                         e
                     )));
@@ -964,7 +964,7 @@ impl ServiceManager for DockerService {
                 .output()
                 .await
                 .map_err(|e| {
-                    Error::Config(format!("Failed to execute docker rm command: {}", e))
+                    Error::Docker(format!("Failed to execute docker rm command: {}", e))
                 })?;
 
             if !rm_output.status.success() {

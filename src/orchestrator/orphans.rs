@@ -51,7 +51,7 @@ impl<'a> OrphanCleaner<'a> {
             .await?;
 
         if !output.status.success() {
-            return Err(Error::Config("Failed to list Docker containers".to_string()));
+            return Err(Error::Docker("Failed to list Docker containers".to_string()));
         }
 
         let all_containers: HashSet<String> = String::from_utf8_lossy(&output.stdout)
@@ -133,7 +133,7 @@ impl<'a> OrphanCleaner<'a> {
                 .args(["rm", "-f", container])
                 .output()
                 .await
-                .map_err(|e| Error::Config(format!("Failed to remove container: {}", e)))?;
+                .map_err(|e| Error::Docker(format!("Failed to remove container: {}", e)))?;
 
             if output.status.success() {
                 removed += 1;
