@@ -12,6 +12,24 @@ pub enum Error {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    #[error("Docker error: {0}")]
+    #[diagnostic(
+        code(fed::docker::error),
+        help("Check that Docker is running with `docker ps`")
+    )]
+    Docker(String),
+
+    #[error("Process error: {0}")]
+    #[diagnostic(
+        code(fed::process::error),
+        help("Check that the command exists and is executable")
+    )]
+    Process(String),
+
+    #[error("Filesystem error: {0}")]
+    #[diagnostic(code(fed::filesystem::error))]
+    Filesystem(String),
+
     #[error("Parse error: {0}")]
     Parse(String),
 
@@ -264,6 +282,12 @@ impl Error {
             ),
             Error::Config(_) | Error::Validation(_) => Some(
                 "Validate your config with: fed validate".to_string()
+            ),
+            Error::Docker(_) => Some(
+                "Check that Docker is running: docker ps".to_string()
+            ),
+            Error::Process(_) => Some(
+                "Check that the command exists and is executable".to_string()
             ),
             Error::ScriptNotFound(name) => Some(format!(
                 "Available scripts are defined in the 'scripts:' section of your config. Did you mean a different name than '{}'?",

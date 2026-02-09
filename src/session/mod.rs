@@ -312,7 +312,7 @@ impl Session {
         match fs::remove_file(&session_file) {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(Error::Config(format!(
+            Err(e) => Err(Error::Filesystem(format!(
                 "Failed to remove {}: {}",
                 session_file.display(),
                 e
@@ -411,7 +411,7 @@ impl Session {
         let logs_dir = self.logs_dir();
         if !logs_dir.exists() {
             fs::create_dir_all(&logs_dir)
-                .map_err(|e| Error::Config(format!("Failed to create logs directory: {}", e)))?;
+                .map_err(|e| Error::Filesystem(format!("Failed to create logs directory: {}", e)))?;
         }
         Ok(())
     }
@@ -445,7 +445,7 @@ impl Session {
     pub fn mark_installed(&self, service_name: &str) -> Result<()> {
         let installed_dir = self.session_dir.join("installed");
         fs::create_dir_all(&installed_dir)
-            .map_err(|e| Error::Config(format!("Failed to create installed directory: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to create installed directory: {}", e)))?;
 
         let sanitized = sanitize_service_name_for_path(service_name)?;
         let marker_file = installed_dir.join(sanitized);
@@ -455,7 +455,7 @@ impl Session {
             .as_secs();
 
         fs::write(&marker_file, timestamp.to_string())
-            .map_err(|e| Error::Config(format!("Failed to create install marker: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to create install marker: {}", e)))?;
 
         Ok(())
     }
@@ -470,7 +470,7 @@ impl Session {
         match fs::remove_file(&marker_file) {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(Error::Config(format!(
+            Err(e) => Err(Error::Filesystem(format!(
                 "Failed to remove install marker: {}",
                 e
             ))),
@@ -492,15 +492,15 @@ impl Session {
     fn load_metadata(session_dir: &Path) -> Result<SessionMetadata> {
         let path = session_dir.join("metadata.json");
         let contents = fs::read_to_string(&path)
-            .map_err(|e| Error::Config(format!("Failed to read metadata: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to read metadata: {}", e)))?;
         serde_json::from_str(&contents)
-            .map_err(|e| Error::Config(format!("Failed to parse metadata: {}", e)))
+            .map_err(|e| Error::Filesystem(format!("Failed to parse metadata: {}", e)))
     }
 
     fn save_metadata(session_dir: &Path, metadata: &SessionMetadata) -> Result<()> {
         let path = session_dir.join("metadata.json");
         let contents = serde_json::to_string_pretty(metadata)
-            .map_err(|e| Error::Config(format!("Failed to serialize metadata: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to serialize metadata: {}", e)))?;
 
         // Use atomic write-then-rename to prevent corruption
         Self::atomic_write(&path, &contents)
@@ -512,15 +512,15 @@ impl Session {
             return Ok(HashMap::new());
         }
         let contents = fs::read_to_string(&path)
-            .map_err(|e| Error::Config(format!("Failed to read ports: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to read ports: {}", e)))?;
         serde_json::from_str(&contents)
-            .map_err(|e| Error::Config(format!("Failed to parse ports: {}", e)))
+            .map_err(|e| Error::Filesystem(format!("Failed to parse ports: {}", e)))
     }
 
     fn save_ports(session_dir: &Path, ports: &HashMap<String, u16>) -> Result<()> {
         let path = session_dir.join("ports.json");
         let contents = serde_json::to_string_pretty(ports)
-            .map_err(|e| Error::Config(format!("Failed to serialize ports: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to serialize ports: {}", e)))?;
 
         // Use atomic write-then-rename to prevent corruption
         Self::atomic_write(&path, &contents)
@@ -534,21 +534,21 @@ impl Session {
         // Write to temp file first
         let temp_path = path.with_extension("tmp");
         let mut file = fs::File::create(&temp_path)
-            .map_err(|e| Error::Config(format!("Failed to create temp file: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to create temp file: {}", e)))?;
 
         file.write_all(contents.as_bytes())
-            .map_err(|e| Error::Config(format!("Failed to write temp file: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to write temp file: {}", e)))?;
 
         // Ensure data is written to disk before rename
         file.sync_all()
-            .map_err(|e| Error::Config(format!("Failed to sync temp file: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to sync temp file: {}", e)))?;
 
         // Close file explicitly before rename
         drop(file);
 
         // Atomic rename (on Unix systems)
         fs::rename(&temp_path, path)
-            .map_err(|e| Error::Config(format!("Failed to rename temp file: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to rename temp file: {}", e)))?;
 
         Ok(())
     }
@@ -659,7 +659,7 @@ pub fn is_installed_global(service_name: &str, work_dir: &Path) -> Result<bool> 
 pub fn mark_installed_global(service_name: &str, work_dir: &Path) -> Result<()> {
     let installed_dir = global_installed_dir(work_dir)?;
     fs::create_dir_all(&installed_dir)
-        .map_err(|e| Error::Config(format!("Failed to create installed directory: {}", e)))?;
+        .map_err(|e| Error::Filesystem(format!("Failed to create installed directory: {}", e)))?;
 
     let sanitized = sanitize_service_name_for_path(service_name)?;
     let marker_file = installed_dir.join(sanitized);
@@ -669,7 +669,7 @@ pub fn mark_installed_global(service_name: &str, work_dir: &Path) -> Result<()> 
         .as_secs();
 
     fs::write(&marker_file, timestamp.to_string())
-        .map_err(|e| Error::Config(format!("Failed to create install marker: {}", e)))?;
+        .map_err(|e| Error::Filesystem(format!("Failed to create install marker: {}", e)))?;
 
     Ok(())
 }
@@ -684,7 +684,7 @@ pub fn clear_installed_global(service_name: &str, work_dir: &Path) -> Result<()>
     match fs::remove_file(&marker_file) {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(Error::Config(format!(
+        Err(e) => Err(Error::Filesystem(format!(
             "Failed to remove install marker: {}",
             e
         ))),
