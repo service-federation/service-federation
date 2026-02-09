@@ -162,7 +162,7 @@ impl DockerService {
     ///
     /// Looks for patterns like:
     /// - "Bind for 0.0.0.0:5433 failed: port is already allocated"
-    /// - "Bind for [::]:6379 failed: port is already allocated"
+    /// - "Bind for \[::\]:6379 failed: port is already allocated"
     fn parse_port_conflict(error: &str) -> Option<u16> {
         // Look for "Bind for X:PORT failed" pattern
         if !error.contains("port is already allocated") {

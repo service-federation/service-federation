@@ -357,7 +357,7 @@ impl Orchestrator {
 
     /// Validate a PID and either restore it via the callback or unregister the stale service.
     ///
-    /// Shared logic for [`restore_process_pid`] and [`restore_gradle_pid`]. On Unix,
+    /// Shared logic for restoring process and gradle PIDs. On Unix,
     /// sends signal 0 to check whether the process is alive. On other platforms,
     /// unconditionally calls `set_pid` as a fallback.
     async fn restore_pid_for_service(&self, service_name: &str, pid: u32, set_pid: impl FnOnce()) {

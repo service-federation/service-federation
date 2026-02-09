@@ -323,7 +323,7 @@ impl Orchestrator {
     ///
     /// Returns the number of processes killed.
     ///
-    /// Delegates to [`OrphanCleaner`](super::orphans::OrphanCleaner).
+    /// Delegates to `OrphanCleaner`.
     pub async fn remove_orphaned_processes(&self) -> usize {
         let cleaner = super::orphans::OrphanCleaner::new(self);
         cleaner.remove_orphaned_processes().await
@@ -559,7 +559,7 @@ impl Orchestrator {
 
     /// Create health checkers for services.
     ///
-    /// Delegates to [`HealthCheckRunner`](super::health::HealthCheckRunner).
+    /// Delegates to `HealthCheckRunner`.
     async fn create_health_checkers(&mut self) {
         let runner = super::health::HealthCheckRunner::new(self);
         runner.create_health_checkers().await;
@@ -568,7 +568,7 @@ impl Orchestrator {
     /// Wait for a service to become healthy (used by script dependencies).
     /// Returns Ok(()) when healthy, or Err after timeout.
     ///
-    /// Delegates to [`HealthCheckRunner`](super::health::HealthCheckRunner).
+    /// Delegates to `HealthCheckRunner`.
     pub async fn wait_for_healthy(&self, service_name: &str, timeout: Duration) -> Result<()> {
         let runner = super::health::HealthCheckRunner::new(self);
         runner.wait_for_healthy(service_name, timeout).await
@@ -582,7 +582,7 @@ impl Orchestrator {
     ///
     /// Respects the orchestrator's cancellation token for responsive Ctrl-C handling.
     ///
-    /// Delegates to [`HealthCheckRunner`](super::health::HealthCheckRunner).
+    /// Delegates to `HealthCheckRunner`.
     async fn await_healthcheck(
         &self,
         name: &str,
@@ -1069,7 +1069,7 @@ impl Orchestrator {
     ///
     /// Returns the number of containers removed.
     ///
-    /// Delegates to [`OrphanCleaner`](super::orphans::OrphanCleaner).
+    /// Delegates to `OrphanCleaner`.
     pub async fn remove_orphaned_containers(&self) -> Result<usize> {
         let cleaner = super::orphans::OrphanCleaner::new(self);
         cleaner.remove_orphaned_containers().await
@@ -1254,7 +1254,7 @@ impl Orchestrator {
 
     /// Run a script non-interactively, capturing output.
     ///
-    /// Delegates to [`ScriptRunner`](super::scripts::ScriptRunner).
+    /// Delegates to `ScriptRunner`.
     pub async fn run_script(&self, script_name: &str) -> Result<std::process::Output> {
         let runner = super::scripts::ScriptRunner::new(self);
         runner.run_script(script_name).await
@@ -1270,7 +1270,7 @@ impl Orchestrator {
     /// If the script has `isolated: true`, it runs in an isolated context
     /// with fresh port allocations and isolated service instances.
     ///
-    /// Delegates to [`ScriptRunner`](super::scripts::ScriptRunner).
+    /// Delegates to `ScriptRunner`.
     pub async fn run_script_interactive(
         &self,
         script_name: &str,
@@ -1295,7 +1295,7 @@ impl Orchestrator {
 
     /// Get list of available scripts.
     ///
-    /// Delegates to [`ScriptRunner`](super::scripts::ScriptRunner).
+    /// Delegates to `ScriptRunner`.
     pub fn list_scripts(&self) -> Vec<String> {
         let runner = super::scripts::ScriptRunner::new(self);
         runner.list_scripts()
