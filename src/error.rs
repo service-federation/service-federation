@@ -212,6 +212,10 @@ pub enum Error {
         help("Add parameter declaration:\n\nparameters:\n  {name}:\n    default: \"\"")
     )]
     UndeclaredEnvVariable { name: String, env_file: String },
+
+    #[error("Script '{name}' exited with code {exit_code}")]
+    #[diagnostic(code(fed::script::failed))]
+    ScriptFailed { name: String, exit_code: i32 },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

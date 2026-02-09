@@ -30,8 +30,12 @@ pub async fn run_script(
         .await?;
 
     if !status.success() {
-        let code = status.code().unwrap_or(-1);
-        std::process::exit(code);
+        let code = status.code().unwrap_or(1);
+        return Err(FedError::ScriptFailed {
+            name: name.to_string(),
+            exit_code: code,
+        }
+        .into());
     }
 
     Ok(())

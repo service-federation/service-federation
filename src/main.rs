@@ -9,7 +9,13 @@ use service_federation::{Error as FedError, Orchestrator, OutputMode, Parser as 
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
-        // Check if the error is a service_federation::Error and add suggestions
+        // Script failures: the script's own stderr is the user feedback.
+        // Just propagate the exit code without printing a redundant error.
+        if let Some(FedError::ScriptFailed { exit_code, .. }) = e.downcast_ref::<FedError>() {
+            std::process::exit(*exit_code);
+        }
+
+        // All other errors: print with suggestions
         if let Some(fed_error) = e.downcast_ref::<FedError>() {
             eprintln!("Error: {}", fed_error);
             if let Some(suggestion) = fed_error.suggestion() {
