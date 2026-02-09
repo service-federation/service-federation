@@ -4,7 +4,7 @@ use service_federation::{
     parameter::PortResolutionReason,
     port::PortConflict,
     service::Status,
-    Orchestrator, WatchMode,
+    Error as FedError, Orchestrator, WatchMode,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -161,7 +161,7 @@ pub async fn run_start(
                     out.error(&format!("\nError: {}", e));
 
                     // If service not found, show available services
-                    if e.to_string().contains("Service not found") {
+                    if matches!(e, FedError::ServiceNotFound(_)) {
                         let status = orchestrator.get_status().await;
                         if !status.is_empty() {
                             out.error("\nAvailable services:");

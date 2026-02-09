@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::Orchestrator;
+use service_federation::{Error as FedError, Orchestrator};
 
 pub async fn run_logs(
     orchestrator: &Orchestrator,
@@ -41,7 +41,7 @@ pub async fn run_logs(
                         }
                         Err(e) => {
                             out.error(&format!("Error getting logs: {}", e));
-                            if e.to_string().contains("Service not found") {
+                            if matches!(e, FedError::ServiceNotFound(_)) {
                                 let status = orchestrator.get_status().await;
                                 if !status.is_empty() {
                                     out.error("\nAvailable services:");
@@ -71,7 +71,7 @@ pub async fn run_logs(
             }
             Err(e) => {
                 out.error(&format!("Error getting logs: {}", e));
-                if e.to_string().contains("Service not found") {
+                if matches!(e, FedError::ServiceNotFound(_)) {
                     let status = orchestrator.get_status().await;
                     if !status.is_empty() {
                         out.error("\nAvailable services:");

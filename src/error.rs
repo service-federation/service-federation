@@ -274,7 +274,8 @@ impl Error {
                 name, name
             )),
             Error::Database(e) => {
-                // Match on specific SQLite error codes for targeted recovery hints
+                // String matching is unavoidable here: tokio_rusqlite wraps the
+                // underlying rusqlite error opaquely, so we can't match on error codes.
                 let err_str = e.to_string();
                 if err_str.contains("database is locked") || err_str.contains("SQLITE_BUSY") {
                     Some(
