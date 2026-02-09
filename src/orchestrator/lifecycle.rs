@@ -158,14 +158,14 @@ impl<'a> ServiceLifecycleCommands<'a> {
             .status()
             .await
             .map_err(|e| {
-                Error::Config(format!(
+                Error::Process(format!(
                     "Failed to execute install command for '{}': {}",
                     service_name, e
                 ))
             })?;
 
         if !status.success() {
-            return Err(Error::Config(format!(
+            return Err(Error::Process(format!(
                 "Install command failed for '{}'",
                 service_name
             )));
@@ -265,14 +265,14 @@ impl<'a> ServiceLifecycleCommands<'a> {
                     .status()
                     .await
                     .map_err(|e| {
-                        Error::Config(format!(
+                        Error::Process(format!(
                             "Failed to execute build command for '{}': {}",
                             service_name, e
                         ))
                     })?;
 
                 if !status.success() {
-                    return Err(Error::Config(format!(
+                    return Err(Error::Process(format!(
                         "Build command failed for '{}'",
                         service_name
                     )));
@@ -290,14 +290,14 @@ impl<'a> ServiceLifecycleCommands<'a> {
                         .output()
                         .await
                         .map_err(|e| {
-                            Error::Config(format!(
+                            Error::Process(format!(
                                 "Failed to get git hash for Docker tag: {}. Use --tag to specify a tag manually.",
                                 e
                             ))
                         })?;
 
                     if !output.status.success() {
-                        return Err(Error::Config(
+                        return Err(Error::Process(
                             "Failed to get git hash for Docker tag. Use --tag to specify a tag manually.".to_string()
                         ));
                     }
@@ -443,14 +443,14 @@ impl<'a> ServiceLifecycleCommands<'a> {
                 .status()
                 .await
                 .map_err(|e| {
-                    Error::Config(format!(
+                    Error::Process(format!(
                         "Failed to execute clean command for '{}': {}",
                         service_name, e
                     ))
                 })?;
 
             if !status.success() {
-                return Err(Error::Config(format!(
+                return Err(Error::Process(format!(
                     "Clean command failed for '{}'",
                     service_name
                 )));

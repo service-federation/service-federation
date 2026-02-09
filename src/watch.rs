@@ -160,7 +160,7 @@ impl WatchMode {
             },
         )
         .map_err(|e| {
-            crate::error::Error::Config(format!("Failed to create file watcher: {}", e))
+            crate::error::Error::Filesystem(format!("Failed to create file watcher: {}", e))
         })?;
 
         // Add all paths to the watcher
@@ -169,7 +169,7 @@ impl WatchMode {
                 .watcher()
                 .watch(path, RecursiveMode::Recursive)
                 .map_err(|e| {
-                    crate::error::Error::Config(format!(
+                    crate::error::Error::Filesystem(format!(
                         "Failed to watch path {}: {}",
                         path.display(),
                         e

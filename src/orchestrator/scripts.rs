@@ -110,13 +110,13 @@ impl<'a> ScriptRunner<'a> {
         let output = match output_result {
             Ok(Ok(output)) => output,
             Ok(Err(e)) => {
-                return Err(Error::Config(format!(
+                return Err(Error::Process(format!(
                     "Failed to execute script '{}': {}",
                     script_name, e
                 )));
             }
             Err(_) => {
-                return Err(Error::Config(format!(
+                return Err(Error::Process(format!(
                     "Script '{}' exceeded timeout of {} seconds",
                     script_name,
                     timeout.as_secs()
@@ -422,12 +422,12 @@ pub(super) async fn execute_script_command(
     // Spawn and wait for completion (no timeout for interactive scripts)
     let mut child = command
         .spawn()
-        .map_err(|e| Error::Config(format!("Failed to spawn script: {}", e)))?;
+        .map_err(|e| Error::Process(format!("Failed to spawn script: {}", e)))?;
 
     let status = child
         .wait()
         .await
-        .map_err(|e| Error::Config(format!("Failed to wait for script: {}", e)))?;
+        .map_err(|e| Error::Process(format!("Failed to wait for script: {}", e)))?;
 
     Ok(status)
 }

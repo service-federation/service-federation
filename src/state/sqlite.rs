@@ -105,7 +105,7 @@ impl SqliteStateTracker {
             .create(true)
             .truncate(false)
             .open(lock_path)
-            .map_err(|e| Error::Config(format!("Failed to open lock file: {}", e)))?;
+            .map_err(|e| Error::Filesystem(format!("Failed to open lock file: {}", e)))?;
 
         // Try non-blocking exclusive lock
         match FileExt::try_lock_exclusive(&file) {
