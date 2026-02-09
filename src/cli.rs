@@ -25,6 +25,10 @@ pub struct Cli {
     #[arg(long)]
     pub offline: bool,
 
+    /// Show verbose debug output
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
