@@ -2538,6 +2538,697 @@ mod tests {
         assert_eq!(state.status, Status::Stopped);
     }
 
+    // ========================================================================
+    // CRUD operation tests
+    // ========================================================================
+
+    /// Create an ephemeral test tracker (no filesystem, no lock file)
+    async fn create_ephemeral_tracker() -> SqliteStateTracker {
+        let mut tracker = SqliteStateTracker::new_ephemeral().await.unwrap();
+        tracker.initialize().await.unwrap();
+        tracker
+    }
+
+    /// Build a ServiceState with the given id and service type
+    fn make_service_state(id: &str, stype: ServiceType) -> ServiceState {
+        ServiceState {
+            id: id.to_string(),
+            status: Status::Running,
+            service_type: stype,
+            pid: Some(99999),
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        }
+    }
+
+    // --- register_service ---
+
+    #[tokio::test]
+    async fn test_register_service_new() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = make_service_state("svc-a", ServiceType::Process);
+        let is_new = tracker.register_service(state).await.unwrap();
+
+        assert!(is_new, "First registration should return true (new)");
+
+        let retrieved = tracker.get_service("svc-a").await;
+        assert!(retrieved.is_some(), "Service should be retrievable after registration");
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.id, "svc-a");
+        assert_eq!(retrieved.status, Status::Running);
+        assert_eq!(retrieved.service_type, ServiceType::Process);
+        assert_eq!(retrieved.pid, Some(99999));
+        assert_eq!(retrieved.namespace, "test");
+    }
+
+    #[tokio::test]
+    async fn test_register_service_duplicate_returns_false() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = make_service_state("svc-a", ServiceType::Process);
+        let first = tracker.register_service(state).await.unwrap();
+        assert!(first, "First registration is new");
+
+        let state2 = make_service_state("svc-a", ServiceType::Docker);
+        let second = tracker.register_service(state2).await.unwrap();
+        assert!(!second, "Second registration of same id should return false (updated)");
+
+        // The update path only updates status, service_type, namespace, started_at, startup_message
+        let retrieved = tracker.get_service("svc-a").await.unwrap();
+        assert_eq!(retrieved.service_type, ServiceType::Docker, "service_type should be updated");
+    }
+
+    #[tokio::test]
+    async fn test_register_service_with_all_fields() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = ServiceState {
+            id: "full-svc".to_string(),
+            status: Status::Healthy,
+            service_type: ServiceType::Docker,
+            pid: None,
+            container_id: Some("abc123def".to_string()),
+            started_at: Utc::now(),
+            external_repo: Some("github.com/test/repo".to_string()),
+            namespace: "external".to_string(),
+            restart_count: 3,
+            last_restart_at: Some(Utc::now()),
+            consecutive_failures: 1,
+            port_allocations: HashMap::new(),
+            startup_message: Some("Running on port 8080".to_string()),
+        };
+        tracker.register_service(state).await.unwrap();
+
+        let retrieved = tracker.get_service("full-svc").await.unwrap();
+        assert_eq!(retrieved.status, Status::Healthy);
+        assert_eq!(retrieved.container_id, Some("abc123def".to_string()));
+        assert_eq!(retrieved.external_repo, Some("github.com/test/repo".to_string()));
+        assert_eq!(retrieved.namespace, "external");
+        assert_eq!(retrieved.restart_count, 3);
+        assert!(retrieved.last_restart_at.is_some());
+        assert_eq!(retrieved.consecutive_failures, 1);
+        assert_eq!(retrieved.startup_message, Some("Running on port 8080".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_register_multiple_services() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        for name in &["alpha", "beta", "gamma"] {
+            let state = make_service_state(name, ServiceType::Process);
+            tracker.register_service(state).await.unwrap();
+        }
+
+        let services = tracker.get_services().await;
+        assert_eq!(services.len(), 3);
+        assert!(services.contains_key("alpha"));
+        assert!(services.contains_key("beta"));
+        assert!(services.contains_key("gamma"));
+    }
+
+    // --- unregister_service ---
+
+    #[tokio::test]
+    async fn test_unregister_service_removes_it() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = make_service_state("to-remove", ServiceType::Process);
+        tracker.register_service(state).await.unwrap();
+
+        // Confirm it exists
+        assert!(tracker.get_service("to-remove").await.is_some());
+
+        tracker.unregister_service("to-remove").await.unwrap();
+
+        // Confirm it's gone
+        assert!(tracker.get_service("to-remove").await.is_none());
+        let services = tracker.get_services().await;
+        assert!(!services.contains_key("to-remove"));
+    }
+
+    #[tokio::test]
+    async fn test_unregister_nonexistent_service_succeeds() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        // Unregistering a service that doesn't exist should not error
+        // (DELETE WHERE id = ? simply affects 0 rows)
+        let result = tracker.unregister_service("ghost").await;
+        assert!(result.is_ok(), "Unregistering nonexistent service should succeed silently");
+    }
+
+    #[tokio::test]
+    async fn test_unregister_does_not_affect_other_services() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let s1 = make_service_state("keep-me", ServiceType::Process);
+        let s2 = make_service_state("remove-me", ServiceType::Docker);
+        tracker.register_service(s1).await.unwrap();
+        tracker.register_service(s2).await.unwrap();
+
+        tracker.unregister_service("remove-me").await.unwrap();
+
+        assert!(tracker.get_service("keep-me").await.is_some());
+        assert!(tracker.get_service("remove-me").await.is_none());
+    }
+
+    // --- update_service_status ---
+
+    #[tokio::test]
+    async fn test_update_service_status_happy_path() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = make_service_state("svc", ServiceType::Process);
+        tracker.register_service(state).await.unwrap();
+
+        tracker
+            .update_service_status("svc", Status::Healthy)
+            .await
+            .unwrap();
+
+        let retrieved = tracker.get_service("svc").await.unwrap();
+        assert_eq!(retrieved.status, Status::Healthy);
+    }
+
+    #[tokio::test]
+    async fn test_update_service_status_multiple_transitions() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = ServiceState {
+            id: "svc".to_string(),
+            status: Status::Starting,
+            service_type: ServiceType::Process,
+            pid: None,
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        };
+        tracker.register_service(state).await.unwrap();
+
+        // Starting -> Running
+        tracker
+            .update_service_status("svc", Status::Running)
+            .await
+            .unwrap();
+        assert_eq!(
+            tracker.get_service("svc").await.unwrap().status,
+            Status::Running
+        );
+
+        // Running -> Healthy
+        tracker
+            .update_service_status("svc", Status::Healthy)
+            .await
+            .unwrap();
+        assert_eq!(
+            tracker.get_service("svc").await.unwrap().status,
+            Status::Healthy
+        );
+
+        // Healthy -> Stopping
+        tracker
+            .update_service_status("svc", Status::Stopping)
+            .await
+            .unwrap();
+        assert_eq!(
+            tracker.get_service("svc").await.unwrap().status,
+            Status::Stopping
+        );
+
+        // Stopping -> Stopped
+        tracker
+            .update_service_status("svc", Status::Stopped)
+            .await
+            .unwrap();
+        assert_eq!(
+            tracker.get_service("svc").await.unwrap().status,
+            Status::Stopped
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_service_status_nonexistent_returns_error() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let result = tracker
+            .update_service_status("no-such-service", Status::Running)
+            .await;
+        assert!(result.is_err(), "Updating nonexistent service should error");
+
+        let err = result.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("no-such-service"),
+            "Error should mention the service name, got: {}",
+            err_msg
+        );
+    }
+
+    // --- mark_dead_services ---
+
+    #[tokio::test]
+    async fn test_mark_dead_services_no_pid_no_container_running_status() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        // A service with Running status but no PID and no container_id
+        // should be considered stale (it claims to be running but has no
+        // process or container to back that claim).
+        let state = ServiceState {
+            id: "orphan".to_string(),
+            status: Status::Running,
+            service_type: ServiceType::Process,
+            pid: None,
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        };
+        tracker.register_service(state).await.unwrap();
+
+        let marked = tracker.mark_dead_services().await.unwrap();
+        assert_eq!(marked, 1, "Should mark 1 stale service");
+
+        // get_services filters stale, so it should be empty now
+        let services = tracker.get_services().await;
+        assert!(
+            services.is_empty(),
+            "Stale services should be filtered from get_services()"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mark_dead_services_stopped_not_marked() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        // A Stopped service with no PID should NOT be marked stale
+        let state = ServiceState {
+            id: "stopped-svc".to_string(),
+            status: Status::Stopped,
+            service_type: ServiceType::Process,
+            pid: None,
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        };
+        tracker.register_service(state).await.unwrap();
+
+        let marked = tracker.mark_dead_services().await.unwrap();
+        assert_eq!(marked, 0, "Stopped service should not be marked stale");
+
+        let services = tracker.get_services().await;
+        assert_eq!(services.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_mark_dead_services_with_dead_pid() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        // Use a PID that almost certainly does not correspond to a running process.
+        // PID 4194304 is above the typical max PID on Linux (default 32768, max 4194304)
+        // and on macOS (99998). We use a high but valid (<= i32::MAX) PID.
+        let state = ServiceState {
+            id: "dead-pid-svc".to_string(),
+            status: Status::Running,
+            service_type: ServiceType::Process,
+            pid: Some(4194200),
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        };
+        tracker.register_service(state).await.unwrap();
+
+        let marked = tracker.mark_dead_services().await.unwrap();
+        assert_eq!(marked, 1, "Service with dead PID should be marked stale");
+    }
+
+    // --- purge_stale_services ---
+
+    #[tokio::test]
+    async fn test_purge_stale_services_removes_stale() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        // Register a service that will become stale
+        let state = ServiceState {
+            id: "will-be-stale".to_string(),
+            status: Status::Running,
+            service_type: ServiceType::Process,
+            pid: None,
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        };
+        tracker.register_service(state).await.unwrap();
+
+        // Mark it stale
+        let marked = tracker.mark_dead_services().await.unwrap();
+        assert_eq!(marked, 1);
+
+        // Purge stale services
+        let purged = tracker.purge_stale_services().await.unwrap();
+        assert_eq!(purged, 1, "Should purge 1 stale service");
+
+        // Service should be completely gone now (even from get_service which doesn't filter stale)
+        assert!(
+            tracker.get_service("will-be-stale").await.is_none(),
+            "Purged service should be completely removed from the database"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_purge_stale_services_leaves_healthy() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        // Register a healthy service with a real-ish PID (current process)
+        let state = ServiceState {
+            id: "alive".to_string(),
+            status: Status::Stopped,
+            service_type: ServiceType::Process,
+            pid: None,
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        };
+        tracker.register_service(state).await.unwrap();
+
+        // No services should be marked stale (Stopped status is not "should be running")
+        let marked = tracker.mark_dead_services().await.unwrap();
+        assert_eq!(marked, 0);
+
+        let purged = tracker.purge_stale_services().await.unwrap();
+        assert_eq!(purged, 0, "No stale services to purge");
+
+        assert!(tracker.get_service("alive").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_purge_with_no_stale_services() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let purged = tracker.purge_stale_services().await.unwrap();
+        assert_eq!(purged, 0, "Purging empty tracker should return 0");
+    }
+
+    // --- Port persistence ---
+
+    #[tokio::test]
+    async fn test_add_service_port_and_retrieve() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = make_service_state("port-svc", ServiceType::Process);
+        tracker.register_service(state).await.unwrap();
+
+        tracker
+            .add_service_port("port-svc", "HTTP_PORT".to_string(), 8080)
+            .await
+            .unwrap();
+
+        // Retrieve via get_service (loads port_allocations)
+        let svc = tracker.get_service("port-svc").await.unwrap();
+        assert_eq!(svc.port_allocations.len(), 1);
+        assert_eq!(svc.port_allocations.get("HTTP_PORT"), Some(&8080));
+
+        // Also appears in global allocated ports
+        let allocated = tracker.get_allocated_ports().await;
+        assert!(allocated.contains(&8080));
+    }
+
+    #[tokio::test]
+    async fn test_add_multiple_ports_to_service() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = make_service_state("multi-port", ServiceType::Docker);
+        tracker.register_service(state).await.unwrap();
+
+        tracker
+            .add_service_port("multi-port", "HTTP_PORT".to_string(), 8080)
+            .await
+            .unwrap();
+        tracker
+            .add_service_port("multi-port", "GRPC_PORT".to_string(), 9090)
+            .await
+            .unwrap();
+        tracker
+            .add_service_port("multi-port", "DEBUG_PORT".to_string(), 5005)
+            .await
+            .unwrap();
+
+        let svc = tracker.get_service("multi-port").await.unwrap();
+        assert_eq!(svc.port_allocations.len(), 3);
+        assert_eq!(svc.port_allocations.get("HTTP_PORT"), Some(&8080));
+        assert_eq!(svc.port_allocations.get("GRPC_PORT"), Some(&9090));
+        assert_eq!(svc.port_allocations.get("DEBUG_PORT"), Some(&5005));
+    }
+
+    #[tokio::test]
+    async fn test_add_service_port_nonexistent_service_errors() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let result = tracker
+            .add_service_port("no-such-svc", "PORT".to_string(), 8080)
+            .await;
+        assert!(result.is_err(), "Adding port to nonexistent service should error");
+    }
+
+    #[tokio::test]
+    async fn test_add_service_port_replaces_existing_param() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = make_service_state("svc", ServiceType::Process);
+        tracker.register_service(state).await.unwrap();
+
+        tracker
+            .add_service_port("svc", "PORT".to_string(), 8080)
+            .await
+            .unwrap();
+        // Replace with new port for same parameter
+        tracker
+            .add_service_port("svc", "PORT".to_string(), 9090)
+            .await
+            .unwrap();
+
+        let svc = tracker.get_service("svc").await.unwrap();
+        assert_eq!(svc.port_allocations.len(), 1);
+        assert_eq!(svc.port_allocations.get("PORT"), Some(&9090));
+    }
+
+    #[tokio::test]
+    async fn test_save_and_get_global_port_allocations() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let resolutions = vec![
+            ("HTTP_PORT".to_string(), 8080u16),
+            ("GRPC_PORT".to_string(), 9090u16),
+        ];
+        tracker.save_port_resolutions(&resolutions).await.unwrap();
+
+        let globals = tracker.get_global_port_allocations().await;
+        assert_eq!(globals.len(), 2);
+        assert_eq!(globals.get("HTTP_PORT"), Some(&8080));
+        assert_eq!(globals.get("GRPC_PORT"), Some(&9090));
+
+        // Ports should also appear in allocated_ports
+        let allocated = tracker.get_allocated_ports().await;
+        assert!(allocated.contains(&8080));
+        assert!(allocated.contains(&9090));
+    }
+
+    #[tokio::test]
+    async fn test_save_port_resolutions_replaces_previous() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let first = vec![("OLD_PORT".to_string(), 3000u16)];
+        tracker.save_port_resolutions(&first).await.unwrap();
+
+        let second = vec![("NEW_PORT".to_string(), 4000u16)];
+        tracker.save_port_resolutions(&second).await.unwrap();
+
+        let globals = tracker.get_global_port_allocations().await;
+        assert_eq!(globals.len(), 1, "Previous resolutions should be replaced");
+        assert_eq!(globals.get("NEW_PORT"), Some(&4000));
+        assert!(!globals.contains_key("OLD_PORT"));
+    }
+
+    #[tokio::test]
+    async fn test_clear_port_resolutions() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let resolutions = vec![("PORT".to_string(), 5000u16)];
+        tracker.save_port_resolutions(&resolutions).await.unwrap();
+
+        tracker.clear_port_resolutions().await.unwrap();
+
+        let globals = tracker.get_global_port_allocations().await;
+        assert!(globals.is_empty(), "All port resolutions should be cleared");
+
+        let allocated = tracker.get_allocated_ports().await;
+        assert!(allocated.is_empty(), "Allocated ports should also be cleared");
+    }
+
+    #[tokio::test]
+    async fn test_track_port() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        tracker.track_port(7777).await;
+        tracker.track_port(8888).await;
+        // Duplicate should be silently ignored
+        tracker.track_port(7777).await;
+
+        let allocated = tracker.get_allocated_ports().await;
+        assert_eq!(allocated.len(), 2);
+        assert!(allocated.contains(&7777));
+        assert!(allocated.contains(&8888));
+    }
+
+    #[tokio::test]
+    async fn test_port_allocations_visible_in_get_services() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = make_service_state("svc-ports", ServiceType::Process);
+        tracker.register_service(state).await.unwrap();
+
+        tracker
+            .add_service_port("svc-ports", "API_PORT".to_string(), 3000)
+            .await
+            .unwrap();
+
+        // get_services should also load port allocations
+        let services = tracker.get_services().await;
+        let svc = services.get("svc-ports").unwrap();
+        assert_eq!(svc.port_allocations.get("API_PORT"), Some(&3000));
+    }
+
+    #[tokio::test]
+    async fn test_unregister_cleans_up_orphaned_allocated_ports() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        let state = make_service_state("svc", ServiceType::Process);
+        tracker.register_service(state).await.unwrap();
+
+        tracker
+            .add_service_port("svc", "PORT".to_string(), 6000)
+            .await
+            .unwrap();
+
+        // Port 6000 is now tracked
+        assert!(tracker.get_allocated_ports().await.contains(&6000));
+
+        // Unregistering cleans up orphaned allocated_ports entries
+        tracker.unregister_service("svc").await.unwrap();
+
+        let allocated = tracker.get_allocated_ports().await;
+        assert!(
+            !allocated.contains(&6000),
+            "Orphaned port should be cleaned up after unregister"
+        );
+    }
+
+    // --- is_service_registered ---
+
+    #[tokio::test]
+    async fn test_is_service_registered() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        assert!(!tracker.is_service_registered("svc").await);
+
+        let state = make_service_state("svc", ServiceType::Process);
+        tracker.register_service(state).await.unwrap();
+
+        assert!(tracker.is_service_registered("svc").await);
+
+        tracker.unregister_service("svc").await.unwrap();
+
+        assert!(!tracker.is_service_registered("svc").await);
+    }
+
+    // --- clear ---
+
+    #[tokio::test]
+    async fn test_clear_removes_all_services() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        for name in &["a", "b", "c"] {
+            let state = make_service_state(name, ServiceType::Process);
+            tracker.register_service(state).await.unwrap();
+        }
+
+        assert_eq!(tracker.get_services().await.len(), 3);
+
+        tracker.clear().await.unwrap();
+
+        assert!(tracker.get_services().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_clear_preserves_persisted_ports() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        // Save global port resolutions
+        let resolutions = vec![("PRESERVED_PORT".to_string(), 9999u16)];
+        tracker.save_port_resolutions(&resolutions).await.unwrap();
+
+        // Register a service with its own port
+        let state = make_service_state("svc", ServiceType::Process);
+        tracker.register_service(state).await.unwrap();
+        tracker
+            .add_service_port("svc", "SVC_PORT".to_string(), 1234)
+            .await
+            .unwrap();
+
+        // Clear should remove services but keep persisted_ports
+        tracker.clear().await.unwrap();
+
+        assert!(tracker.get_services().await.is_empty());
+
+        let globals = tracker.get_global_port_allocations().await;
+        assert_eq!(
+            globals.get("PRESERVED_PORT"),
+            Some(&9999),
+            "Persisted port resolutions should survive clear()"
+        );
+    }
+
     #[tokio::test]
     async fn test_ephemeral_tracker_does_not_corrupt_parent() {
         // Parent: file-backed tracker
