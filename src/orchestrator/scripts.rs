@@ -7,10 +7,7 @@
 
 use crate::config::Script;
 use crate::error::{Error, Result};
-use crate::service::Status;
-use crate::state::StateTracker;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use super::core::Orchestrator;
@@ -54,7 +51,7 @@ impl<'a> ScriptRunner<'a> {
                 self.orchestrator.run_script_interactive(dep, &[]).await?;
             } else {
                 // Dependency is a service - start it if not running
-                if !self.is_service_running(dep).await {
+                if !self.orchestrator.is_service_running(dep).await {
                     self.orchestrator.start(dep).await?;
                 }
             }
@@ -180,7 +177,7 @@ impl<'a> ScriptRunner<'a> {
                 Box::pin(self.orchestrator.run_script_interactive(dep, &[])).await?;
             } else {
                 // Dependency is a service - start it if not running
-                if !self.is_service_running(dep).await {
+                if !self.orchestrator.is_service_running(dep).await {
                     self.orchestrator.start(dep).await?;
                 }
             }
@@ -257,18 +254,11 @@ impl<'a> ScriptRunner<'a> {
             .clone();
 
         let mut child_orchestrator =
-            Orchestrator::new(child_config, self.orchestrator.work_dir.clone()).await?;
+            Orchestrator::new_ephemeral(child_config, self.orchestrator.work_dir.clone()).await?;
         child_orchestrator.output_mode = self.orchestrator.output_mode;
 
         // Enable isolated mode to skip session port cache and allocate fresh ports
         child_orchestrator.resolver.set_isolated_mode(true);
-
-        // Replace the child's state tracker with an ephemeral in-memory one.
-        // The default file-backed tracker shares the parent's .fed/lock.db, so
-        // any clear() would wipe the parent's service registrations (SF-00104).
-        child_orchestrator.state_tracker = Arc::new(tokio::sync::RwLock::new(
-            StateTracker::new_ephemeral().await?,
-        ));
 
         // Initialize child orchestrator (allocates fresh ports due to isolated mode)
         child_orchestrator.initialize().await?;
@@ -351,19 +341,6 @@ impl<'a> ScriptRunner<'a> {
         }
 
         result
-    }
-
-    /// Check if a service is running.
-    pub async fn is_service_running(&self, service_name: &str) -> bool {
-        let services = self.orchestrator.services.read().await;
-        match services.get(service_name) {
-            Some(arc) => {
-                let manager = arc.lock().await;
-                let status = manager.status();
-                status == Status::Running || status == Status::Healthy
-            }
-            None => false,
-        }
     }
 
     /// Get list of available scripts.

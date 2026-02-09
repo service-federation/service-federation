@@ -1,37 +1,32 @@
-/// Lock ordering enforcement module for deadlock prevention.
-///
-/// This module provides debug-mode tracking of lock acquisitions to detect violations
-/// of the documented lock ordering hierarchy. In release builds, this module compiles
-/// to zero-cost (all tracking is conditional on `debug_assertions`).
+/// Lock ordering reference for deadlock prevention.
 ///
 /// # Lock Ordering Hierarchy
 ///
 /// To prevent deadlocks, locks MUST be acquired in this order:
-/// 1. `services` (RwLock) - Service registry
-/// 2. `health_checkers` (RwLock) - Health checker registry
-/// 3. `state_tracker` (RwLock) - Persistent state
-/// 4. Individual service `Mutex`es - Per-service locks
+/// 1. `services` (RwLock) — Service registry
+/// 2. `health_checkers` (RwLock) — Health checker registry
+/// 3. `state_tracker` (RwLock) — Persistent state
+/// 4. Individual service `Mutex`es — Per-service locks
 ///
-/// # Usage
+/// If you need to hold multiple locks, acquire them in this order. If you
+/// cannot follow this order, release the first lock before acquiring the
+/// second (see `monitoring.rs` dependency propagation for examples).
 ///
-/// ```ignore
-/// use crate::lock_order::{LockId, track_lock_acquisition, track_lock_release};
+/// # Background: SF-00107
 ///
-/// // In orchestrator code:
-/// #[cfg(debug_assertions)]
-/// track_lock_acquisition(LockId::Services);
+/// A deadlock was caused by holding a service mutex while acquiring
+/// `state_tracker` (violating ordering #3 → #4). The fix was to scope the
+/// service mutex, release it, then acquire `state_tracker` separately.
 ///
-/// let services = self.services.read().await;
+/// # Runtime tracking (debug-only, limited)
 ///
-/// #[cfg(debug_assertions)]
-/// track_lock_release(LockId::Services);
-/// ```
-///
-/// # Violation Detection
-///
-/// If a lock is acquired out of order, the program will panic in debug mode
-/// with a message explaining the violation. This helps catch potential deadlocks
-/// during development before they manifest in production.
+/// This module provides `track_lock_acquisition`/`track_lock_release` using
+/// thread-local storage. **Caveat:** thread-local tracking does not follow
+/// tokio tasks across `.await` points since tasks may migrate between OS
+/// threads. The tracking is useful in synchronous test code but cannot
+/// reliably detect violations in async orchestrator code. The primary
+/// protection is code review discipline, guided by `// LOCK ORDER:` comments
+/// at multi-lock acquisition sites.
 #[cfg(debug_assertions)]
 use std::cell::RefCell;
 

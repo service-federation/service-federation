@@ -162,6 +162,37 @@ impl Orchestrator {
         })
     }
 
+    /// Create an ephemeral orchestrator with an in-memory state tracker.
+    ///
+    /// Used for isolated script execution where the child orchestrator should
+    /// not touch the parent's `.fed/lock.db`. All state operations stay in-memory
+    /// and are discarded when the orchestrator is dropped.
+    pub async fn new_ephemeral(config: Config, work_dir: PathBuf) -> Result<Self> {
+        let original_config = Some(config.clone());
+        Ok(Self {
+            config,
+            original_config,
+            resolver: Resolver::new(),
+            dep_graph: Graph::new(),
+            services: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            health_checkers: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            state_tracker: Arc::new(tokio::sync::RwLock::new(
+                StateTracker::new_ephemeral().await?,
+            )),
+            work_dir,
+            namespace: "root".to_string(),
+            output_mode: OutputMode::default(),
+            active_profiles: Vec::new(),
+            monitoring_task: Arc::new(tokio::sync::Mutex::new(None)),
+            startup_complete: Arc::new(AtomicBool::new(false)),
+            port_listeners_released: AtomicBool::new(false),
+            cancellation_token: CancellationToken::new(),
+            startup_timeout: DEFAULT_STARTUP_TIMEOUT,
+            stop_timeout: DEFAULT_STOP_TIMEOUT,
+            cleanup_started: AtomicBool::new(false),
+        })
+    }
+
     /// Create a nested orchestrator with a namespace (for external services)
     pub async fn new_with_namespace(
         config: Config,
@@ -1251,12 +1282,17 @@ impl Orchestrator {
             .await
     }
 
-    /// Check if a service is running.
-    ///
-    /// Delegates to [`ScriptRunner`](super::scripts::ScriptRunner).
+    /// Check if a service is currently running or healthy.
     pub async fn is_service_running(&self, service_name: &str) -> bool {
-        let runner = super::scripts::ScriptRunner::new(self);
-        runner.is_service_running(service_name).await
+        let services = self.services.read().await;
+        match services.get(service_name) {
+            Some(arc) => {
+                let manager = arc.lock().await;
+                let status = manager.status();
+                status == Status::Running || status == Status::Healthy
+            }
+            None => false,
+        }
     }
 
     /// Get list of available scripts.

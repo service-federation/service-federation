@@ -5,6 +5,13 @@
 //! - Automatic restart with exponential backoff
 //! - Panic-safe monitoring loop
 //!
+//! # Lock ordering (see `lock_order.rs`)
+//!
+//! This module acquires `services`, `state_tracker`, and individual service
+//! mutexes. To prevent deadlocks, never hold a service mutex while acquiring
+//! `state_tracker`. Instead: scope the mutex, release it, then acquire
+//! `state_tracker` separately.
+//!
 //! # Architecture
 //!
 //! The monitoring system is decomposed into small, composable functions:
@@ -488,9 +495,8 @@ async fn handle_dependency_health_propagation(
                         };
 
                         if let Some(manager_arc) = manager_opt {
-                            // Stop under manager lock, then release before
-                            // acquiring state_tracker (preserves lock ordering:
-                            // state_tracker before service mutex).
+                            // LOCK ORDER: scope manager mutex, release it,
+                            // then acquire state_tracker separately.
                             let stop_ok = {
                                 let mut manager = manager_arc.lock().await;
                                 manager.stop().await.is_ok()
@@ -524,9 +530,8 @@ async fn handle_dependency_health_propagation(
                         };
 
                         if let Some(manager_arc) = manager_opt {
-                            // Stop under manager lock, then release before
-                            // acquiring state_tracker (preserves lock ordering:
-                            // state_tracker before service mutex).
+                            // LOCK ORDER: scope manager mutex, release it,
+                            // then acquire state_tracker separately.
                             let stop_ok = {
                                 let mut manager = manager_arc.lock().await;
                                 manager.stop().await.is_ok()
@@ -549,8 +554,8 @@ async fn handle_dependency_health_propagation(
                                     .await;
                             }
 
-                            // Start under manager lock, then release before
-                            // acquiring state_tracker.
+                            // LOCK ORDER: same pattern — scope mutex, then
+                            // acquire state_tracker.
                             let start_result = {
                                 let mut manager = manager_arc.lock().await;
                                 manager.start().await

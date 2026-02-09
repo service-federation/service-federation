@@ -4,9 +4,14 @@
 //! Orchestrator: collecting managed ports from running services and
 //! releasing port listeners (TOCTOU race prevention).
 //!
-//! Port management uses free functions rather than a runner struct because
-//! `collect_managed_ports` requires `&mut Resolver`, which can't be borrowed
-//! from `&Orchestrator`.
+//! # Why free functions instead of a runner struct
+//!
+//! Other extracted modules (scripts, orphans, health) use a runner struct
+//! that borrows `&Orchestrator`. Port management can't follow this pattern
+//! because `collect_managed_ports` needs `&mut Resolver` — and since `Resolver`
+//! is owned by `Orchestrator`, you can't borrow `&Orchestrator` (immutable)
+//! and `&mut orchestrator.resolver` (mutable) at the same time. Free functions
+//! that take individual fields sidestep this borrow conflict.
 
 use crate::parameter::Resolver;
 use crate::service::Status;
