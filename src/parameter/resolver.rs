@@ -956,7 +956,7 @@ impl Resolver {
             PortConflictAction::KillAndRetry => {
                 // Kill all blocking processes and verify with retries
                 if let Err(e) = conflict.kill_and_verify(3) {
-                    return Err(Error::TemplateResolution(e));
+                    return Err(Error::Process(e));
                 }
                 // Try to allocate the original port again (dual-stack: checks both IPv4 and 0.0.0.0)
                 match self.port_allocator.try_allocate_port(port) {
