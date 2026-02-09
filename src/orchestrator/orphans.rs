@@ -196,9 +196,13 @@ impl<'a> OrphanCleaner<'a> {
         if killed > 0 {
             let mut state = self.orchestrator.state_tracker.write().await;
             for (name, _) in &orphans {
-                let _ = state.unregister_service(name).await;
+                if let Err(e) = state.unregister_service(name).await {
+                    tracing::warn!("Failed to unregister orphaned service '{}' from state: {}", name, e);
+                }
             }
-            let _ = state.save().await;
+            if let Err(e) = state.save().await {
+                tracing::warn!("Failed to save state after orphan cleanup: {}", e);
+            }
         }
 
         killed

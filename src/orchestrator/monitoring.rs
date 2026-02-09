@@ -287,9 +287,13 @@ async fn execute_health_check_cycle(
         let mut tracker = state_tracker.write().await;
         for service_name in &healthy_names {
             // Close circuit breaker when service becomes healthy
-            let _ = tracker.close_circuit_breaker(service_name).await;
+            if let Err(e) = tracker.close_circuit_breaker(service_name).await {
+                tracing::warn!("Failed to close circuit breaker for '{}': {}", service_name, e);
+            }
             // Clear restart history to reset the crash loop counter
-            let _ = tracker.clear_restart_history(service_name).await;
+            if let Err(e) = tracker.clear_restart_history(service_name).await {
+                tracing::warn!("Failed to clear restart history for '{}': {}", service_name, e);
+            }
         }
     }
 
@@ -347,7 +351,9 @@ async fn execute_health_check_cycle(
             // Record restart attempt BEFORE restarting for circuit breaker tracking
             {
                 let mut tracker = state_tracker.write().await;
-                let _ = tracker.record_restart(&service_name).await;
+                if let Err(e) = tracker.record_restart(&service_name).await {
+                    tracing::warn!("Failed to record restart for '{}': {}", service_name, e);
+                }
             }
 
             // Check if we should trip the circuit breaker
@@ -367,9 +373,12 @@ async fn execute_health_check_cycle(
                 // Trip the circuit breaker
                 {
                     let mut tracker = state_tracker.write().await;
-                    let _ = tracker
+                    if let Err(e) = tracker
                         .open_circuit_breaker(&service_name, circuit_breaker.cooldown_secs)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("Failed to open circuit breaker for '{}': {}", service_name, e);
+                    }
                 }
 
                 tracing::error!(
@@ -399,9 +408,12 @@ async fn execute_health_check_cycle(
     // Batch update restart counts for successful restarts
     if !successful_restarts.is_empty() {
         let mut tracker = state_tracker.write().await;
-        let _ = tracker
+        if let Err(e) = tracker
             .batch_increment_restart_counts(successful_restarts)
-            .await;
+            .await
+        {
+            tracing::warn!("Failed to batch increment restart counts: {}", e);
+        }
     }
 
     // Handle dependency health propagation if there are unhealthy services

@@ -126,9 +126,13 @@ async fn stop_remaining_state_services(
 
     let mut tracker = orchestrator.state_tracker.write().await;
     for name in &stopped_names {
-        let _ = tracker.unregister_service(name).await;
+        if let Err(e) = tracker.unregister_service(name).await {
+            tracing::warn!("Failed to unregister service '{}' from state: {}", name, e);
+        }
     }
-    let _ = tracker.save().await;
+    if let Err(e) = tracker.save().await {
+        tracing::warn!("Failed to save state after stopping services: {}", e);
+    }
 
     stopped_names.len()
 }
@@ -195,7 +199,9 @@ pub async fn run_stop_from_state(
         tracker.clear().await?;
     } else {
         for (name, _) in &services_to_stop {
-            let _ = tracker.unregister_service(name).await;
+            if let Err(e) = tracker.unregister_service(name).await {
+                tracing::warn!("Failed to unregister service '{}' from state: {}", name, e);
+            }
         }
         tracker.save().await?;
     }
