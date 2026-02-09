@@ -43,9 +43,9 @@ impl Config {
             if let Some(service) = self.services.get(*ep_name) {
                 if service.startup_message.is_none() {
                     eprintln!(
-                        "\x1b[33mWarning: Entrypoint service '{}' has no startup_message.\n\
-                         \x1b[33m         Without this, isolated mode won't show where to access the application.\n\
-                         \x1b[33m         Add: startup_message: \"http://localhost:{{{{PORT}}}}\"\x1b[0m"
+                        "Warning: Entrypoint service '{}' has no startup_message.\n\
+                                  Without this, isolated mode won't show where to access the application.\n\
+                                  Add: startup_message: \"http://localhost:{{{{PORT}}}}\""
                         , ep_name);
                 }
             }
@@ -125,14 +125,14 @@ impl Config {
                     let border = "─".repeat(box_width);
 
                     return Err(Error::Validation(format!(
-                        "Service '\x1b[1;36m{}\x1b[0m' depends on non-existent service '\x1b[1;31m{}\x1b[0m'\n\n\
-                        \x1b[33m╭{}╮\x1b[0m\n\
-                        \x1b[33m│\x1b[0m {} \x1b[33m│\x1b[0m\n\
-                        \x1b[33m╰{}╯\x1b[0m\n\n\
-                        \x1b[36mservices:\n  \
+                        "Service '{}' depends on non-existent service '{}'\n\n\
+                        ╭{}╮\n\
+                        │ {} │\n\
+                        ╰{}╯\n\n\
+                        services:\n  \
                           {}:\n    \
                             depends_on:\n      \
-                              - {}\x1b[0m  \x1b[31m# ← remove this line\x1b[0m",
+                              - {}  # ← remove this line",
                         name, dep_name, border, hint_text, border, name, dep_name
                     )));
                 }
@@ -165,14 +165,14 @@ impl Config {
                     let border = "─".repeat(box_width);
 
                     return Err(Error::Validation(format!(
-                        "Script '\x1b[1;36m{}\x1b[0m' depends on non-existent service or script '\x1b[1;31m{}\x1b[0m'\n\n\
-                        \x1b[33m╭{}╮\x1b[0m\n\
-                        \x1b[33m│\x1b[0m {} \x1b[33m│\x1b[0m\n\
-                        \x1b[33m╰{}╯\x1b[0m\n\n\
-                        \x1b[36mscripts:\n  \
+                        "Script '{}' depends on non-existent service or script '{}'\n\n\
+                        ╭{}╮\n\
+                        │ {} │\n\
+                        ╰{}╯\n\n\
+                        scripts:\n  \
                           {}:\n    \
                             depends_on:\n      \
-                              - {}\x1b[0m  \x1b[31m# ← remove this line\x1b[0m",
+                              - {}  # ← remove this line",
                         script_name, dep, border, hint_text, border, script_name, dep
                     )));
                 }

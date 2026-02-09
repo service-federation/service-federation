@@ -310,6 +310,22 @@ impl fmt::Display for OutputMode {
     }
 }
 
+impl std::str::FromStr for OutputMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "file" => Ok(OutputMode::File),
+            "captured" => Ok(OutputMode::Captured),
+            "passthrough" => Ok(OutputMode::Passthrough),
+            _ => Err(format!(
+                "Invalid output mode: '{}'. Use 'file', 'captured', or 'passthrough'.",
+                s
+            )),
+        }
+    }
+}
+
 /// Core trait for managing service lifecycle.
 ///
 /// Implement this trait to create custom service types. The orchestrator uses these

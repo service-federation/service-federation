@@ -243,16 +243,10 @@ async fn run() -> anyhow::Result<()> {
             if *dry_run {
                 OutputMode::Captured
             } else if let Some(mode) = output {
-                // If explicit output mode is provided, use it
-                match mode.as_str() {
-                    "file" => OutputMode::File,
-                    "captured" => OutputMode::Captured,
-                    "passthrough" => OutputMode::Passthrough,
-                    _ => {
-                        eprintln!(
-                            "Invalid output mode: '{}'. Use 'file', 'captured', or 'passthrough'.",
-                            mode
-                        );
+                match mode.parse::<OutputMode>() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!("{}", e);
                         std::process::exit(1);
                     }
                 }
