@@ -364,7 +364,7 @@ impl DockerService {
                 }
             }
             Ok(Err(e)) => Err(Error::Io(e)),
-            Err(_) => Err(Error::Timeout("docker rm".to_string())),
+            Err(_) => Err(Error::Timeout(format!("docker rm container '{}'", container_id))),
         }
     }
 
@@ -373,7 +373,7 @@ impl DockerService {
     /// Format: `[host-path:]container-path[:options]`
     fn validate_volume_spec(spec: &str) -> Result<()> {
         if spec.is_empty() {
-            return Err(Error::Config("Empty volume specification".to_string()));
+            return Err(Error::Config("Empty volume specification (check service volumes config)".to_string()));
         }
 
         // Reject absolute host paths for security
@@ -434,7 +434,7 @@ impl DockerService {
     /// Format: `[host-ip:][host-port:]container-port[/protocol]`
     fn validate_port_spec(spec: &str) -> Result<()> {
         if spec.is_empty() {
-            return Err(Error::Config("Empty port specification".to_string()));
+            return Err(Error::Config("Empty port specification (check service ports config)".to_string()));
         }
 
         // Reject binding to all interfaces for security (0.0.0.0 for IPv4, [::] for IPv6)
@@ -640,7 +640,10 @@ impl ServiceManager for DockerService {
 
         // Add volumes with validation and session scoping
         for volume in &self.config.volumes {
-            Self::validate_volume_spec(volume)?;
+            Self::validate_volume_spec(volume).map_err(|e| match e {
+                Error::Config(msg) => Error::Config(format!("Service '{}': {}", self.name, msg)),
+                other => other,
+            })?;
             args.push("-v".to_string());
             // Scope named volumes for isolation (session ID or work_dir hash)
             let scoped_volume = if let Some(ref sid) = self.session_id {
@@ -655,7 +658,10 @@ impl ServiceManager for DockerService {
 
         // Add ports with validation
         for port in &self.config.ports {
-            Self::validate_port_spec(port)?;
+            Self::validate_port_spec(port).map_err(|e| match e {
+                Error::Config(msg) => Error::Config(format!("Service '{}': {}", self.name, msg)),
+                other => other,
+            })?;
             args.push("-p".to_string());
             args.push(port.clone());
         }
