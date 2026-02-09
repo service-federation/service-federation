@@ -295,11 +295,19 @@ async fn execute_health_check_cycle(
         for service_name in &healthy_names {
             // Close circuit breaker when service becomes healthy
             if let Err(e) = tracker.close_circuit_breaker(service_name).await {
-                tracing::warn!("Failed to close circuit breaker for '{}': {}", service_name, e);
+                tracing::warn!(
+                    "Failed to close circuit breaker for '{}': {}",
+                    service_name,
+                    e
+                );
             }
             // Clear restart history to reset the crash loop counter
             if let Err(e) = tracker.clear_restart_history(service_name).await {
-                tracing::warn!("Failed to clear restart history for '{}': {}", service_name, e);
+                tracing::warn!(
+                    "Failed to clear restart history for '{}': {}",
+                    service_name,
+                    e
+                );
             }
         }
     }
@@ -384,7 +392,11 @@ async fn execute_health_check_cycle(
                         .open_circuit_breaker(&service_name, circuit_breaker.cooldown_secs)
                         .await
                     {
-                        tracing::warn!("Failed to open circuit breaker for '{}': {}", service_name, e);
+                        tracing::warn!(
+                            "Failed to open circuit breaker for '{}': {}",
+                            service_name,
+                            e
+                        );
                     }
                 }
 

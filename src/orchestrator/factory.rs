@@ -360,12 +360,7 @@ impl Orchestrator {
     /// Shared logic for [`restore_process_pid`] and [`restore_gradle_pid`]. On Unix,
     /// sends signal 0 to check whether the process is alive. On other platforms,
     /// unconditionally calls `set_pid` as a fallback.
-    async fn restore_pid_for_service(
-        &self,
-        service_name: &str,
-        pid: u32,
-        set_pid: impl FnOnce(),
-    ) {
+    async fn restore_pid_for_service(&self, service_name: &str, pid: u32, set_pid: impl FnOnce()) {
         #[cfg(unix)]
         {
             use nix::sys::signal::kill;

@@ -359,21 +359,51 @@ environment:
 
     #[test]
     fn test_service_type_from_str_case_insensitive() {
-        assert_eq!("PROCESS".parse::<ServiceType>().unwrap(), ServiceType::Process);
-        assert_eq!("Docker".parse::<ServiceType>().unwrap(), ServiceType::Docker);
-        assert_eq!("EXTERNAL".parse::<ServiceType>().unwrap(), ServiceType::External);
-        assert_eq!("Gradle".parse::<ServiceType>().unwrap(), ServiceType::GradleTask);
-        assert_eq!("Docker-Compose".parse::<ServiceType>().unwrap(), ServiceType::DockerCompose);
-        assert_eq!("UNDEFINED".parse::<ServiceType>().unwrap(), ServiceType::Undefined);
+        assert_eq!(
+            "PROCESS".parse::<ServiceType>().unwrap(),
+            ServiceType::Process
+        );
+        assert_eq!(
+            "Docker".parse::<ServiceType>().unwrap(),
+            ServiceType::Docker
+        );
+        assert_eq!(
+            "EXTERNAL".parse::<ServiceType>().unwrap(),
+            ServiceType::External
+        );
+        assert_eq!(
+            "Gradle".parse::<ServiceType>().unwrap(),
+            ServiceType::GradleTask
+        );
+        assert_eq!(
+            "Docker-Compose".parse::<ServiceType>().unwrap(),
+            ServiceType::DockerCompose
+        );
+        assert_eq!(
+            "UNDEFINED".parse::<ServiceType>().unwrap(),
+            ServiceType::Undefined
+        );
     }
 
     #[test]
     fn test_service_type_from_str_backwards_compat() {
         // Old Debug-formatted values should still parse
-        assert_eq!("GradleTask".parse::<ServiceType>().unwrap(), ServiceType::GradleTask);
-        assert_eq!("gradle_task".parse::<ServiceType>().unwrap(), ServiceType::GradleTask);
-        assert_eq!("DockerCompose".parse::<ServiceType>().unwrap(), ServiceType::DockerCompose);
-        assert_eq!("docker_compose".parse::<ServiceType>().unwrap(), ServiceType::DockerCompose);
+        assert_eq!(
+            "GradleTask".parse::<ServiceType>().unwrap(),
+            ServiceType::GradleTask
+        );
+        assert_eq!(
+            "gradle_task".parse::<ServiceType>().unwrap(),
+            ServiceType::GradleTask
+        );
+        assert_eq!(
+            "DockerCompose".parse::<ServiceType>().unwrap(),
+            ServiceType::DockerCompose
+        );
+        assert_eq!(
+            "docker_compose".parse::<ServiceType>().unwrap(),
+            ServiceType::DockerCompose
+        );
     }
 
     #[test]

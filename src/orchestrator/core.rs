@@ -1277,9 +1277,7 @@ impl Orchestrator {
         extra_args: &[String],
     ) -> Result<std::process::ExitStatus> {
         let runner = super::scripts::ScriptRunner::new(self);
-        runner
-            .run_script_interactive(script_name, extra_args)
-            .await
+        runner.run_script_interactive(script_name, extra_args).await
     }
 
     /// Check if a service is currently running or healthy.

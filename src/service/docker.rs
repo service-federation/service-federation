@@ -368,7 +368,10 @@ impl DockerService {
                 }
             }
             Ok(Err(e)) => Err(Error::Io(e)),
-            Err(_) => Err(Error::Timeout(format!("docker rm container '{}'", container_id))),
+            Err(_) => Err(Error::Timeout(format!(
+                "docker rm container '{}'",
+                container_id
+            ))),
         }
     }
 
@@ -377,7 +380,9 @@ impl DockerService {
     /// Format: `[host-path:]container-path[:options]`
     fn validate_volume_spec(spec: &str) -> Result<()> {
         if spec.is_empty() {
-            return Err(Error::Config("Empty volume specification (check service volumes config)".to_string()));
+            return Err(Error::Config(
+                "Empty volume specification (check service volumes config)".to_string(),
+            ));
         }
 
         // Reject absolute host paths for security
@@ -438,7 +443,9 @@ impl DockerService {
     /// Format: `[host-ip:][host-port:]container-port[/protocol]`
     fn validate_port_spec(spec: &str) -> Result<()> {
         if spec.is_empty() {
-            return Err(Error::Config("Empty port specification (check service ports config)".to_string()));
+            return Err(Error::Config(
+                "Empty port specification (check service ports config)".to_string(),
+            ));
         }
 
         // Reject binding to all interfaces for security (0.0.0.0 for IPv4, [::] for IPv6)
@@ -900,7 +907,9 @@ impl ServiceManager for DockerService {
                     return Err(Error::Docker(format!(
                         "Failed to remove container {} after {} attempts: {}. \
                         Container may be orphaned. Run 'fed stop' or 'fed clean' to retry.",
-                        id, MAX_RETRIES, last_error.trim()
+                        id,
+                        MAX_RETRIES,
+                        last_error.trim()
                     )));
                 }
             }
@@ -933,8 +942,7 @@ impl ServiceManager for DockerService {
                     if !output.status.success() {
                         let error = String::from_utf8_lossy(&output.stderr);
                         // Ignore "No such container" errors - container already gone
-                        if !error.contains("No such container")
-                            && !error.contains("is not running")
+                        if !error.contains("No such container") && !error.contains("is not running")
                         {
                             return Err(Error::Docker(format!(
                                 "Docker kill command failed for container {}: {}",
@@ -1189,9 +1197,7 @@ impl ServiceManager for DockerService {
             // Gracefully handle container not found or other errors
             let logs_result = tokio::time::timeout(
                 DOCKER_LOGS_TIMEOUT,
-                tokio::process::Command::new("docker")
-                    .args(&args)
-                    .output(),
+                tokio::process::Command::new("docker").args(&args).output(),
             )
             .await;
 

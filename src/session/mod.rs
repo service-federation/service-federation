@@ -410,8 +410,9 @@ impl Session {
     pub fn ensure_logs_dir(&self) -> Result<()> {
         let logs_dir = self.logs_dir();
         if !logs_dir.exists() {
-            fs::create_dir_all(&logs_dir)
-                .map_err(|e| Error::Filesystem(format!("Failed to create logs directory: {}", e)))?;
+            fs::create_dir_all(&logs_dir).map_err(|e| {
+                Error::Filesystem(format!("Failed to create logs directory: {}", e))
+            })?;
         }
         Ok(())
     }
@@ -444,8 +445,9 @@ impl Session {
     /// Mark a service as installed
     pub fn mark_installed(&self, service_name: &str) -> Result<()> {
         let installed_dir = self.session_dir.join("installed");
-        fs::create_dir_all(&installed_dir)
-            .map_err(|e| Error::Filesystem(format!("Failed to create installed directory: {}", e)))?;
+        fs::create_dir_all(&installed_dir).map_err(|e| {
+            Error::Filesystem(format!("Failed to create installed directory: {}", e))
+        })?;
 
         let sanitized = sanitize_service_name_for_path(service_name)?;
         let marker_file = installed_dir.join(sanitized);

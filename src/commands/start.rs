@@ -137,10 +137,7 @@ pub async fn run_start(
                     }
                     Err(e) => {
                         out.error(" failed");
-                        out.error(&format!(
-                            "\nError starting dependency '{}': {}",
-                            dep, e
-                        ));
+                        out.error(&format!("\nError starting dependency '{}': {}", dep, e));
                         orchestrator.cleanup().await;
                         return Err(e.into());
                     }
@@ -726,10 +723,7 @@ async fn run_dry_run(
                     };
                     out.status(&format!(
                         "  [CONFLICT] Default port {} ({}) occupied by {} - resolved to {}",
-                        default_port,
-                        resolution.param_name,
-                        process_info,
-                        resolution.resolved_port
+                        default_port, resolution.param_name, process_info, resolution.resolved_port
                     ));
                 }
                 PortResolutionReason::Random => {

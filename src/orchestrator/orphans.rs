@@ -61,7 +61,9 @@ impl<'a> OrphanCleaner<'a> {
         .map_err(|e| Error::Docker(format!("Failed to list Docker containers: {}", e)))?;
 
         if !output.status.success() {
-            return Err(Error::Docker("Failed to list Docker containers".to_string()));
+            return Err(Error::Docker(
+                "Failed to list Docker containers".to_string(),
+            ));
         }
 
         let all_containers: HashSet<String> = String::from_utf8_lossy(&output.stdout)
@@ -109,10 +111,7 @@ impl<'a> OrphanCleaner<'a> {
         for (name, svc) in services {
             // Only check services with PIDs that are marked as stopped/stale
             if let Some(pid) = svc.pid {
-                let is_stopped = matches!(
-                    svc.status,
-                    Status::Stopped | Status::Failing
-                );
+                let is_stopped = matches!(svc.status, Status::Stopped | Status::Failing);
 
                 if is_stopped && super::core::is_pid_alive(pid) {
                     orphans.push((name, pid));
@@ -160,7 +159,11 @@ impl<'a> OrphanCleaner<'a> {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 // Ignore "No such container" - already gone
                 if !stderr.contains("No such container") {
-                    tracing::warn!("Failed to remove orphaned container '{}': {}", container, stderr.trim());
+                    tracing::warn!(
+                        "Failed to remove orphaned container '{}': {}",
+                        container,
+                        stderr.trim()
+                    );
                 }
             }
         }
@@ -238,7 +241,11 @@ impl<'a> OrphanCleaner<'a> {
             let mut state = self.orchestrator.state_tracker.write().await;
             for (name, _) in &orphans {
                 if let Err(e) = state.unregister_service(name).await {
-                    tracing::warn!("Failed to unregister orphaned service '{}' from state: {}", name, e);
+                    tracing::warn!(
+                        "Failed to unregister orphaned service '{}' from state: {}",
+                        name,
+                        e
+                    );
                 }
             }
             if let Err(e) = state.save().await {
@@ -249,4 +256,3 @@ impl<'a> OrphanCleaner<'a> {
         killed
     }
 }
-

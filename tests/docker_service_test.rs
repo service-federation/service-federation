@@ -553,7 +553,10 @@ async fn test_stop_succeeds_when_container_removed() {
 
     // Stop should succeed - container is removed
     let result = service.stop().await;
-    assert!(result.is_ok(), "Stop should succeed when container can be removed");
+    assert!(
+        result.is_ok(),
+        "Stop should succeed when container can be removed"
+    );
 
     // Verify status is Stopped
     assert_eq!(service.status(), Status::Stopped);
@@ -597,5 +600,8 @@ async fn test_stop_retries_on_transient_failure() {
         .expect("ps command");
 
     let output = String::from_utf8_lossy(&check.stdout);
-    assert!(output.trim().is_empty(), "Container should be fully removed");
+    assert!(
+        output.trim().is_empty(),
+        "Container should be fully removed"
+    );
 }

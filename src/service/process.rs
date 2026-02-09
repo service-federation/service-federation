@@ -896,7 +896,6 @@ impl ProcessService {
     fn get_process_group(_pid: u32) -> Option<nix::unistd::Pid> {
         None
     }
-
 }
 
 #[cfg(unix)]

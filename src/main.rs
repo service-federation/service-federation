@@ -118,14 +118,20 @@ async fn run() -> anyhow::Result<()> {
             return commands::run_doctor(&out).await;
         }
         Commands::Session(session_cmd) => {
-            return commands::run_session(session_cmd, cli.workdir.clone(), cli.profile.clone(), &out)
-                .await;
+            return commands::run_session(
+                session_cmd,
+                cli.workdir.clone(),
+                cli.profile.clone(),
+                &out,
+            )
+            .await;
         }
         Commands::Package(package_cmd) => {
             return commands::run_package(package_cmd, &out).await;
         }
         Commands::Ports(ref ports_cmd) => {
-            return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone(), &out).await;
+            return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone(), &out)
+                .await;
         }
         _ => {} // fall through to config-loading path
     }
@@ -193,8 +199,7 @@ async fn run() -> anyhow::Result<()> {
                 cli::DebugCommands::CircuitBreaker { json, .. } => *json,
             };
 
-            return commands::run_debug(debug_command, &config, work_dir, json, &out)
-                .await;
+            return commands::run_debug(debug_command, &config, work_dir, json, &out).await;
         }
         _ => {} // fall through to orchestrator path
     }
@@ -216,9 +221,8 @@ async fn run() -> anyhow::Result<()> {
                 "Warning: Config invalid ({}), stopping from state tracker",
                 config_err
             );
-            let work_dir = resolve_work_dir(cli.workdir, &config_path).unwrap_or_else(|_| {
-                std::env::current_dir().unwrap_or_default()
-            });
+            let work_dir = resolve_work_dir(cli.workdir, &config_path)
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
             commands::run_stop_from_state(&work_dir, services.clone(), &out).await?;
             return Ok(());
         }
@@ -383,7 +387,8 @@ async fn run() -> anyhow::Result<()> {
 
             let available_scripts = orchestrator.list_scripts();
             if available_scripts.contains(script_name) {
-                commands::run_script(&mut orchestrator, script_name, &extra_args, false, &out).await?;
+                commands::run_script(&mut orchestrator, script_name, &extra_args, false, &out)
+                    .await?;
             } else {
                 eprintln!("Unknown command or script: '{}'", script_name);
                 eprintln!("\nAvailable scripts:");
@@ -406,7 +411,16 @@ async fn run() -> anyhow::Result<()> {
             build_args,
             json,
         } => {
-            commands::run_build(&orchestrator, &config, services, tag, build_args, json, &out).await?;
+            commands::run_build(
+                &orchestrator,
+                &config,
+                services,
+                tag,
+                build_args,
+                json,
+                &out,
+            )
+            .await?;
         }
         Commands::Top { interval } => {
             commands::run_top(&orchestrator, interval, &out).await?;

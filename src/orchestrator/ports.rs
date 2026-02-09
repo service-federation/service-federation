@@ -77,8 +77,7 @@ pub(super) async fn collect_managed_ports(
         // Fallback: also check session port cache for backwards compatibility
         // with sessions that predate global port persistence.
         if global_ports.is_empty() {
-            if let Ok(Some(session)) =
-                crate::session::Session::current_for_workdir(Some(work_dir))
+            if let Ok(Some(session)) = crate::session::Session::current_for_workdir(Some(work_dir))
             {
                 for &port in session.get_all_ports().values() {
                     managed_ports.insert(port);

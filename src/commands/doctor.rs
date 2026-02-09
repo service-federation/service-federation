@@ -29,7 +29,9 @@ pub async fn run_doctor(out: &dyn UserOutput) -> anyhow::Result<()> {
                     out.finish_progress("Running");
                 }
                 _ => {
-                    out.finish_progress("Not running (start Docker Desktop or run: sudo systemctl start docker)");
+                    out.finish_progress(
+                        "Not running (start Docker Desktop or run: sudo systemctl start docker)",
+                    );
                     all_ok = false;
                 }
             }

@@ -441,9 +441,7 @@ impl App {
                             Status::Running | Status::Healthy | Status::Failing => {
                                 orch.stop(&service_name).await
                             }
-                            Status::Stopped => {
-                                orch.start(&service_name).await
-                            }
+                            Status::Stopped => orch.start(&service_name).await,
                             _ => Ok(()),
                         }
                     };
@@ -542,12 +540,8 @@ impl App {
                     let result = {
                         let orch = self.orchestrator.write().await;
                         match status {
-                            Status::Running | Status::Healthy => {
-                                orch.stop(&service_name).await
-                            }
-                            Status::Stopped | Status::Failing => {
-                                orch.start(&service_name).await
-                            }
+                            Status::Running | Status::Healthy => orch.stop(&service_name).await,
+                            Status::Stopped | Status::Failing => orch.start(&service_name).await,
                             _ => Ok(()),
                         }
                     };
@@ -895,12 +889,8 @@ impl App {
                 let result = {
                     let orch = self.orchestrator.write().await;
                     match status {
-                        Status::Running | Status::Healthy => {
-                            orch.stop(&name).await
-                        }
-                        Status::Stopped => {
-                            orch.start(&name).await
-                        }
+                        Status::Running | Status::Healthy => orch.stop(&name).await,
+                        Status::Stopped => orch.start(&name).await,
                         _ => Ok(()),
                     }
                 };

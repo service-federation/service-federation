@@ -174,24 +174,15 @@ mod tests {
             ("web", &["frontend"]),
             ("db", &[]),
         ]);
-        let result = config.expand_service_selection(&[
-            "db".to_string(),
-            "@frontend".to_string(),
-        ]);
+        let result = config.expand_service_selection(&["db".to_string(), "@frontend".to_string()]);
         assert_eq!(result, vec!["db", "web"]);
     }
 
     #[test]
     fn expand_deduplicates_when_name_matches_tag() {
-        let config = config_with_services(&[
-            ("api", &["backend"]),
-            ("worker", &["backend"]),
-        ]);
+        let config = config_with_services(&[("api", &["backend"]), ("worker", &["backend"])]);
         // "api" appears both explicitly and via @backend
-        let result = config.expand_service_selection(&[
-            "api".to_string(),
-            "@backend".to_string(),
-        ]);
+        let result = config.expand_service_selection(&["api".to_string(), "@backend".to_string()]);
         assert_eq!(result, vec!["api", "worker"]);
     }
 
@@ -229,10 +220,8 @@ mod tests {
             ("cache", &["critical"]),
             ("web", &["frontend"]),
         ]);
-        let result = config.expand_service_selection(&[
-            "@backend".to_string(),
-            "@critical".to_string(),
-        ]);
+        let result =
+            config.expand_service_selection(&["@backend".to_string(), "@critical".to_string()]);
         // api, worker from @backend; api, cache from @critical — deduplicated
         assert_eq!(result, vec!["api", "cache", "worker"]);
     }

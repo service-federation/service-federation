@@ -29,10 +29,7 @@ impl<'a> ScriptRunner<'a> {
     ///
     /// Resolves dependencies (starting services or running dependent scripts),
     /// then executes the script with a 5-minute timeout.
-    pub async fn run_script(
-        &self,
-        script_name: &str,
-    ) -> Result<std::process::Output> {
+    pub async fn run_script(&self, script_name: &str) -> Result<std::process::Output> {
         let script = self
             .orchestrator
             .config
@@ -75,7 +72,10 @@ impl<'a> ScriptRunner<'a> {
             .resolver
             .resolve_template_shell_safe(&script.script, &params)
             .map_err(|e| {
-                Error::TemplateResolution(format!("Failed to resolve script '{}': {}", script_name, e))
+                Error::TemplateResolution(format!(
+                    "Failed to resolve script '{}': {}",
+                    script_name, e
+                ))
             })?;
 
         // Determine working directory
@@ -201,7 +201,10 @@ impl<'a> ScriptRunner<'a> {
             .resolver
             .resolve_template_shell_safe(&script.script, &params)
             .map_err(|e| {
-                Error::TemplateResolution(format!("Failed to resolve script '{}': {}", script_name, e))
+                Error::TemplateResolution(format!(
+                    "Failed to resolve script '{}': {}",
+                    script_name, e
+                ))
             })?;
 
         // Create resolved script for execution
@@ -309,7 +312,10 @@ impl<'a> ScriptRunner<'a> {
             .resolver
             .resolve_template_shell_safe(&original_script.script, &child_params)
             .map_err(|e| {
-                Error::TemplateResolution(format!("Failed to resolve script '{}': {}", script_name, e))
+                Error::TemplateResolution(format!(
+                    "Failed to resolve script '{}': {}",
+                    script_name, e
+                ))
             })?;
 
         // Create a modified script with resolved environment and command
@@ -323,7 +329,8 @@ impl<'a> ScriptRunner<'a> {
         };
 
         // Execute script in child context
-        let result = execute_script_command(&isolated_script, extra_args, &self.orchestrator.work_dir).await;
+        let result =
+            execute_script_command(&isolated_script, extra_args, &self.orchestrator.work_dir).await;
 
         // Cleanup child orchestrator (stops all services started in isolation)
         tracing::debug!("Cleaning up isolated context for script '{}'", script_name);

@@ -279,10 +279,7 @@ fn print_ports_human_readable(ports: &[PortDebugInfo], out: &dyn UserOutput) {
 }
 
 fn print_circuit_breaker_human_readable(info: &CircuitBreakerDebugOutput, out: &dyn UserOutput) {
-    out.status(&format!(
-        "\nCircuit Breaker Status for '{}'",
-        info.service
-    ));
+    out.status(&format!("\nCircuit Breaker Status for '{}'", info.service));
     out.status("=====================================\n");
 
     out.status(&format!("Status: {}", info.status));

@@ -2371,7 +2371,10 @@ mod tests {
         register_stopped_service(&mut tracker, "svc").await;
 
         let transition = crate::service::StateTransition::starting();
-        tracker.apply_state_transition("svc", transition).await.unwrap();
+        tracker
+            .apply_state_transition("svc", transition)
+            .await
+            .unwrap();
 
         let state = tracker.get_service("svc").await.unwrap();
         assert_eq!(state.status, Status::Starting);
@@ -2474,7 +2477,10 @@ mod tests {
         let (mut tracker, _temp_dir) = create_test_tracker().await;
 
         let result = tracker
-            .apply_state_transition("no-such-service", crate::service::StateTransition::starting())
+            .apply_state_transition(
+                "no-such-service",
+                crate::service::StateTransition::starting(),
+            )
             .await;
         assert!(result.is_err());
     }
@@ -2580,7 +2586,10 @@ mod tests {
         assert!(is_new, "First registration should return true (new)");
 
         let retrieved = tracker.get_service("svc-a").await;
-        assert!(retrieved.is_some(), "Service should be retrievable after registration");
+        assert!(
+            retrieved.is_some(),
+            "Service should be retrievable after registration"
+        );
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.id, "svc-a");
         assert_eq!(retrieved.status, Status::Running);
@@ -2599,11 +2608,18 @@ mod tests {
 
         let state2 = make_service_state("svc-a", ServiceType::Docker);
         let second = tracker.register_service(state2).await.unwrap();
-        assert!(!second, "Second registration of same id should return false (updated)");
+        assert!(
+            !second,
+            "Second registration of same id should return false (updated)"
+        );
 
         // The update path only updates status, service_type, namespace, started_at, startup_message
         let retrieved = tracker.get_service("svc-a").await.unwrap();
-        assert_eq!(retrieved.service_type, ServiceType::Docker, "service_type should be updated");
+        assert_eq!(
+            retrieved.service_type,
+            ServiceType::Docker,
+            "service_type should be updated"
+        );
     }
 
     #[tokio::test]
@@ -2630,12 +2646,18 @@ mod tests {
         let retrieved = tracker.get_service("full-svc").await.unwrap();
         assert_eq!(retrieved.status, Status::Healthy);
         assert_eq!(retrieved.container_id, Some("abc123def".to_string()));
-        assert_eq!(retrieved.external_repo, Some("github.com/test/repo".to_string()));
+        assert_eq!(
+            retrieved.external_repo,
+            Some("github.com/test/repo".to_string())
+        );
         assert_eq!(retrieved.namespace, "external");
         assert_eq!(retrieved.restart_count, 3);
         assert!(retrieved.last_restart_at.is_some());
         assert_eq!(retrieved.consecutive_failures, 1);
-        assert_eq!(retrieved.startup_message, Some("Running on port 8080".to_string()));
+        assert_eq!(
+            retrieved.startup_message,
+            Some("Running on port 8080".to_string())
+        );
     }
 
     #[tokio::test]
@@ -2681,7 +2703,10 @@ mod tests {
         // Unregistering a service that doesn't exist should not error
         // (DELETE WHERE id = ? simply affects 0 rows)
         let result = tracker.unregister_service("ghost").await;
-        assert!(result.is_ok(), "Unregistering nonexistent service should succeed silently");
+        assert!(
+            result.is_ok(),
+            "Unregistering nonexistent service should succeed silently"
+        );
     }
 
     #[tokio::test]
@@ -3031,7 +3056,10 @@ mod tests {
         let result = tracker
             .add_service_port("no-such-svc", "PORT".to_string(), 8080)
             .await;
-        assert!(result.is_err(), "Adding port to nonexistent service should error");
+        assert!(
+            result.is_err(),
+            "Adding port to nonexistent service should error"
+        );
     }
 
     #[tokio::test]
@@ -3106,7 +3134,10 @@ mod tests {
         assert!(globals.is_empty(), "All port resolutions should be cleared");
 
         let allocated = tracker.get_allocated_ports().await;
-        assert!(allocated.is_empty(), "Allocated ports should also be cleared");
+        assert!(
+            allocated.is_empty(),
+            "Allocated ports should also be cleared"
+        );
     }
 
     #[tokio::test]

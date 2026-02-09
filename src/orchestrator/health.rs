@@ -109,11 +109,7 @@ impl<'a> HealthCheckRunner<'a> {
 
     /// Wait for a service to become healthy (used by script dependencies).
     /// Returns Ok(()) when healthy, or Err after timeout.
-    pub async fn wait_for_healthy(
-        &self,
-        service_name: &str,
-        timeout: Duration,
-    ) -> Result<()> {
+    pub async fn wait_for_healthy(&self, service_name: &str, timeout: Duration) -> Result<()> {
         let checker = {
             let health_checkers = self.orchestrator.health_checkers.read().await;
             match health_checkers.get(service_name) {

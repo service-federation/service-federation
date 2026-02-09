@@ -163,10 +163,7 @@ async fn ensure_services_stopped(
     }
 
     if force {
-        out.status(&format!(
-            "Stopping {} running service(s)...",
-            running.len()
-        ));
+        out.status(&format!("Stopping {} running service(s)...", running.len()));
         // Use the state-tracker-based stop (no config needed)
         super::run_stop_from_state(work_dir, vec![], out).await?;
     } else {

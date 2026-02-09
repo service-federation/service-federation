@@ -31,10 +31,7 @@ pub async fn stop_service_by_state(
             StopResult::Failed
         }
     } else {
-        StopResult::Skipped(format!(
-            "no PID or container ID for service '{}'",
-            name
-        ))
+        StopResult::Skipped(format!("no PID or container ID for service '{}'", name))
     }
 }
 
@@ -137,8 +134,8 @@ pub use service_federation::error::validate_pid_start_time;
 ///
 /// Sends SIGTERM first, waits up to 5 seconds, then sends SIGKILL.
 pub async fn graceful_process_kill(pid: u32) -> bool {
-    use tokio::process::Command;
     use std::time::Duration;
+    use tokio::process::Command;
 
     // Check if process exists first
     let exists = Command::new("kill")

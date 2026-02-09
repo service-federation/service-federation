@@ -154,16 +154,15 @@ mod tests {
     fn dev_falls_back_to_default() {
         let param = param_with_default("fallback");
         let val = param.get_value_for_environment(&Environment::Development);
-        assert_eq!(
-            val.unwrap(),
-            &serde_yaml::Value::String("fallback".into())
-        );
+        assert_eq!(val.unwrap(), &serde_yaml::Value::String("fallback".into()));
     }
 
     #[test]
     fn dev_returns_none_when_nothing_set() {
         let param = param_empty();
-        assert!(param.get_value_for_environment(&Environment::Development).is_none());
+        assert!(param
+            .get_value_for_environment(&Environment::Development)
+            .is_none());
     }
 
     #[test]
@@ -174,26 +173,22 @@ mod tests {
             ..param_empty()
         };
         let val = param.get_value_for_environment(&Environment::Staging);
-        assert_eq!(
-            val.unwrap(),
-            &serde_yaml::Value::String("stage-val".into())
-        );
+        assert_eq!(val.unwrap(), &serde_yaml::Value::String("stage-val".into()));
     }
 
     #[test]
     fn staging_falls_back_to_default() {
         let param = param_with_default("fallback");
         let val = param.get_value_for_environment(&Environment::Staging);
-        assert_eq!(
-            val.unwrap(),
-            &serde_yaml::Value::String("fallback".into())
-        );
+        assert_eq!(val.unwrap(), &serde_yaml::Value::String("fallback".into()));
     }
 
     #[test]
     fn staging_returns_none_when_nothing_set() {
         let param = param_empty();
-        assert!(param.get_value_for_environment(&Environment::Staging).is_none());
+        assert!(param
+            .get_value_for_environment(&Environment::Staging)
+            .is_none());
     }
 
     #[test]
@@ -204,26 +199,22 @@ mod tests {
             ..param_empty()
         };
         let val = param.get_value_for_environment(&Environment::Production);
-        assert_eq!(
-            val.unwrap(),
-            &serde_yaml::Value::String("prod-val".into())
-        );
+        assert_eq!(val.unwrap(), &serde_yaml::Value::String("prod-val".into()));
     }
 
     #[test]
     fn production_falls_back_to_default() {
         let param = param_with_default("fallback");
         let val = param.get_value_for_environment(&Environment::Production);
-        assert_eq!(
-            val.unwrap(),
-            &serde_yaml::Value::String("fallback".into())
-        );
+        assert_eq!(val.unwrap(), &serde_yaml::Value::String("fallback".into()));
     }
 
     #[test]
     fn production_returns_none_when_nothing_set() {
         let param = param_empty();
-        assert!(param.get_value_for_environment(&Environment::Production).is_none());
+        assert!(param
+            .get_value_for_environment(&Environment::Production)
+            .is_none());
     }
 
     #[test]
@@ -234,7 +225,9 @@ mod tests {
             ..param_empty()
         };
         // Staging should not see development/develop values
-        assert!(param.get_value_for_environment(&Environment::Staging).is_none());
+        assert!(param
+            .get_value_for_environment(&Environment::Staging)
+            .is_none());
     }
 
     #[test]
@@ -243,7 +236,9 @@ mod tests {
             staging: Some(serde_yaml::Value::String("stage-only".into())),
             ..param_empty()
         };
-        assert!(param.get_value_for_environment(&Environment::Production).is_none());
+        assert!(param
+            .get_value_for_environment(&Environment::Production)
+            .is_none());
     }
 
     #[test]
