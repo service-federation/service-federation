@@ -335,10 +335,12 @@ async fn run() -> anyhow::Result<()> {
                 &mut orchestrator,
                 &config,
                 services,
-                watch,
-                replace,
-                dry_run,
-                &config_path,
+                commands::StartOptions {
+                    watch,
+                    replace,
+                    dry_run,
+                    config_path: &config_path,
+                },
                 &out,
             )
             .await?;

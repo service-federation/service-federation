@@ -1205,9 +1205,9 @@ scripts:
         .await;
 
     // The script should have run (exit 1 is a valid execution, not a spawn error)
-    match result {
-        Ok(status) => assert!(!status.success(), "Script should have failed with exit 1"),
-        Err(_) => {} // ScriptFailed error is also acceptable
+    // ScriptFailed error is also acceptable
+    if let Ok(status) = result {
+        assert!(!status.success(), "Script should have failed with exit 1");
     }
 
     // After the failing script, dep-svc should NOT be running in the parent context.

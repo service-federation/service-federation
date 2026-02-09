@@ -11,16 +11,26 @@ use std::sync::Arc;
 
 use super::lifecycle::{graceful_docker_stop, graceful_process_kill, validate_pid_start_time};
 
+pub struct StartOptions<'a> {
+    pub watch: bool,
+    pub replace: bool,
+    pub dry_run: bool,
+    pub config_path: &'a std::path::Path,
+}
+
 pub async fn run_start(
     orchestrator: &mut Orchestrator,
     config: &Config,
     services: Vec<String>,
-    watch: bool,
-    replace: bool,
-    dry_run: bool,
-    config_path: &std::path::Path,
+    opts: StartOptions<'_>,
     out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
+    let StartOptions {
+        watch,
+        replace,
+        dry_run,
+        config_path,
+    } = opts;
     let services_to_start = if services.is_empty() {
         // Use entrypoint
         if let Some(ref ep) = config.entrypoint {

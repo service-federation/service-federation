@@ -198,7 +198,7 @@ impl<'a> OrphanCleaner<'a> {
                 // Use killpg() for process group leaders so child processes
                 // are also cleaned up, matching ProcessService::stop() behavior.
                 let pgid = getpgid(Some(nix_pid)).ok();
-                let is_group_leader = pgid.map_or(false, |pg| pg == nix_pid);
+                let is_group_leader = pgid == Some(nix_pid);
 
                 let send_signal = |sig: Signal| -> bool {
                     if is_group_leader {

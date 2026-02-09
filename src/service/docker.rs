@@ -890,7 +890,7 @@ impl ServiceManager for DockerService {
 
                 if attempt < MAX_RETRIES {
                     // Wait before retry with exponential backoff
-                    let delay_ms = 100 * 2u64.pow(attempt as u32);
+                    let delay_ms = 100 * 2u64.pow(attempt);
                     tracing::warn!(
                         "Failed to remove container {} (attempt {}/{}): {}. Retrying in {}ms...",
                         id,

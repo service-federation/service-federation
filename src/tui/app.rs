@@ -434,7 +434,7 @@ impl App {
             KeyCode::Char('s') => {
                 // Toggle start/stop
                 if let Some(service) = self.services.iter().find(|s| s.name == service_name) {
-                    let status = service.status.clone();
+                    let status = service.status;
                     let result = {
                         let orch = self.orchestrator.write().await;
                         match status {
@@ -536,7 +536,7 @@ impl App {
                 // Toggle start/stop for selected service
                 if let Some(service) = self.services.get(self.graph_selected) {
                     let service_name = service.name.clone();
-                    let status = service.status.clone();
+                    let status = service.status;
                     let result = {
                         let orch = self.orchestrator.write().await;
                         match status {
@@ -885,7 +885,7 @@ impl App {
         if let Some(idx) = self.selected_service {
             if let Some(service) = self.services.get(idx) {
                 let name = service.name.clone();
-                let status = service.status.clone();
+                let status = service.status;
                 let result = {
                     let orch = self.orchestrator.write().await;
                     match status {

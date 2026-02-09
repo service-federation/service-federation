@@ -130,8 +130,10 @@ mod tests {
     fn config_with_services(services: &[(&str, &[&str])]) -> Config {
         let mut config = Config::default();
         for &(name, tags) in services {
-            let mut svc = Service::default();
-            svc.tags = tags.iter().map(|t| t.to_string()).collect();
+            let svc = Service {
+                tags: tags.iter().map(|t| t.to_string()).collect(),
+                ..Default::default()
+            };
             config.services.insert(name.to_string(), svc);
         }
         config

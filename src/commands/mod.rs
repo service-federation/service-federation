@@ -32,7 +32,7 @@ pub use ports::run_ports;
 pub use restart::run_restart;
 pub use script::run_script;
 pub use session::run_session;
-pub use start::run_start;
+pub use start::{run_start, StartOptions};
 pub use status::run_status;
 pub use stop::{run_stop, run_stop_from_state};
 pub use top::run_top;
