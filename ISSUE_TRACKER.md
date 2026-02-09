@@ -51,3 +51,4 @@
 | SF-00136 | Done | CRITICAL | Low | Rustdoc errors under `-D warnings` — Fixed: removed doc links to private types (OrphanCleaner, HealthCheckRunner, ScriptRunner), fixed broken links in factory.rs, escaped `[::]` in docker.rs. |
 | SF-00137 | Done | CRITICAL | Low | `run_start` has 8 args — Fixed: introduced `StartOptions` struct bundling `watch`, `replace`, `dry_run`, `config_path`. |
 | SF-00138 | Done | HIGH | Low | Version bump 2.2.0 → 2.3.0 for release. |
+| SF-00139 | Done | MEDIUM | High medium | `fed ws` / `fed workspace` — git worktree management for isolated service stacks. Commands: new, list, cd, rm, prune, setup, init-shell. Shell integration via FED_WS_CD_FILE for auto-cd. Each worktree gets independent .fed/ state, ports, containers. |
