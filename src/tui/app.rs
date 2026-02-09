@@ -434,23 +434,42 @@ impl App {
             KeyCode::Char('s') => {
                 // Toggle start/stop
                 if let Some(service) = self.services.iter().find(|s| s.name == service_name) {
-                    let orch = self.orchestrator.write().await;
-                    match service.status {
-                        Status::Running | Status::Healthy | Status::Failing => {
-                            orch.stop(&service_name).await?;
+                    let status = service.status.clone();
+                    let result = {
+                        let orch = self.orchestrator.write().await;
+                        match status {
+                            Status::Running | Status::Healthy | Status::Failing => {
+                                orch.stop(&service_name).await
+                            }
+                            Status::Stopped => {
+                                orch.start(&service_name).await
+                            }
+                            _ => Ok(()),
                         }
-                        Status::Stopped => {
-                            orch.start(&service_name).await?;
-                        }
-                        _ => {}
+                    };
+                    if let Err(e) = result {
+                        self.set_status(
+                            &format!("Failed to toggle '{}': {}", service_name, e),
+                            StatusLevel::Error,
+                            5,
+                        );
                     }
                 }
             }
             KeyCode::Char('r') => {
                 // Restart service
-                let orch = self.orchestrator.write().await;
-                let _ = orch.stop(&service_name).await;
-                orch.start(&service_name).await?;
+                let result = {
+                    let orch = self.orchestrator.write().await;
+                    let _ = orch.stop(&service_name).await;
+                    orch.start(&service_name).await
+                };
+                if let Err(e) = result {
+                    self.set_status(
+                        &format!("Failed to restart '{}': {}", service_name, e),
+                        StatusLevel::Error,
+                        5,
+                    );
+                }
             }
             KeyCode::Char('l') => {
                 // View logs
@@ -519,15 +538,25 @@ impl App {
                 // Toggle start/stop for selected service
                 if let Some(service) = self.services.get(self.graph_selected) {
                     let service_name = service.name.clone();
-                    let orch = self.orchestrator.write().await;
-                    match service.status {
-                        Status::Running | Status::Healthy => {
-                            let _ = orch.stop(&service_name).await;
+                    let status = service.status.clone();
+                    let result = {
+                        let orch = self.orchestrator.write().await;
+                        match status {
+                            Status::Running | Status::Healthy => {
+                                orch.stop(&service_name).await
+                            }
+                            Status::Stopped | Status::Failing => {
+                                orch.start(&service_name).await
+                            }
+                            _ => Ok(()),
                         }
-                        Status::Stopped | Status::Failing => {
-                            let _ = orch.start(&service_name).await;
-                        }
-                        _ => {}
+                    };
+                    if let Err(e) = result {
+                        self.set_status(
+                            &format!("Failed to toggle '{}': {}", service_name, e),
+                            StatusLevel::Error,
+                            5,
+                        );
                     }
                 }
             }
@@ -535,9 +564,18 @@ impl App {
                 // Restart selected service
                 if let Some(service) = self.services.get(self.graph_selected) {
                     let service_name = service.name.clone();
-                    let orch = self.orchestrator.write().await;
-                    let _ = orch.stop(&service_name).await;
-                    let _ = orch.start(&service_name).await;
+                    let result = {
+                        let orch = self.orchestrator.write().await;
+                        let _ = orch.stop(&service_name).await;
+                        orch.start(&service_name).await
+                    };
+                    if let Err(e) = result {
+                        self.set_status(
+                            &format!("Failed to restart '{}': {}", service_name, e),
+                            StatusLevel::Error,
+                            5,
+                        );
+                    }
                 }
             }
             KeyCode::Char('l') => {
@@ -852,16 +890,26 @@ impl App {
     async fn toggle_service(&mut self) -> anyhow::Result<()> {
         if let Some(idx) = self.selected_service {
             if let Some(service) = self.services.get(idx) {
-                let orch = self.orchestrator.write().await;
-
-                match service.status {
-                    Status::Running | Status::Healthy => {
-                        orch.stop(&service.name).await?;
+                let name = service.name.clone();
+                let status = service.status.clone();
+                let result = {
+                    let orch = self.orchestrator.write().await;
+                    match status {
+                        Status::Running | Status::Healthy => {
+                            orch.stop(&name).await
+                        }
+                        Status::Stopped => {
+                            orch.start(&name).await
+                        }
+                        _ => Ok(()),
                     }
-                    Status::Stopped => {
-                        orch.start(&service.name).await?;
-                    }
-                    _ => {}
+                };
+                if let Err(e) = result {
+                    self.set_status(
+                        &format!("Failed to toggle '{}': {}", name, e),
+                        StatusLevel::Error,
+                        5,
+                    );
                 }
             }
         }
@@ -871,9 +919,19 @@ impl App {
     async fn restart_service(&mut self) -> anyhow::Result<()> {
         if let Some(idx) = self.selected_service {
             if let Some(service) = self.services.get(idx) {
-                let orch = self.orchestrator.write().await;
-                let _ = orch.stop(&service.name).await;
-                orch.start(&service.name).await?;
+                let name = service.name.clone();
+                let result = {
+                    let orch = self.orchestrator.write().await;
+                    let _ = orch.stop(&name).await;
+                    orch.start(&name).await
+                };
+                if let Err(e) = result {
+                    self.set_status(
+                        &format!("Failed to restart '{}': {}", name, e),
+                        StatusLevel::Error,
+                        5,
+                    );
+                }
             }
         }
         Ok(())
