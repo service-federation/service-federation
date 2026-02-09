@@ -3,7 +3,10 @@
 //! This module contains the [`Service`] struct and related types for
 //! configuring services in the federation config.
 
-use super::{CircuitBreakerConfig, DependsOn, HealthCheck, ResourceLimits, RestartPolicy};
+use super::{
+    parse_duration_string, CircuitBreakerConfig, DependsOn, HealthCheck, ResourceLimits,
+    RestartPolicy,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -221,32 +224,6 @@ impl Service {
             .as_ref()
             .and_then(|s| parse_duration_string(s))
             .unwrap_or(std::time::Duration::from_secs(10))
-    }
-}
-
-/// Parse duration string like "10s", "30s", "1m", "500ms"
-fn parse_duration_string(s: &str) -> Option<std::time::Duration> {
-    use std::time::Duration;
-
-    let s = s.trim();
-    if s.ends_with("ms") {
-        s.trim_end_matches("ms")
-            .parse::<u64>()
-            .ok()
-            .map(Duration::from_millis)
-    } else if s.ends_with('s') {
-        s.trim_end_matches('s')
-            .parse::<u64>()
-            .ok()
-            .map(Duration::from_secs)
-    } else if s.ends_with('m') {
-        s.trim_end_matches('m')
-            .parse::<u64>()
-            .ok()
-            .map(|m| Duration::from_secs(m * 60))
-    } else {
-        // Default to seconds if no suffix
-        s.parse::<u64>().ok().map(Duration::from_secs)
     }
 }
 

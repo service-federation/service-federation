@@ -169,18 +169,39 @@ impl<'a> OrphanCleaner<'a> {
             #[cfg(unix)]
             {
                 use nix::sys::signal::{self, Signal};
-                use nix::unistd::Pid;
+                use nix::unistd::{getpgid, Pid};
 
                 let nix_pid = Pid::from_raw(*pid as i32);
 
+                // Use killpg() for process group leaders so child processes
+                // are also cleaned up, matching ProcessService::stop() behavior.
+                let pgid = getpgid(Some(nix_pid)).ok();
+                let is_group_leader = pgid.map_or(false, |pg| pg == nix_pid);
+
+                let send_signal = |sig: Signal| -> bool {
+                    if is_group_leader {
+                        signal::killpg(nix_pid, sig).is_ok()
+                    } else {
+                        signal::kill(nix_pid, sig).is_ok()
+                    }
+                };
+
+                let is_alive = || -> bool {
+                    if is_group_leader {
+                        signal::killpg(nix_pid, None).is_ok()
+                    } else {
+                        signal::kill(nix_pid, None).is_ok()
+                    }
+                };
+
                 // Try SIGTERM first
-                if signal::kill(nix_pid, Signal::SIGTERM).is_ok() {
+                if send_signal(Signal::SIGTERM) {
                     // Wait briefly for graceful shutdown
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
                     // If still alive, SIGKILL
-                    if signal::kill(nix_pid, None).is_ok() {
-                        let _ = signal::kill(nix_pid, Signal::SIGKILL);
+                    if is_alive() {
+                        let _ = send_signal(Signal::SIGKILL);
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                     killed += 1;
