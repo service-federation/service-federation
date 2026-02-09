@@ -174,6 +174,10 @@ pub enum Commands {
     #[command(subcommand)]
     Docker(DockerCommands),
 
+    /// Manage git worktrees for isolated service stacks
+    #[command(subcommand, alias = "ws")]
+    Workspace(WorkspaceCommands),
+
     /// Run a script by name (shorthand for `fed run <script>`)
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -298,4 +302,39 @@ impl Default for PortsCommands {
     fn default() -> Self {
         PortsCommands::List { json: false }
     }
+}
+
+#[derive(Subcommand)]
+pub enum WorkspaceCommands {
+    /// Create a worktree and enter it
+    New {
+        /// Branch name (existing or new with -b)
+        branch: String,
+        /// Create a new branch instead of checking out an existing one
+        #[arg(short = 'b', long)]
+        create_branch: bool,
+    },
+    /// List all worktrees
+    #[command(alias = "ls")]
+    List,
+    /// Switch to an existing worktree
+    Cd {
+        /// Worktree branch name
+        name: String,
+    },
+    /// Remove a worktree (stops services first)
+    #[command(alias = "remove")]
+    Rm {
+        /// Worktree branch name
+        name: String,
+        /// Force removal even with uncommitted changes
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Remove worktrees for deleted branches
+    Prune,
+    /// Install shell integration into ~/.zshrc (one-time)
+    Setup,
+    /// Print shell function for eval (used internally by setup)
+    InitShell,
 }

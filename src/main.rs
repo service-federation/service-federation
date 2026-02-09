@@ -133,6 +133,9 @@ async fn run() -> anyhow::Result<()> {
             return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone(), &out)
                 .await;
         }
+        Commands::Workspace(ref ws_cmd) => {
+            return commands::run_workspace(ws_cmd, &out).await;
+        }
         _ => {} // fall through to config-loading path
     }
 
@@ -436,7 +439,8 @@ async fn run() -> anyhow::Result<()> {
         | Commands::Package(_)
         | Commands::Ports(_)
         | Commands::Docker(_)
-        | Commands::Debug(_) => {
+        | Commands::Debug(_)
+        | Commands::Workspace(_) => {
             unreachable!("handled in earlier dispatch tiers");
         }
     }

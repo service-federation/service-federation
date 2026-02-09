@@ -18,6 +18,7 @@ mod stop;
 mod top;
 mod tui;
 mod validate;
+mod workspace;
 
 pub use build::run_build;
 pub use clean::run_clean;
@@ -38,3 +39,4 @@ pub use stop::{run_stop, run_stop_from_state};
 pub use top::run_top;
 pub use tui::run_tui;
 pub use validate::run_validate;
+pub use workspace::run_workspace;
