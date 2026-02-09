@@ -111,6 +111,10 @@ pub(crate) fn fnv1a_32(data: &[u8]) -> u32 {
 const DOCKER_REMOVE_TIMEOUT: Duration = Duration::from_secs(10); // Remove container
 const DOCKER_START_TIMEOUT: Duration = Duration::from_secs(30); // Start container
 const DOCKER_PULL_TIMEOUT: Duration = Duration::from_secs(300); // Pull image (5 minutes)
+const DOCKER_STOP_TIMEOUT: Duration = Duration::from_secs(30); // Stop/kill container (Docker default 10s + margin)
+const DOCKER_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(30); // Healthcheck exec
+const DOCKER_INSPECT_TIMEOUT: Duration = Duration::from_secs(10); // Inspect container
+const DOCKER_LOGS_TIMEOUT: Duration = Duration::from_secs(10); // Fetch container logs
 const LOG_CACHE_TTL: Duration = Duration::from_secs(1); // Cache logs for 1 second
 
 /// Docker-based service manager
@@ -810,24 +814,43 @@ impl ServiceManager for DockerService {
         let container_id = self.container_id.read().clone();
         if let Some(ref id) = container_id {
             // Stop the container
-            let output = tokio::process::Command::new("docker")
-                .args(["stop", id])
-                .output()
-                .await
-                .map_err(|e| {
+            let stop_result = tokio::time::timeout(
+                DOCKER_STOP_TIMEOUT,
+                tokio::process::Command::new("docker")
+                    .args(["stop", id])
+                    .output(),
+            )
+            .await;
+
+            match stop_result {
+                Ok(Ok(output)) => {
+                    if !output.status.success() {
+                        let mut base = self.base.write();
+                        base.set_status(Status::Failing);
+                        let error = String::from_utf8_lossy(&output.stderr);
+                        return Err(Error::Config(format!(
+                            "Docker stop command failed for container {}: {}",
+                            id, error
+                        )));
+                    }
+                }
+                Ok(Err(e)) => {
                     let mut base = self.base.write();
                     base.set_status(Status::Failing);
-                    Error::Config(format!("Failed to execute docker stop command: {}", e))
-                })?;
-
-            if !output.status.success() {
-                let mut base = self.base.write();
-                base.set_status(Status::Failing);
-                let error = String::from_utf8_lossy(&output.stderr);
-                return Err(Error::Config(format!(
-                    "Docker stop command failed for container {}: {}",
-                    id, error
-                )));
+                    return Err(Error::Config(format!(
+                        "Failed to execute docker stop command: {}",
+                        e
+                    )));
+                }
+                Err(_) => {
+                    let mut base = self.base.write();
+                    base.set_status(Status::Failing);
+                    return Err(Error::Timeout(format!(
+                        "docker stop container '{}' (exceeded {} seconds)",
+                        id,
+                        DOCKER_STOP_TIMEOUT.as_secs()
+                    )));
+                }
             }
 
             // Remove the container with retry logic (since we don't use --rm flag)
@@ -897,21 +920,40 @@ impl ServiceManager for DockerService {
     async fn kill(&mut self) -> Result<()> {
         let container_id = self.container_id.read().clone();
         if let Some(ref id) = container_id {
-            let output = tokio::process::Command::new("docker")
-                .args(["kill", id])
-                .output()
-                .await
-                .map_err(|e| {
-                    Error::Config(format!("Failed to execute docker kill command: {}", e))
-                })?;
+            let kill_result = tokio::time::timeout(
+                DOCKER_STOP_TIMEOUT,
+                tokio::process::Command::new("docker")
+                    .args(["kill", id])
+                    .output(),
+            )
+            .await;
 
-            if !output.status.success() {
-                let error = String::from_utf8_lossy(&output.stderr);
-                // Ignore "No such container" errors - container already gone
-                if !error.contains("No such container") && !error.contains("is not running") {
+            match kill_result {
+                Ok(Ok(output)) => {
+                    if !output.status.success() {
+                        let error = String::from_utf8_lossy(&output.stderr);
+                        // Ignore "No such container" errors - container already gone
+                        if !error.contains("No such container")
+                            && !error.contains("is not running")
+                        {
+                            return Err(Error::Config(format!(
+                                "Docker kill command failed for container {}: {}",
+                                id, error
+                            )));
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
                     return Err(Error::Config(format!(
-                        "Docker kill command failed for container {}: {}",
-                        id, error
+                        "Failed to execute docker kill command: {}",
+                        e
+                    )));
+                }
+                Err(_) => {
+                    return Err(Error::Timeout(format!(
+                        "docker kill container '{}' (exceeded {} seconds)",
+                        id,
+                        DOCKER_STOP_TIMEOUT.as_secs()
                     )));
                 }
             }
@@ -967,19 +1009,31 @@ impl ServiceManager for DockerService {
                     );
                     // Run healthcheck inside container using docker exec
                     // Use '/bin/sh' (full path) for Alpine-based images which don't have bash
-                    let output = match tokio::process::Command::new("docker")
-                        .args(["exec", id, "/bin/sh", "-c", cmd])
-                        .output()
-                        .await
-                    {
-                        Ok(out) => out,
-                        Err(e) => {
+                    let exec_result = tokio::time::timeout(
+                        DOCKER_HEALTHCHECK_TIMEOUT,
+                        tokio::process::Command::new("docker")
+                            .args(["exec", id, "/bin/sh", "-c", cmd])
+                            .output(),
+                    )
+                    .await;
+
+                    let output = match exec_result {
+                        Ok(Ok(out)) => out,
+                        Ok(Err(e)) => {
                             tracing::debug!(
                                 "Healthcheck command failed for {}: {:?}",
                                 self.name,
                                 e
                             );
                             return Ok(false); // Container doesn't exist or docker error
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                "Healthcheck timed out for '{}' (exceeded {} seconds)",
+                                self.name,
+                                DOCKER_HEALTHCHECK_TIMEOUT.as_secs()
+                            );
+                            return Ok(false); // Treat timeout as unhealthy
                         }
                     };
 
@@ -1020,13 +1074,25 @@ impl ServiceManager for DockerService {
 
             // No healthcheck configured - fall back to checking if container is running
             // TOCTOU protection: Container might be removed between ID read and inspect
-            let output = match tokio::process::Command::new("docker")
-                .args(["inspect", "--format={{.State.Running}}", id])
-                .output()
-                .await
-            {
-                Ok(out) => out,
-                Err(_) => return Ok(false), // Container doesn't exist or docker error
+            let inspect_result = tokio::time::timeout(
+                DOCKER_INSPECT_TIMEOUT,
+                tokio::process::Command::new("docker")
+                    .args(["inspect", "--format={{.State.Running}}", id])
+                    .output(),
+            )
+            .await;
+
+            let output = match inspect_result {
+                Ok(Ok(out)) => out,
+                Ok(Err(_)) => return Ok(false), // Container doesn't exist or docker error
+                Err(_) => {
+                    tracing::warn!(
+                        "docker inspect timed out for '{}' (exceeded {} seconds)",
+                        self.name,
+                        DOCKER_INSPECT_TIMEOUT.as_secs()
+                    );
+                    return Ok(false); // Treat timeout as not running
+                }
             };
 
             // If inspect command failed (e.g., "No such container"), treat as not running
@@ -1121,13 +1187,25 @@ impl ServiceManager for DockerService {
             ];
 
             // Gracefully handle container not found or other errors
-            let output = match tokio::process::Command::new("docker")
-                .args(&args)
-                .output()
-                .await
-            {
-                Ok(out) => out,
-                Err(_) => return Ok(Vec::new()), // Container doesn't exist or docker error
+            let logs_result = tokio::time::timeout(
+                DOCKER_LOGS_TIMEOUT,
+                tokio::process::Command::new("docker")
+                    .args(&args)
+                    .output(),
+            )
+            .await;
+
+            let output = match logs_result {
+                Ok(Ok(out)) => out,
+                Ok(Err(_)) => return Ok(Vec::new()), // Container doesn't exist or docker error
+                Err(_) => {
+                    tracing::warn!(
+                        "docker logs timed out for '{}' (exceeded {} seconds)",
+                        self.name,
+                        DOCKER_LOGS_TIMEOUT.as_secs()
+                    );
+                    return Ok(Vec::new()); // Return empty logs on timeout
+                }
             };
 
             // If command failed (e.g., "No such container"), return empty logs
