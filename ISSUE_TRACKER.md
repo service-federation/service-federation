@@ -46,3 +46,8 @@
 | SF-00131 | Done | HIGH | Low | `fed doctor` doesn't check Docker daemon health — Fixed: Added `docker info` check after version check succeeds. Shows "Running" or "Not running" with actionable hint to start Docker Desktop or systemctl. |
 | SF-00132 | Done | MEDIUM | Low | No `--version` flag — Fixed: Added `#[command(version)]` to Cli struct. Clap pulls version from Cargo.toml automatically. `fed --version` now prints `fed 2.2.0`. |
 | SF-00133 | Done | MEDIUM | Low medium | Pretty CLI tracing output — Added `CliFormatter` implementing `FormatEvent`: TTY gets colored prefixes (✗/⚠/✓), no timestamps or module paths; non-TTY gets `[HH:MM:SS LEVEL]` format, no ANSI. Made `CliOutput` TTY-aware (colors only when interactive). Added `--verbose/-v` global flag for DEBUG-level output. |
+| SF-00134 | Pending | CRITICAL | Low | `cargo fmt` drift — dozens of files fail `cargo fmt --check` in CI (`-D warnings`) |
+| SF-00135 | Pending | CRITICAL | Low | Clippy errors under `-D warnings` — `unnecessary_map_or` (orphans.rs), `unnecessary_cast` (docker.rs), 3× `clone_on_copy` (tui/app.rs), `field_reassign_with_default` (config/types.rs) |
+| SF-00136 | Pending | CRITICAL | Low | Rustdoc errors under `-D warnings` — 2 broken links in factory.rs:360, unescaped `[::]` in docker.rs:165, private item link warning |
+| SF-00137 | Pending | CRITICAL | Low | `run_start` has 8 args — clippy `too_many_arguments` with `-D warnings`. Introduce `StartOptions` struct. |
+| SF-00138 | Pending | HIGH | Low | Version bump 2.2.0 → 2.3.0 for release |
