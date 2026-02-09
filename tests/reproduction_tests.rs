@@ -6,6 +6,7 @@
 /// 1. TOCTOU race condition in monitoring loop (service removed during health check)
 /// 2. Race condition in state tracker (concurrent failure increments)
 /// 3. Lock ordering deadlock (inconsistent lock acquisition order)
+use service_federation::config::ServiceType;
 use service_federation::{Orchestrator, Parser};
 use std::sync::Arc;
 use std::time::Duration;
@@ -104,7 +105,7 @@ async fn repro_state_tracker_concurrent_failure_increments() {
     // Register a service
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -333,7 +334,7 @@ async fn repro_concurrent_health_failures_race() {
     // Register service
     let service_state = ServiceState::new(
         "failing-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -434,7 +435,7 @@ async fn ACTUAL_BUG_file_lock_race_condition() {
     // Register a service
     let service_state = ServiceState::new(
         "racy-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker1.register_service(service_state).await.unwrap();
@@ -538,7 +539,7 @@ async fn ACTUAL_BUG_multiple_concurrent_increments() {
 
     let service_state = ServiceState::new(
         "buggy-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -695,7 +696,7 @@ async fn FIXED_atomic_increment_prevents_lost_updates() {
 
     let service_state = ServiceState::new(
         "fixed-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -769,7 +770,7 @@ async fn FIXED_atomic_two_concurrent_increments() {
 
     let service_state = ServiceState::new(
         "dual-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();

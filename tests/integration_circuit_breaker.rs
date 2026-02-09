@@ -5,6 +5,7 @@
 /// - Circuit stays open for cooldown period
 /// - Circuit closes after successful health check
 /// - Restart history is cleaned up after 24h
+use service_federation::config::ServiceType;
 use service_federation::state::StateTracker;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -26,7 +27,7 @@ async fn test_circuit_breaker_opens_after_threshold() {
     // Register a service
     let service_state = service_federation::state::ServiceState::new(
         "crash-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -82,7 +83,7 @@ async fn test_circuit_breaker_cooldown_period() {
     // Register a service
     let service_state = service_federation::state::ServiceState::new(
         "cooldown-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -130,7 +131,7 @@ async fn test_circuit_breaker_window_sliding() {
     // Register a service
     let service_state = service_federation::state::ServiceState::new(
         "window-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -190,7 +191,7 @@ async fn test_restart_history_retrieval() {
     // Register a service
     let service_state = service_federation::state::ServiceState::new(
         "history-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -240,7 +241,7 @@ async fn test_circuit_breaker_multiple_services() {
     for i in 1..=3 {
         let service_state = service_federation::state::ServiceState::new(
             format!("service-{}", i),
-            "Process".to_string(),
+            ServiceType::Process,
             "default".to_string(),
         );
         tracker.register_service(service_state).await.unwrap();
@@ -299,7 +300,7 @@ async fn test_circuit_breaker_reset_on_unregister() {
     // Register a service
     let service_state = service_federation::state::ServiceState::new(
         "reset-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -328,7 +329,7 @@ async fn test_circuit_breaker_reset_on_unregister() {
     // Register the same service again (simulates service being started fresh)
     let service_state = service_federation::state::ServiceState::new(
         "reset-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -361,7 +362,7 @@ async fn test_consecutive_failures_increment_and_reset() {
     // Register a service
     let service_state = service_federation::state::ServiceState::new(
         "failure-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -404,7 +405,7 @@ async fn test_circuit_breaker_time_remaining() {
     // Register a service
     let service_state = service_federation::state::ServiceState::new(
         "timer-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
