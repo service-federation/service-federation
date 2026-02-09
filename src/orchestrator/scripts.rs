@@ -463,3 +463,122 @@ pub(super) fn script_uses_positional_params(script: &str) -> bool {
 
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // script_uses_positional_params tests
+    // ========================================================================
+
+    #[test]
+    fn positional_dollar_one() {
+        assert!(script_uses_positional_params("echo $1"));
+    }
+
+    #[test]
+    fn positional_dollar_two() {
+        assert!(script_uses_positional_params("echo $2"));
+    }
+
+    #[test]
+    fn positional_dollar_nine() {
+        assert!(script_uses_positional_params("echo $9"));
+    }
+
+    #[test]
+    fn positional_dollar_at() {
+        assert!(script_uses_positional_params("echo $@"));
+    }
+
+    #[test]
+    fn positional_dollar_star() {
+        assert!(script_uses_positional_params("echo $*"));
+    }
+
+    #[test]
+    fn positional_braced_digit() {
+        assert!(script_uses_positional_params("echo ${2}"));
+    }
+
+    #[test]
+    fn positional_braced_two_digit() {
+        // ${10} should match because ${ followed by digit
+        assert!(script_uses_positional_params("echo ${10}"));
+    }
+
+    #[test]
+    fn positional_braced_at() {
+        assert!(script_uses_positional_params("echo ${@}"));
+    }
+
+    #[test]
+    fn positional_braced_star() {
+        assert!(script_uses_positional_params("echo ${*}"));
+    }
+
+    #[test]
+    fn positional_in_quoted_string() {
+        // "$@" still contains $@ as a substring
+        assert!(script_uses_positional_params(r#"echo "$@""#));
+    }
+
+    #[test]
+    fn no_params_plain_command() {
+        assert!(!script_uses_positional_params("echo hello"));
+    }
+
+    #[test]
+    fn no_params_empty_string() {
+        assert!(!script_uses_positional_params(""));
+    }
+
+    #[test]
+    fn dollar_zero_is_not_positional() {
+        // $0 is the script name, not a positional parameter
+        assert!(!script_uses_positional_params("echo $0"));
+    }
+
+    #[test]
+    fn named_variable_not_positional() {
+        // $HOME is a named env var, not positional
+        assert!(!script_uses_positional_params("echo $HOME"));
+    }
+
+    #[test]
+    fn braced_named_variable_not_positional() {
+        // ${HOME} starts with ${ followed by a letter, not a digit
+        assert!(!script_uses_positional_params("echo ${HOME}"));
+    }
+
+    #[test]
+    fn dollar_dollar_one_matches() {
+        // $$1 contains $1 as a substring, so the function returns true.
+        // This is technically $$ (current PID) followed by literal "1",
+        // but our simple substring check matches it.
+        assert!(script_uses_positional_params("echo $$1"));
+    }
+
+    #[test]
+    fn positional_mid_script() {
+        assert!(script_uses_positional_params("npm test -- $1 --verbose"));
+    }
+
+    #[test]
+    fn multiple_positional_params() {
+        assert!(script_uses_positional_params("cmd $1 $2 $3"));
+    }
+
+    #[test]
+    fn dollar_hash_not_positional() {
+        // $# is the argument count, not a positional param
+        assert!(!script_uses_positional_params("echo $#"));
+    }
+
+    #[test]
+    fn dollar_question_not_positional() {
+        // $? is the exit status, not positional
+        assert!(!script_uses_positional_params("echo $?"));
+    }
+}

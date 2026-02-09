@@ -73,3 +73,217 @@ impl Parameter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Environment;
+
+    /// Helper to create a Parameter with only a default value.
+    fn param_with_default(val: &str) -> Parameter {
+        Parameter {
+            param_type: None,
+            default: Some(serde_yaml::Value::String(val.to_string())),
+            either: vec![],
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            value: None,
+        }
+    }
+
+    /// Helper to create an empty Parameter (no values at all).
+    fn param_empty() -> Parameter {
+        Parameter {
+            param_type: None,
+            default: None,
+            either: vec![],
+            development: None,
+            develop: None,
+            staging: None,
+            production: None,
+            value: None,
+        }
+    }
+
+    // ========================================================================
+    // get_value_for_environment tests
+    // ========================================================================
+
+    #[test]
+    fn dev_returns_development_value_over_default() {
+        let param = Parameter {
+            development: Some(serde_yaml::Value::String("dev-val".into())),
+            default: Some(serde_yaml::Value::String("default-val".into())),
+            ..param_empty()
+        };
+        let val = param.get_value_for_environment(&Environment::Development);
+        assert_eq!(val.unwrap(), &serde_yaml::Value::String("dev-val".into()));
+    }
+
+    #[test]
+    fn dev_falls_back_to_develop_alias() {
+        let param = Parameter {
+            develop: Some(serde_yaml::Value::String("develop-val".into())),
+            default: Some(serde_yaml::Value::String("default-val".into())),
+            ..param_empty()
+        };
+        let val = param.get_value_for_environment(&Environment::Development);
+        assert_eq!(
+            val.unwrap(),
+            &serde_yaml::Value::String("develop-val".into())
+        );
+    }
+
+    #[test]
+    fn dev_development_takes_priority_over_develop() {
+        let param = Parameter {
+            development: Some(serde_yaml::Value::String("development-val".into())),
+            develop: Some(serde_yaml::Value::String("develop-val".into())),
+            ..param_empty()
+        };
+        let val = param.get_value_for_environment(&Environment::Development);
+        assert_eq!(
+            val.unwrap(),
+            &serde_yaml::Value::String("development-val".into())
+        );
+    }
+
+    #[test]
+    fn dev_falls_back_to_default() {
+        let param = param_with_default("fallback");
+        let val = param.get_value_for_environment(&Environment::Development);
+        assert_eq!(
+            val.unwrap(),
+            &serde_yaml::Value::String("fallback".into())
+        );
+    }
+
+    #[test]
+    fn dev_returns_none_when_nothing_set() {
+        let param = param_empty();
+        assert!(param.get_value_for_environment(&Environment::Development).is_none());
+    }
+
+    #[test]
+    fn staging_returns_staging_value() {
+        let param = Parameter {
+            staging: Some(serde_yaml::Value::String("stage-val".into())),
+            default: Some(serde_yaml::Value::String("default-val".into())),
+            ..param_empty()
+        };
+        let val = param.get_value_for_environment(&Environment::Staging);
+        assert_eq!(
+            val.unwrap(),
+            &serde_yaml::Value::String("stage-val".into())
+        );
+    }
+
+    #[test]
+    fn staging_falls_back_to_default() {
+        let param = param_with_default("fallback");
+        let val = param.get_value_for_environment(&Environment::Staging);
+        assert_eq!(
+            val.unwrap(),
+            &serde_yaml::Value::String("fallback".into())
+        );
+    }
+
+    #[test]
+    fn staging_returns_none_when_nothing_set() {
+        let param = param_empty();
+        assert!(param.get_value_for_environment(&Environment::Staging).is_none());
+    }
+
+    #[test]
+    fn production_returns_production_value() {
+        let param = Parameter {
+            production: Some(serde_yaml::Value::String("prod-val".into())),
+            default: Some(serde_yaml::Value::String("default-val".into())),
+            ..param_empty()
+        };
+        let val = param.get_value_for_environment(&Environment::Production);
+        assert_eq!(
+            val.unwrap(),
+            &serde_yaml::Value::String("prod-val".into())
+        );
+    }
+
+    #[test]
+    fn production_falls_back_to_default() {
+        let param = param_with_default("fallback");
+        let val = param.get_value_for_environment(&Environment::Production);
+        assert_eq!(
+            val.unwrap(),
+            &serde_yaml::Value::String("fallback".into())
+        );
+    }
+
+    #[test]
+    fn production_returns_none_when_nothing_set() {
+        let param = param_empty();
+        assert!(param.get_value_for_environment(&Environment::Production).is_none());
+    }
+
+    #[test]
+    fn staging_ignores_development_and_develop_fields() {
+        let param = Parameter {
+            development: Some(serde_yaml::Value::String("dev-only".into())),
+            develop: Some(serde_yaml::Value::String("develop-only".into())),
+            ..param_empty()
+        };
+        // Staging should not see development/develop values
+        assert!(param.get_value_for_environment(&Environment::Staging).is_none());
+    }
+
+    #[test]
+    fn production_ignores_staging_field() {
+        let param = Parameter {
+            staging: Some(serde_yaml::Value::String("stage-only".into())),
+            ..param_empty()
+        };
+        assert!(param.get_value_for_environment(&Environment::Production).is_none());
+    }
+
+    #[test]
+    fn numeric_value_returned_correctly() {
+        let param = Parameter {
+            default: Some(serde_yaml::Value::Number(serde_yaml::Number::from(5432))),
+            ..param_empty()
+        };
+        let val = param.get_value_for_environment(&Environment::Development);
+        assert_eq!(
+            val.unwrap(),
+            &serde_yaml::Value::Number(serde_yaml::Number::from(5432))
+        );
+    }
+
+    // ========================================================================
+    // is_port_type tests
+    // ========================================================================
+
+    #[test]
+    fn is_port_type_true() {
+        let param = Parameter {
+            param_type: Some("port".to_string()),
+            ..param_empty()
+        };
+        assert!(param.is_port_type());
+    }
+
+    #[test]
+    fn is_port_type_false_for_other_type() {
+        let param = Parameter {
+            param_type: Some("string".to_string()),
+            ..param_empty()
+        };
+        assert!(!param.is_port_type());
+    }
+
+    #[test]
+    fn is_port_type_false_when_none() {
+        let param = param_empty();
+        assert!(!param.is_port_type());
+    }
+}

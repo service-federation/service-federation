@@ -2341,6 +2341,203 @@ mod tests {
         assert!(services.is_empty());
     }
 
+    // ========================================================================
+    // apply_state_transition tests
+    // ========================================================================
+
+    /// Register a service in Stopped state for transition testing
+    async fn register_stopped_service(tracker: &mut SqliteStateTracker, service_id: &str) {
+        let state = ServiceState {
+            id: service_id.to_string(),
+            status: Status::Stopped,
+            service_type: ServiceType::Process,
+            pid: None,
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        };
+        tracker.register_service(state).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_apply_transition_stopped_to_starting() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_stopped_service(&mut tracker, "svc").await;
+
+        let transition = crate::service::StateTransition::starting();
+        tracker.apply_state_transition("svc", transition).await.unwrap();
+
+        let state = tracker.get_service("svc").await.unwrap();
+        assert_eq!(state.status, Status::Starting);
+    }
+
+    #[tokio::test]
+    async fn test_apply_transition_starting_to_running_with_pid() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_stopped_service(&mut tracker, "svc").await;
+
+        // Stopped -> Starting
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::starting())
+            .await
+            .unwrap();
+
+        // Starting -> Running with PID
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::running_with_pid(42))
+            .await
+            .unwrap();
+
+        let state = tracker.get_service("svc").await.unwrap();
+        assert_eq!(state.status, Status::Running);
+        assert_eq!(state.pid, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_apply_transition_starting_to_running_with_container() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_stopped_service(&mut tracker, "svc").await;
+
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::starting())
+            .await
+            .unwrap();
+
+        tracker
+            .apply_state_transition(
+                "svc",
+                crate::service::StateTransition::running_with_container("abc123".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let state = tracker.get_service("svc").await.unwrap();
+        assert_eq!(state.status, Status::Running);
+        assert_eq!(state.container_id, Some("abc123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_apply_transition_stopped_clears_pid_and_container() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_stopped_service(&mut tracker, "svc").await;
+
+        // Go through Starting -> Running (with PID) -> Stopping -> Stopped
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::starting())
+            .await
+            .unwrap();
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::running_with_pid(99))
+            .await
+            .unwrap();
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::stopping())
+            .await
+            .unwrap();
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::stopped())
+            .await
+            .unwrap();
+
+        let state = tracker.get_service("svc").await.unwrap();
+        assert_eq!(state.status, Status::Stopped);
+        assert_eq!(state.pid, None);
+        assert_eq!(state.container_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_apply_transition_invalid_stopped_to_running() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_stopped_service(&mut tracker, "svc").await;
+
+        // Stopped -> Running is invalid (must go through Starting)
+        let result = tracker
+            .apply_state_transition("svc", crate::service::StateTransition::running())
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Invalid state transition"),
+            "Expected validation error, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_transition_nonexistent_service() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+
+        let result = tracker
+            .apply_state_transition("no-such-service", crate::service::StateTransition::starting())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_apply_transition_running_to_healthy() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_stopped_service(&mut tracker, "svc").await;
+
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::starting())
+            .await
+            .unwrap();
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::running())
+            .await
+            .unwrap();
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::healthy())
+            .await
+            .unwrap();
+
+        let state = tracker.get_service("svc").await.unwrap();
+        assert_eq!(state.status, Status::Healthy);
+    }
+
+    #[tokio::test]
+    async fn test_apply_transition_running_to_failing() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_stopped_service(&mut tracker, "svc").await;
+
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::starting())
+            .await
+            .unwrap();
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::running())
+            .await
+            .unwrap();
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::failing())
+            .await
+            .unwrap();
+
+        let state = tracker.get_service("svc").await.unwrap();
+        assert_eq!(state.status, Status::Failing);
+    }
+
+    #[tokio::test]
+    async fn test_apply_transition_same_state_is_noop() {
+        let (mut tracker, _temp_dir) = create_test_tracker().await;
+        register_stopped_service(&mut tracker, "svc").await;
+
+        // Stopped -> Stopped should succeed (same-state is valid)
+        tracker
+            .apply_state_transition("svc", crate::service::StateTransition::stopped())
+            .await
+            .unwrap();
+
+        let state = tracker.get_service("svc").await.unwrap();
+        assert_eq!(state.status, Status::Stopped);
+    }
+
     #[tokio::test]
     async fn test_ephemeral_tracker_does_not_corrupt_parent() {
         // Parent: file-backed tracker

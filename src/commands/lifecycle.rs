@@ -246,6 +246,63 @@ pub fn validate_pid_start_time(pid: u32, expected_start: DateTime<Utc>) -> bool 
     true
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    // ========================================================================
+    // validate_pid_start_time tests
+    //
+    // This function is platform-specific:
+    //   - macOS: calls `ps -o lstart=` and compares parsed time
+    //   - Linux: reads /proc/<pid>/stat and /proc/uptime
+    // Tests below use the current process PID (which is known to exist) and
+    // work on the current platform. On unsupported platforms, the function
+    // always returns true (trusts the PID).
+    // ========================================================================
+
+    #[test]
+    fn matching_start_time_returns_true() {
+        // Use our own PID — it's guaranteed to exist and we know roughly when it started.
+        let my_pid = std::process::id();
+        // Use "now" as the expected start time. Since the test process just started
+        // (within the last few seconds of the test runner), this should be within
+        // the 60-second tolerance window.
+        let recent = Utc::now();
+        assert!(
+            validate_pid_start_time(my_pid, recent),
+            "Current process PID with recent timestamp should validate"
+        );
+    }
+
+    #[test]
+    fn mismatched_start_time_returns_false() {
+        // Use our own PID but claim it started far in the past (2020).
+        // The function should detect the mismatch (>60s difference) and return false.
+        let my_pid = std::process::id();
+        let old_time = chrono::DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(
+            !validate_pid_start_time(my_pid, old_time),
+            "Current process PID with old timestamp should detect PID reuse"
+        );
+    }
+
+    #[test]
+    fn nonexistent_pid_returns_true() {
+        // PID that almost certainly doesn't exist. The function returns true
+        // (trusts the PID) when it can't determine the start time.
+        let bogus_pid = u32::MAX - 1;
+        let now = Utc::now();
+        assert!(
+            validate_pid_start_time(bogus_pid, now),
+            "Non-existent PID should return true (can't verify, so trust it)"
+        );
+    }
+}
+
 /// Gracefully kill a process.
 ///
 /// Sends SIGTERM first, waits up to 5 seconds, then sends SIGKILL.
