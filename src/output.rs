@@ -61,16 +61,3 @@ impl UserOutput for CliOutput {
         println!();
     }
 }
-
-/// Suppresses all output. Used in TUI mode where the TUI renders its own UI.
-pub struct QuietOutput;
-
-impl UserOutput for QuietOutput {
-    fn status(&self, _message: &str) {}
-    fn success(&self, _message: &str) {}
-    fn warning(&self, _message: &str) {}
-    fn error(&self, _message: &str) {}
-    fn progress(&self, _message: &str) {}
-    fn finish_progress(&self, _result: &str) {}
-    fn blank(&self) {}
-}
