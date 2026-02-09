@@ -102,8 +102,12 @@ impl<'a> ScriptRunner<'a> {
         command.current_dir(&work_dir);
         command.envs(&resolved_env);
 
-        // Execute with timeout - default 5 minutes to prevent hanging
-        let timeout = std::time::Duration::from_secs(300);
+        // Execute with timeout - configurable, default 5 minutes to prevent hanging
+        let timeout = script
+            .timeout
+            .as_deref()
+            .and_then(crate::config::parse_duration_string)
+            .unwrap_or(std::time::Duration::from_secs(300));
         let output_result = tokio::time::timeout(timeout, command.output()).await;
 
         let output = match output_result {
@@ -210,6 +214,7 @@ impl<'a> ScriptRunner<'a> {
             environment: resolved_env,
             script: resolved_script,
             isolated: false,
+            timeout: None,
         };
 
         // Execute the script command
@@ -324,6 +329,7 @@ impl<'a> ScriptRunner<'a> {
             environment: resolved_env,
             script: resolved_script_cmd,
             isolated: false, // Don't recurse
+            timeout: None,
         };
 
         // Execute script in child context

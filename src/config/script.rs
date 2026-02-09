@@ -31,4 +31,10 @@ pub struct Script {
     /// - Clean up all resources after the script completes
     #[serde(default)]
     pub isolated: bool,
+
+    /// Timeout for non-interactive script execution (e.g., "5m", "30s", "600").
+    /// Defaults to 5 minutes if not set. Only applies to `run_script()` (captured output),
+    /// not to interactive execution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
 }

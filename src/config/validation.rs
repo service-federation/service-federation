@@ -605,6 +605,7 @@ mod tests {
             depends_on: vec![],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.services.insert("app".to_string(), service);
@@ -628,6 +629,7 @@ mod tests {
             depends_on: vec!["nonexistent".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.scripts.insert("test".to_string(), script);
@@ -655,6 +657,7 @@ mod tests {
             depends_on: vec!["database".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.services.insert("database".to_string(), service);
@@ -675,6 +678,7 @@ mod tests {
             depends_on: vec![],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         let script2 = Script {
@@ -683,6 +687,7 @@ mod tests {
             depends_on: vec!["script1".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.scripts.insert("script1".to_string(), script1);
@@ -850,6 +855,7 @@ mod tests {
             depends_on: vec!["script_b".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         let script_b = Script {
@@ -858,6 +864,7 @@ mod tests {
             depends_on: vec!["script_a".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.scripts.insert("script_a".to_string(), script_a);
@@ -881,6 +888,7 @@ mod tests {
             depends_on: vec!["y".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         let script_y = Script {
@@ -889,6 +897,7 @@ mod tests {
             depends_on: vec!["z".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         let script_z = Script {
@@ -897,6 +906,7 @@ mod tests {
             depends_on: vec!["x".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.scripts.insert("x".to_string(), script_x);
@@ -935,6 +945,7 @@ mod tests {
             depends_on: vec!["database".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.services.insert("database".to_string(), service);
@@ -963,6 +974,7 @@ mod tests {
             depends_on: vec!["db".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         let script_a = Script {
@@ -971,6 +983,7 @@ mod tests {
             depends_on: vec!["script_b".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.services.insert("db".to_string(), service);
