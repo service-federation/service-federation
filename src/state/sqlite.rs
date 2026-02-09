@@ -2867,14 +2867,17 @@ mod tests {
     async fn test_mark_dead_services_with_dead_pid() {
         let mut tracker = create_ephemeral_tracker().await;
 
-        // Use a PID that almost certainly does not correspond to a running process.
-        // PID 4194304 is above the typical max PID on Linux (default 32768, max 4194304)
-        // and on macOS (99998). We use a high but valid (<= i32::MAX) PID.
+        // Spawn a short-lived process and wait for it to finish, giving us a
+        // PID that is guaranteed to be dead without relying on magic constants.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+
         let state = ServiceState {
             id: "dead-pid-svc".to_string(),
             status: Status::Running,
             service_type: ServiceType::Process,
-            pid: Some(4194200),
+            pid: Some(dead_pid),
             container_id: None,
             started_at: Utc::now(),
             external_repo: None,

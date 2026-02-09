@@ -5,11 +5,16 @@
 //! Extracting these operations improves separation of concerns and keeps the
 //! orchestrator core focused on service coordination.
 
+use std::time::Duration;
+
 use crate::config::ServiceType;
 use crate::error::{Error, Result};
 use crate::service::Status;
 
 use super::core::Orchestrator;
+
+/// Timeout for Docker list/inspect operations during orphan detection.
+const DOCKER_LIST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Short-lived helper for detecting and removing orphaned containers and processes.
 ///
@@ -38,17 +43,22 @@ impl<'a> OrphanCleaner<'a> {
         let prefix = format!("fed-{}-", work_dir_hash);
 
         // List all containers matching our project prefix
-        let output = tokio::process::Command::new("docker")
-            .args([
-                "ps",
-                "-a",
-                "--filter",
-                &format!("name=^{}", prefix),
-                "--format",
-                "{{.Names}}",
-            ])
-            .output()
-            .await?;
+        let output = tokio::time::timeout(
+            DOCKER_LIST_TIMEOUT,
+            tokio::process::Command::new("docker")
+                .args([
+                    "ps",
+                    "-a",
+                    "--filter",
+                    &format!("name=^{}", prefix),
+                    "--format",
+                    "{{.Names}}",
+                ])
+                .output(),
+        )
+        .await
+        .map_err(|_| Error::Docker("Timed out listing Docker containers".to_string()))?
+        .map_err(|e| Error::Docker(format!("Failed to list Docker containers: {}", e)))?;
 
         if !output.status.success() {
             return Err(Error::Docker("Failed to list Docker containers".to_string()));
@@ -129,11 +139,20 @@ impl<'a> OrphanCleaner<'a> {
         let mut removed = 0;
         for container in &orphans {
             tracing::info!("Removing orphaned container: {}", container);
-            let output = tokio::process::Command::new("docker")
-                .args(["rm", "-f", container])
-                .output()
-                .await
-                .map_err(|e| Error::Docker(format!("Failed to remove container: {}", e)))?;
+            let output = tokio::time::timeout(
+                DOCKER_LIST_TIMEOUT,
+                tokio::process::Command::new("docker")
+                    .args(["rm", "-f", container])
+                    .output(),
+            )
+            .await
+            .map_err(|_| {
+                Error::Docker(format!(
+                    "Timed out removing orphaned container '{}'",
+                    container
+                ))
+            })?
+            .map_err(|e| Error::Docker(format!("Failed to remove container: {}", e)))?;
 
             if output.status.success() {
                 removed += 1;

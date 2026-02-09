@@ -131,10 +131,10 @@ impl<'a> HealthCheckRunner<'a> {
 
         loop {
             if start.elapsed() > timeout {
-                return Err(Error::Config(format!(
-                    "Service '{}' did not become healthy within {:?}",
-                    service_name, timeout
-                )));
+                return Err(Error::HealthCheckFailed(
+                    service_name.to_string(),
+                    format!("did not become healthy within {:?}", timeout),
+                ));
             }
 
             match checker.check().await {

@@ -565,7 +565,7 @@ impl ServiceManager for ProcessService {
                 // Check for PID reuse before sending signals to avoid killing the wrong process
                 let started_at = *self.started_at.lock();
                 if let Some(expected_start) = started_at {
-                    if !Self::validate_pid_start_time(pid_val, expected_start) {
+                    if !crate::error::validate_pid_start_time(pid_val, expected_start) {
                         tracing::warn!(
                             "PID {} for service '{}' was reused by another process, skipping kill",
                             pid_val,
@@ -897,119 +897,6 @@ impl ProcessService {
         None
     }
 
-    /// Check if a PID belongs to the expected process by comparing start times.
-    ///
-    /// Returns true if the PID appears valid (start time matches or cannot be determined),
-    /// false if the PID was clearly reused by a different process.
-    ///
-    /// This prevents sending signals to an unrelated process after PID recycling.
-    fn validate_pid_start_time(pid: u32, expected_start: DateTime<Utc>) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            // On Linux, read /proc/<pid>/stat to get process start time
-            let stat_path = format!("/proc/{}/stat", pid);
-            if let Ok(stat) = std::fs::read_to_string(&stat_path) {
-                // The stat file format has the process name in parens which can contain spaces,
-                // so we find the closing paren and parse from there
-                if let Some(close_paren) = stat.rfind(')') {
-                    let fields: Vec<&str> = stat[close_paren + 2..].split_whitespace().collect();
-                    // Field 20 (0-indexed after the first two fields) is starttime
-                    if let Some(&starttime_str) = fields.get(19) {
-                        if let Ok(starttime_jiffies) = starttime_str.parse::<u64>() {
-                            let now = Utc::now();
-                            let expected_age = now.signed_duration_since(expected_start);
-
-                            // If the expected service is very old (>24h), be lenient
-                            if expected_age.num_hours() > 24 {
-                                return true;
-                            }
-
-                            // Get uptime to calculate approximate process start
-                            if let Ok(uptime_str) = std::fs::read_to_string("/proc/uptime") {
-                                if let Some(uptime_secs_str) =
-                                    uptime_str.split_whitespace().next()
-                                {
-                                    if let Ok(uptime_secs) = uptime_secs_str.parse::<f64>() {
-                                        // Assume 100 jiffies per second (common default)
-                                        let jiffies_per_sec: u64 = 100;
-                                        let process_age_secs = uptime_secs
-                                            - (starttime_jiffies as f64
-                                                / jiffies_per_sec as f64);
-
-                                        let expected_age_secs =
-                                            expected_age.num_seconds() as f64;
-                                        let time_diff =
-                                            (process_age_secs - expected_age_secs).abs();
-
-                                        if time_diff > 60.0 {
-                                            tracing::warn!(
-                                                "PID {} appears to be reused: process age {:.0}s vs expected {:.0}s",
-                                                pid,
-                                                process_age_secs,
-                                                expected_age_secs
-                                            );
-                                            return false;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            use chrono::TimeZone;
-            if let Ok(output) = std::process::Command::new("ps")
-                .args(["-o", "lstart=", "-p", &pid.to_string()])
-                .output()
-            {
-                if output.status.success() {
-                    let lstart = String::from_utf8_lossy(&output.stdout);
-                    let lstart = lstart.trim();
-                    if !lstart.is_empty() {
-                        if let Ok(process_start) = chrono::NaiveDateTime::parse_from_str(
-                            lstart,
-                            "%a %b %e %H:%M:%S %Y",
-                        ) {
-                            // ps lstart returns local time, not UTC
-                            let process_start_utc = chrono::Local
-                                .from_local_datetime(&process_start)
-                                .earliest()
-                                .map(|dt| dt.with_timezone(&Utc));
-                            let Some(process_start_utc) = process_start_utc else {
-                                // Ambiguous/nonexistent time (DST transition) — trust the PID
-                                tracing::debug!(
-                                    "PID {} start time {:?} is ambiguous during DST, trusting PID",
-                                    pid,
-                                    process_start
-                                );
-                                return true;
-                            };
-                            let time_diff =
-                                (process_start_utc - expected_start).num_seconds().abs();
-
-                            // Allow 60 seconds tolerance for timing differences
-                            if time_diff > 60 {
-                                tracing::warn!(
-                                    "PID {} appears to be reused: process started at {} vs expected {}",
-                                    pid,
-                                    process_start_utc,
-                                    expected_start
-                                );
-                                return false;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Default: trust the PID if we can't determine start time
-        true
-    }
 }
 
 #[cfg(unix)]
@@ -1315,9 +1202,13 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_get_process_group_nonexistent_pid() {
-        // A very high (but valid) PID that almost certainly doesn't exist
-        // Using 4194304 which is a common PID_MAX on Linux
-        let pgid = ProcessService::get_process_group(4194303);
+        // Spawn a short-lived process and wait for it to finish, giving us a
+        // PID that is guaranteed to be dead without relying on magic constants.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+
+        let pgid = ProcessService::get_process_group(dead_pid);
         // This should return None gracefully (ESRCH error)
         assert!(
             pgid.is_none(),

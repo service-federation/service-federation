@@ -497,16 +497,17 @@ async fn handle_dependency_health_propagation(
                         if let Some(manager_arc) = manager_opt {
                             // LOCK ORDER: scope manager mutex, release it,
                             // then acquire state_tracker separately.
-                            let stop_ok = {
+                            let stop_result = {
                                 let mut manager = manager_arc.lock().await;
-                                manager.stop().await.is_ok()
+                                manager.stop().await
                             };
                             // manager lock released
 
-                            if !stop_ok {
+                            if let Err(e) = &stop_result {
                                 tracing::error!(
-                                    "Failed to stop dependent service '{}'",
+                                    "Failed to stop dependent service '{}': {}",
                                     dependent_name,
+                                    e,
                                 );
                             } else {
                                 let mut tracker = state_tracker.write().await;
@@ -532,16 +533,17 @@ async fn handle_dependency_health_propagation(
                         if let Some(manager_arc) = manager_opt {
                             // LOCK ORDER: scope manager mutex, release it,
                             // then acquire state_tracker separately.
-                            let stop_ok = {
+                            let stop_result = {
                                 let mut manager = manager_arc.lock().await;
-                                manager.stop().await.is_ok()
+                                manager.stop().await
                             };
                             // manager lock released
 
-                            if !stop_ok {
+                            if let Err(e) = &stop_result {
                                 tracing::error!(
-                                    "Failed to stop dependent service '{}' for restart",
+                                    "Failed to stop dependent service '{}' for restart: {}",
                                     dependent_name,
+                                    e,
                                 );
                                 continue;
                             }
