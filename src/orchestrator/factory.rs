@@ -304,8 +304,13 @@ impl Orchestrator {
 
                 // Restore PID for process and gradle services
                 if let Some(pid) = service_state.pid {
-                    self.restore_process_pid(&mut manager, service_name, pid)
-                        .await;
+                    self.restore_process_pid(
+                        &mut manager,
+                        service_name,
+                        pid,
+                        service_state.started_at,
+                    )
+                    .await;
                     self.restore_gradle_pid(&mut manager, service_name, pid)
                         .await;
                 }
@@ -325,72 +330,13 @@ impl Orchestrator {
         manager: &mut Box<dyn ServiceManager>,
         service_name: &str,
         pid: u32,
+        started_at: chrono::DateTime<chrono::Utc>,
     ) {
         if let Some(process_service) = manager.as_any_mut().downcast_mut::<ProcessService>() {
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::kill;
-
-                // Validate PID for read-only check (rejects 0 and >i32::MAX)
-                if let Some(nix_pid) = validate_pid_for_check(pid) {
-                    if kill(nix_pid, None).is_ok() {
-                        // Process exists, restore it
-                        tracing::debug!("Restoring PID {} for service '{}'", pid, service_name);
-                        process_service.set_pid(pid);
-                    } else {
-                        // Process doesn't exist, don't restore
-                        tracing::warn!(
-                            "Skipping PID {} for service '{}' - process no longer exists",
-                            pid,
-                            service_name
-                        );
-                        // Unregister the stale service from state
-                        if let Err(e) = self
-                            .state_tracker
-                            .write()
-                            .await
-                            .unregister_service(service_name)
-                            .await
-                        {
-                            tracing::warn!(
-                                "Failed to unregister stale service '{}': {}",
-                                service_name,
-                                e
-                            );
-                        }
-                    }
-                } else {
-                    tracing::error!(
-                        "Cannot restore PID {} for service '{}' - invalid PID",
-                        pid,
-                        service_name
-                    );
-                    // Unregister the invalid PID from state
-                    if let Err(e) = self
-                        .state_tracker
-                        .write()
-                        .await
-                        .unregister_service(service_name)
-                        .await
-                    {
-                        tracing::warn!(
-                            "Failed to unregister stale service '{}': {}",
-                            service_name,
-                            e
-                        );
-                    }
-                }
-            }
-
-            #[cfg(not(unix))]
-            {
-                // Non-Unix platforms: always restore (fallback behavior)
-                tracing::warn!(
-                    "Process validation not available on this platform, restoring PID {}",
-                    pid
-                );
-                process_service.set_pid(pid);
-            }
+            self.restore_pid_for_service(service_name, pid, || {
+                process_service.set_pid_with_start_time(pid, Some(started_at));
+            })
+            .await;
         }
     }
 
@@ -402,68 +348,69 @@ impl Orchestrator {
         pid: u32,
     ) {
         if let Some(gradle_service) = manager.as_any_mut().downcast_mut::<GradleService>() {
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::kill;
+            self.restore_pid_for_service(service_name, pid, || {
+                gradle_service.set_pid(pid);
+            })
+            .await;
+        }
+    }
 
-                if let Some(nix_pid) = validate_pid_for_check(pid) {
-                    if kill(nix_pid, None).is_ok() {
-                        tracing::debug!(
-                            "Restoring PID {} for gradle service '{}'",
-                            pid,
-                            service_name
-                        );
-                        gradle_service.set_pid(pid);
-                    } else {
-                        tracing::warn!(
-                            "Skipping PID {} for gradle service '{}' - process no longer exists",
-                            pid,
-                            service_name
-                        );
-                        if let Err(e) = self
-                            .state_tracker
-                            .write()
-                            .await
-                            .unregister_service(service_name)
-                            .await
-                        {
-                            tracing::warn!(
-                                "Failed to unregister stale service '{}': {}",
-                                service_name,
-                                e
-                            );
-                        }
-                    }
+    /// Validate a PID and either restore it via the callback or unregister the stale service.
+    ///
+    /// Shared logic for restoring process and gradle PIDs. On Unix,
+    /// sends signal 0 to check whether the process is alive. On other platforms,
+    /// unconditionally calls `set_pid` as a fallback.
+    async fn restore_pid_for_service(&self, service_name: &str, pid: u32, set_pid: impl FnOnce()) {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::kill;
+
+            if let Some(nix_pid) = validate_pid_for_check(pid) {
+                if kill(nix_pid, None).is_ok() {
+                    tracing::debug!("Restoring PID {} for service '{}'", pid, service_name);
+                    set_pid();
                 } else {
-                    tracing::error!(
-                        "Cannot restore PID {} for gradle service '{}' - invalid PID",
+                    tracing::warn!(
+                        "Skipping PID {} for service '{}' - process no longer exists",
                         pid,
                         service_name
                     );
-                    if let Err(e) = self
-                        .state_tracker
-                        .write()
-                        .await
-                        .unregister_service(service_name)
-                        .await
-                    {
-                        tracing::warn!(
-                            "Failed to unregister stale service '{}': {}",
-                            service_name,
-                            e
-                        );
-                    }
+                    self.unregister_stale_service(service_name).await;
                 }
-            }
-
-            #[cfg(not(unix))]
-            {
-                tracing::warn!(
-                    "Process validation not available on this platform, restoring PID {}",
-                    pid
+            } else {
+                tracing::error!(
+                    "Cannot restore PID {} for service '{}' - invalid PID",
+                    pid,
+                    service_name
                 );
-                gradle_service.set_pid(pid);
+                self.unregister_stale_service(service_name).await;
             }
+        }
+
+        #[cfg(not(unix))]
+        {
+            tracing::warn!(
+                "Process validation not available on this platform, restoring PID {}",
+                pid
+            );
+            set_pid();
+        }
+    }
+
+    /// Remove a service from the state tracker, logging on failure.
+    async fn unregister_stale_service(&self, service_name: &str) {
+        if let Err(e) = self
+            .state_tracker
+            .write()
+            .await
+            .unregister_service(service_name)
+            .await
+        {
+            tracing::warn!(
+                "Failed to unregister stale service '{}': {}",
+                service_name,
+                e
+            );
         }
     }
 
@@ -489,20 +436,7 @@ impl Orchestrator {
                     container_id,
                     service_name
                 );
-                // Unregister the stale service from state
-                if let Err(e) = self
-                    .state_tracker
-                    .write()
-                    .await
-                    .unregister_service(service_name)
-                    .await
-                {
-                    tracing::warn!(
-                        "Failed to unregister stale service '{}': {}",
-                        service_name,
-                        e
-                    );
-                }
+                self.unregister_stale_service(service_name).await;
             }
         }
     }

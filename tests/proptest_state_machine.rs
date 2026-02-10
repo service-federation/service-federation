@@ -6,6 +6,7 @@
 /// - PID is always cleared when status is "Stopped"
 /// - No services leak (state tracker matches reality)
 use proptest::prelude::*;
+use service_federation::config::ServiceType;
 use service_federation::service::Status;
 use service_federation::state::{ServiceState, StateTracker};
 use tempfile::TempDir;
@@ -70,7 +71,7 @@ async fn apply_operation(tracker: &mut StateTracker, op: &Operation) {
             // Register if not exists
             if !tracker.is_service_registered(name).await {
                 let state =
-                    ServiceState::new(name.clone(), "Process".to_string(), "default".to_string());
+                    ServiceState::new(name.clone(), ServiceType::Process, "default".to_string());
                 tracker.register_service(state).await.unwrap();
             }
             // Transition to Starting
@@ -191,7 +192,7 @@ proptest! {
             for name in &service_names {
                 let state = ServiceState::new(
                     name.clone(),
-                    "Process".to_string(),
+                    ServiceType::Process,
                     "default".to_string(),
                 );
                 tracker.register_service(state).await.unwrap();
@@ -243,7 +244,7 @@ proptest! {
             // Register service
             let state = ServiceState::new(
                 service_name.clone(),
-                "Process".to_string(),
+                ServiceType::Process,
                 "default".to_string(),
             );
             tracker.register_service(state).await.unwrap();
@@ -332,7 +333,7 @@ proptest! {
             for name in &service_names {
                 let state = ServiceState::new(
                     name.clone(),
-                    "Process".to_string(),
+                    ServiceType::Process,
                     "default".to_string(),
                 );
                 tracker.register_service(state).await.unwrap();

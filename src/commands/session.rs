@@ -1,5 +1,5 @@
-use crate::output::UserOutput;
 use crate::cli::SessionCommands;
+use crate::output::UserOutput;
 use service_federation::session::Session;
 use service_federation::{Orchestrator, Parser as ConfigParser};
 use std::path::PathBuf;
@@ -43,11 +43,13 @@ pub async fn run_session(
             } else if let Some(id) = Session::read_session_file_for_dir(&workdir)? {
                 id
             } else {
-                return Err(anyhow::anyhow!(
-                    "No active session found.\n\
-                    Either set FED_SESSION environment variable or run this command\n\
+                return Err(service_federation::Error::Session(
+                    "No active session found. \
+                    Either set FED_SESSION environment variable or run this command \
                     in a directory with a .fed/session file."
-                ));
+                        .to_string(),
+                )
+                .into());
             };
 
             let session = Session::load(&session_id)?;
@@ -170,10 +172,7 @@ pub async fn run_session(
                 return Ok(());
             }
 
-            out.status(&format!(
-                "Found {} orphaned session(s):",
-                orphaned.len()
-            ));
+            out.status(&format!("Found {} orphaned session(s):", orphaned.len()));
             for session in &orphaned {
                 out.status(&format!(
                     "  - {} (workspace: {})",

@@ -4,23 +4,33 @@ use service_federation::{
     parameter::PortResolutionReason,
     port::PortConflict,
     service::Status,
-    Orchestrator, WatchMode,
+    Error as FedError, Orchestrator, WatchMode,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use super::lifecycle::{graceful_docker_stop, graceful_process_kill, validate_pid_start_time};
 
+pub struct StartOptions<'a> {
+    pub watch: bool,
+    pub replace: bool,
+    pub dry_run: bool,
+    pub config_path: &'a std::path::Path,
+}
+
 pub async fn run_start(
     orchestrator: &mut Orchestrator,
     config: &Config,
     services: Vec<String>,
-    watch: bool,
-    replace: bool,
-    dry_run: bool,
-    config_path: &std::path::Path,
+    opts: StartOptions<'_>,
     out: &dyn UserOutput,
 ) -> anyhow::Result<()> {
+    let StartOptions {
+        watch,
+        replace,
+        dry_run,
+        config_path,
+    } = opts;
     let services_to_start = if services.is_empty() {
         // Use entrypoint
         if let Some(ref ep) = config.entrypoint {
@@ -59,20 +69,15 @@ pub async fn run_start(
         // (if we did, the ports should be available now, or in TIME_WAIT briefly)
         let mut freed_any = false;
         if stopped_services == 0 {
-            let params = orchestrator.get_resolved_parameters();
-
-            for name in orchestrator.get_port_parameter_names() {
-                let Some(value) = params.get(name) else {
-                    continue;
-                };
-                let Ok(port) = value.parse::<u16>() else {
-                    continue;
-                };
-                let Some(conflict) = PortConflict::check(port) else {
+            for resolution in orchestrator.get_port_resolutions() {
+                let Some(conflict) = PortConflict::check(resolution.resolved_port) else {
                     continue;
                 };
 
-                out.progress(&format!("Freeing port {} ({})... ", port, name));
+                out.progress(&format!(
+                    "Freeing port {} ({})... ",
+                    resolution.resolved_port, resolution.param_name
+                ));
                 match conflict.free_port() {
                     Ok(msg) => {
                         out.finish_progress(&msg);
@@ -142,10 +147,7 @@ pub async fn run_start(
                     }
                     Err(e) => {
                         out.error(" failed");
-                        out.error(&format!(
-                            "\nError starting dependency '{}': {}",
-                            dep, e
-                        ));
+                        out.error(&format!("\nError starting dependency '{}': {}", dep, e));
                         orchestrator.cleanup().await;
                         return Err(e.into());
                     }
@@ -166,7 +168,7 @@ pub async fn run_start(
                     out.error(&format!("\nError: {}", e));
 
                     // If service not found, show available services
-                    if e.to_string().contains("Service not found") {
+                    if matches!(e, FedError::ServiceNotFound(_)) {
                         let status = orchestrator.get_status().await;
                         if !status.is_empty() {
                             out.error("\nAvailable services:");
@@ -208,7 +210,6 @@ pub async fn run_start(
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     out.status("\nService Status:");
     let status = orchestrator.get_status().await;
-    let params = orchestrator.get_resolved_parameters();
 
     // Collect port conflicts for all port parameters
     let mut port_conflicts: Vec<(String, u16, String, Option<u32>)> = Vec::new();
@@ -256,13 +257,8 @@ pub async fn run_start(
             .iter()
             .any(|name| orchestrator.is_process_service(name));
 
-        for param_name in orchestrator.get_port_parameter_names() {
-            let Some(param_value) = params.get(param_name) else {
-                continue;
-            };
-            let Ok(port) = param_value.parse::<u16>() else {
-                continue;
-            };
+        for resolution in orchestrator.get_port_resolutions() {
+            let port = resolution.resolved_port;
             let Some(conflict) = PortConflict::check(port) else {
                 continue;
             };
@@ -304,7 +300,7 @@ pub async fn run_start(
                 }
 
                 port_conflicts.push((
-                    param_name.clone(),
+                    resolution.param_name.clone(),
                     port,
                     process.name.clone(),
                     Some(process.pid),
@@ -312,7 +308,12 @@ pub async fn run_start(
             }
             // Only report unknown if no processes found at all
             if conflict.processes.is_empty() {
-                port_conflicts.push((param_name.clone(), port, "unknown".to_string(), None));
+                port_conflicts.push((
+                    resolution.param_name.clone(),
+                    port,
+                    "unknown".to_string(),
+                    None,
+                ));
             }
         }
 
@@ -732,10 +733,7 @@ async fn run_dry_run(
                     };
                     out.status(&format!(
                         "  [CONFLICT] Default port {} ({}) occupied by {} - resolved to {}",
-                        default_port,
-                        resolution.param_name,
-                        process_info,
-                        resolution.resolved_port
+                        default_port, resolution.param_name, process_info, resolution.resolved_port
                     ));
                 }
                 PortResolutionReason::Random => {

@@ -1,7 +1,6 @@
-use crate::config::{Config, HealthCheckType};
+use crate::config::{Config, ServiceType};
 use crate::dependency::{ExternalServiceExpander, Graph};
 use crate::error::{Error, Result};
-use crate::healthcheck::{CommandChecker, DockerCommandChecker, HealthChecker, HttpChecker};
 use crate::parameter::Resolver;
 use crate::service::{OutputMode, ServiceManager, Status};
 use crate::state::{ServiceState, StateTracker};
@@ -16,6 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::health::SharedHealthCheckerRegistry;
+
 /// Default timeout for service startup operations (2 minutes)
 pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -23,14 +24,9 @@ pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 pub const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Type alias for the shared service registry
-type ServiceRegistry = HashMap<String, Arc<tokio::sync::Mutex<Box<dyn ServiceManager>>>>;
+pub(super) type ServiceRegistry = HashMap<String, Arc<tokio::sync::Mutex<Box<dyn ServiceManager>>>>;
 /// Type alias for the shared, async-safe service registry
-type SharedServiceRegistry = Arc<tokio::sync::RwLock<ServiceRegistry>>;
-/// Type alias for the health checker registry.
-/// Uses `Arc` so checkers can be cloned out without holding the read lock.
-type HealthCheckerRegistry = HashMap<String, Arc<dyn HealthChecker>>;
-/// Type alias for the shared health checker registry
-type SharedHealthCheckerRegistry = Arc<tokio::sync::RwLock<HealthCheckerRegistry>>;
+pub(super) type SharedServiceRegistry = Arc<tokio::sync::RwLock<ServiceRegistry>>;
 
 /// The central coordinator for managing service lifecycles in Service Federation.
 ///
@@ -84,12 +80,12 @@ pub struct Orchestrator {
     pub(super) config: Config,
     /// Original unresolved config - used by isolated to create child orchestrators
     /// that can re-resolve templates with fresh port allocations.
-    original_config: Option<Config>,
-    resolver: Resolver,
+    pub(super) original_config: Option<Config>,
+    pub(super) resolver: Resolver,
     dep_graph: Graph,
     pub(super) services: SharedServiceRegistry,
     pub(super) health_checkers: SharedHealthCheckerRegistry,
-    work_dir: PathBuf,
+    pub(super) work_dir: PathBuf,
     pub state_tracker: Arc<tokio::sync::RwLock<StateTracker>>,
     namespace: String,
     /// Output mode for process services.
@@ -101,7 +97,7 @@ pub struct Orchestrator {
     port_listeners_released: AtomicBool,
     /// Cancellation token for in-progress operations.
     /// Call `cancel_operations()` to cancel all ongoing start/stop operations.
-    cancellation_token: CancellationToken,
+    pub(super) cancellation_token: CancellationToken,
     /// Timeout for service startup operations
     pub startup_timeout: Duration,
     /// Timeout for service stop operations
@@ -166,6 +162,37 @@ impl Orchestrator {
         })
     }
 
+    /// Create an ephemeral orchestrator with an in-memory state tracker.
+    ///
+    /// Used for isolated script execution where the child orchestrator should
+    /// not touch the parent's `.fed/lock.db`. All state operations stay in-memory
+    /// and are discarded when the orchestrator is dropped.
+    pub async fn new_ephemeral(config: Config, work_dir: PathBuf) -> Result<Self> {
+        let original_config = Some(config.clone());
+        Ok(Self {
+            config,
+            original_config,
+            resolver: Resolver::new(),
+            dep_graph: Graph::new(),
+            services: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            health_checkers: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            state_tracker: Arc::new(tokio::sync::RwLock::new(
+                StateTracker::new_ephemeral().await?,
+            )),
+            work_dir,
+            namespace: "root".to_string(),
+            output_mode: OutputMode::default(),
+            active_profiles: Vec::new(),
+            monitoring_task: Arc::new(tokio::sync::Mutex::new(None)),
+            startup_complete: Arc::new(AtomicBool::new(false)),
+            port_listeners_released: AtomicBool::new(false),
+            cancellation_token: CancellationToken::new(),
+            startup_timeout: DEFAULT_STARTUP_TIMEOUT,
+            stop_timeout: DEFAULT_STOP_TIMEOUT,
+            cleanup_started: AtomicBool::new(false),
+        })
+    }
+
     /// Create a nested orchestrator with a namespace (for external services)
     pub async fn new_with_namespace(
         config: Config,
@@ -205,19 +232,8 @@ impl Orchestrator {
     }
 
     /// Release port listeners once, just before services start.
-    /// This minimizes the TOCTOU race window between port allocation and service bind.
-    ///
-    /// Uses atomic compare_exchange to ensure idempotency - only releases once
-    /// even if called from multiple concurrent start operations.
     fn release_port_listeners_once(&self) {
-        // Use compare_exchange to ensure we only release once
-        if self
-            .port_listeners_released
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            self.resolver.release_port_listeners();
-        }
+        super::ports::release_port_listeners_once(&self.port_listeners_released, &self.resolver);
     }
 
     /// Cancel all in-progress operations.
@@ -300,149 +316,17 @@ impl Orchestrator {
         self
     }
 
-    /// Detect Docker containers for this project that aren't tracked in state DB.
-    ///
-    /// Returns a list of container names that match this project's naming pattern
-    /// (fed-{work_dir_hash}-*) but aren't found in the state tracker.
-    ///
-    /// This is a conservative detection - we don't auto-remove, just warn.
-    async fn detect_untracked_containers(&self) -> Result<Vec<String>> {
-        use crate::service::{hash_work_dir, sanitize_container_name_component};
-        use std::collections::HashSet;
-
-        let work_dir_hash = hash_work_dir(&self.work_dir);
-        let prefix = format!("fed-{}-", work_dir_hash);
-
-        // List all containers matching our project prefix
-        let output = tokio::process::Command::new("docker")
-            .args([
-                "ps",
-                "-a",
-                "--filter",
-                &format!("name=^{}", prefix),
-                "--format",
-                "{{.Names}}",
-            ])
-            .output()
-            .await?;
-
-        if !output.status.success() {
-            return Err(Error::Config("Failed to list Docker containers".to_string()));
-        }
-
-        let all_containers: HashSet<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if all_containers.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Get tracked services from state DB
-        let state = self.state_tracker.read().await;
-        let tracked_services = state.get_services().await;
-
-        // Build set of expected container names for tracked Docker services
-        let tracked_containers: HashSet<String> = tracked_services
-            .iter()
-            .filter(|(_, svc)| svc.service_type == "docker")
-            .map(|(name, _)| {
-                let sanitized = sanitize_container_name_component(name);
-                format!("{}{}", prefix, sanitized)
-            })
-            .collect();
-
-        // Find containers that exist but aren't tracked
-        let orphans: Vec<String> = all_containers
-            .difference(&tracked_containers)
-            .cloned()
-            .collect();
-
-        Ok(orphans)
-    }
-
-    /// Detect orphaned processes - PIDs in state that are still running
-    /// but the service is marked as stopped/stale.
-    ///
-    /// Returns a list of (service_name, pid) tuples for orphaned processes.
-    async fn detect_orphan_processes(&self) -> Vec<(String, u32)> {
-        let state = self.state_tracker.read().await;
-        let services = state.get_services().await;
-        let mut orphans = Vec::new();
-
-        for (name, svc) in services {
-            // Only check services with PIDs that are marked as stopped/stale
-            if let Some(pid) = svc.pid {
-                let is_stopped = matches!(
-                    svc.status,
-                    Status::Stopped | Status::Failing
-                );
-
-                if is_stopped && Self::is_pid_alive(pid) {
-                    orphans.push((name, pid));
-                }
-            }
-        }
-
-        orphans
-    }
-
     /// Remove orphaned processes for this project.
     ///
     /// Finds processes with PIDs in state DB that are still running
     /// but the service is marked as stopped. Kills them with SIGKILL.
     ///
     /// Returns the number of processes killed.
+    ///
+    /// Delegates to `OrphanCleaner`.
     pub async fn remove_orphaned_processes(&self) -> usize {
-        let orphans = self.detect_orphan_processes().await;
-
-        if orphans.is_empty() {
-            return 0;
-        }
-
-        let mut killed = 0;
-        for (name, pid) in &orphans {
-            tracing::info!("Killing orphaned process: {} (PID {})", name, pid);
-
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{self, Signal};
-                use nix::unistd::Pid;
-
-                let nix_pid = Pid::from_raw(*pid as i32);
-
-                // Try SIGTERM first
-                if signal::kill(nix_pid, Signal::SIGTERM).is_ok() {
-                    // Wait briefly for graceful shutdown
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-                    // If still alive, SIGKILL
-                    if signal::kill(nix_pid, None).is_ok() {
-                        let _ = signal::kill(nix_pid, Signal::SIGKILL);
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                    killed += 1;
-                }
-            }
-
-            #[cfg(not(unix))]
-            {
-                tracing::warn!("Cannot kill orphaned process on non-Unix platform");
-            }
-        }
-
-        // Clear the PIDs from state
-        if killed > 0 {
-            let mut state = self.state_tracker.write().await;
-            for (name, _) in &orphans {
-                let _ = state.unregister_service(name).await;
-            }
-            let _ = state.save().await;
-        }
-
-        killed
+        let cleaner = super::orphans::OrphanCleaner::new(self);
+        cleaner.remove_orphaned_processes().await
     }
 
     /// Collect ports owned by running managed services.
@@ -455,85 +339,15 @@ impl Orchestrator {
     /// 1. State tracker `port_allocations` table (per-service, populated for Docker)
     /// 2. Session port cache (`ports.json`) — global port→parameter mapping
     ///
-    /// If ANY service is alive, all session-cached ports are trusted as managed.
-    /// This handles process services which don't write to `port_allocations`.
+    /// Collect ports owned by running managed services so the resolver can
+    /// avoid re-allocating them.
     async fn collect_managed_ports(&mut self) {
-        let state = self.state_tracker.read().await;
-        let services = state.get_services().await;
-        let mut managed_ports = std::collections::HashSet::new();
-        let mut has_live_service = false;
-
-        for svc in services.values() {
-            if !matches!(svc.status, Status::Running | Status::Healthy) {
-                continue;
-            }
-
-            // Verify the process/container is actually alive before trusting the port
-            let is_alive = if let Some(pid) = svc.pid {
-                Self::is_pid_alive(pid)
-            } else if svc.container_id.is_some() {
-                // Can't cheaply verify container without Docker — trust the status.
-                // If Docker is down, mark_dead_services will skip container checks anyway.
-                true
-            } else {
-                false
-            };
-
-            if is_alive {
-                has_live_service = true;
-                for &port in svc.port_allocations.values() {
-                    managed_ports.insert(port);
-                }
-            }
-        }
-
-        // If any real service is alive, trust globally persisted port resolutions.
-        // These cover all port parameters including process/Gradle services.
-        if has_live_service {
-            let global_ports = state.get_global_port_allocations().await;
-            for port in global_ports.values() {
-                managed_ports.insert(*port);
-            }
-
-            // Fallback: also check session port cache for backwards compatibility
-            // with sessions that predate global port persistence.
-            if global_ports.is_empty() {
-                if let Ok(Some(session)) =
-                    crate::session::Session::current_for_workdir(Some(self.work_dir.as_path()))
-                {
-                    for &port in session.get_all_ports().values() {
-                        managed_ports.insert(port);
-                    }
-                }
-            }
-        }
-
-        if !managed_ports.is_empty() {
-            tracing::debug!(
-                "Found {} managed port(s) from running services: {:?}",
-                managed_ports.len(),
-                managed_ports
-            );
-        }
-        self.resolver.set_managed_ports(managed_ports);
-    }
-
-    /// Check if a PID is alive (signal 0 check).
-    fn is_pid_alive(pid: u32) -> bool {
-        #[cfg(unix)]
-        {
-            use crate::error::validate_pid_for_check;
-            use nix::sys::signal::kill;
-            if let Some(nix_pid) = validate_pid_for_check(pid) {
-                return kill(nix_pid, None).is_ok();
-            }
-            false
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = pid;
-            true // Can't check on non-unix, assume alive
-        }
+        super::ports::collect_managed_ports(
+            &mut self.resolver,
+            &self.state_tracker,
+            &self.work_dir,
+        )
+        .await;
     }
 
     /// Lightweight initialization for read-only commands (status, logs).
@@ -608,7 +422,8 @@ impl Orchestrator {
 
         // Detect containers for this project that aren't tracked in state DB
         // (Conservative approach: warn but don't auto-remove)
-        match self.detect_untracked_containers().await {
+        let cleaner = super::orphans::OrphanCleaner::new(self);
+        match cleaner.detect_untracked_containers().await {
             Ok(orphans) if !orphans.is_empty() => {
                 for container in &orphans {
                     tracing::warn!(
@@ -742,123 +557,21 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Create health checkers for services
+    /// Create health checkers for services.
+    ///
+    /// Delegates to `HealthCheckRunner`.
     async fn create_health_checkers(&mut self) {
-        for (name, service) in &self.config.services {
-            if let Some(ref healthcheck) = service.healthcheck {
-                // Use configured timeout or default (5 seconds)
-                let timeout = healthcheck.get_timeout();
-
-                let checker: Arc<dyn HealthChecker> = match healthcheck.health_check_type() {
-                    HealthCheckType::Http => {
-                        if let Some(url) = healthcheck.get_http_url() {
-                            // Use shared HTTP client to prevent file descriptor exhaustion
-                            // when running many services with HTTP health checks
-                            match HttpChecker::with_shared_client(url.to_string(), timeout) {
-                                Ok(checker) => Arc::new(checker),
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Skipping invalid healthcheck URL for service '{}': {}",
-                                        name,
-                                        e
-                                    );
-                                    continue;
-                                }
-                            }
-                        } else {
-                            continue;
-                        }
-                    }
-                    HealthCheckType::Command => {
-                        if let Some(cmd) = healthcheck.get_command() {
-                            // Docker services: run healthcheck inside container
-                            // Process/Gradle services: run healthcheck on host
-                            if service.image.is_some() {
-                                // Docker service - use docker exec
-                                let session_id =
-                                    if let Ok(Some(session)) = crate::session::Session::current() {
-                                        Some(session.id().to_string())
-                                    } else {
-                                        None
-                                    };
-                                let container_name = crate::service::docker_container_name(
-                                    name,
-                                    session_id.as_deref(),
-                                    &self.work_dir,
-                                );
-                                Arc::new(DockerCommandChecker::new(
-                                    container_name,
-                                    cmd.to_string(),
-                                    timeout,
-                                ))
-                            } else {
-                                // Process/Gradle service - run on host
-                                Arc::new(CommandChecker::new(
-                                    "bash".to_string(),
-                                    vec!["-c".to_string(), cmd.to_string()],
-                                    timeout,
-                                ))
-                            }
-                        } else {
-                            continue;
-                        }
-                    }
-                    HealthCheckType::None => continue,
-                };
-
-                self.health_checkers
-                    .write()
-                    .await
-                    .insert(name.clone(), checker);
-            }
-        }
+        let runner = super::health::HealthCheckRunner::new(self);
+        runner.create_health_checkers().await;
     }
 
     /// Wait for a service to become healthy (used by script dependencies).
     /// Returns Ok(()) when healthy, or Err after timeout.
+    ///
+    /// Delegates to `HealthCheckRunner`.
     pub async fn wait_for_healthy(&self, service_name: &str, timeout: Duration) -> Result<()> {
-        let checker = {
-            let health_checkers = self.health_checkers.read().await;
-            match health_checkers.get(service_name) {
-                Some(c) => Arc::clone(c),
-                None => {
-                    // No healthcheck configured - consider it healthy after a brief moment
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    return Ok(());
-                }
-            }
-        };
-
-        let start = std::time::Instant::now();
-        let check_interval = Duration::from_millis(500);
-
-        loop {
-            if start.elapsed() > timeout {
-                return Err(Error::Config(format!(
-                    "Service '{}' did not become healthy within {:?}",
-                    service_name, timeout
-                )));
-            }
-
-            match checker.check().await {
-                Ok(true) => {
-                    tracing::debug!("Service '{}' is healthy", service_name);
-                    return Ok(());
-                }
-                Ok(false) => {
-                    tracing::debug!("Service '{}' not healthy yet, waiting...", service_name);
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        "Service '{}' health check failed: {}, retrying...",
-                        service_name,
-                        e
-                    );
-                }
-            }
-
-            tokio::time::sleep(check_interval).await;
-        }
+        let runner = super::health::HealthCheckRunner::new(self);
+        runner.wait_for_healthy(service_name, timeout).await
     }
 
     /// Await a service's healthcheck during startup.
@@ -868,128 +581,15 @@ impl Orchestrator {
     /// waiting for the full timeout. If no healthcheck is registered, returns immediately.
     ///
     /// Respects the orchestrator's cancellation token for responsive Ctrl-C handling.
+    ///
+    /// Delegates to `HealthCheckRunner`.
     async fn await_healthcheck(
         &self,
         name: &str,
         manager_arc: &Arc<tokio::sync::Mutex<Box<dyn ServiceManager>>>,
     ) -> Result<()> {
-        // Clone the Arc and drop the read lock immediately
-        let checker = {
-            let health_checkers = self.health_checkers.read().await;
-            match health_checkers.get(name) {
-                Some(c) => Arc::clone(c),
-                None => return Ok(()), // No healthcheck configured — nothing to wait for
-            }
-        };
-
-        let timeout = checker.timeout();
-        let start = std::time::Instant::now();
-        let check_interval = Duration::from_millis(500);
-
-        tracing::info!(
-            "Waiting for healthcheck on '{}' (timeout: {:?})",
-            name,
-            timeout
-        );
-
-        loop {
-            if start.elapsed() >= timeout {
-                tracing::warn!(
-                    "Service '{}' did not become healthy within {:?}",
-                    name,
-                    timeout
-                );
-                // Don't fail the start — the service process is running, just not
-                // healthy yet. The TUI/status command will show the accurate state.
-                return Ok(());
-            }
-
-            // Respond to Ctrl-C promptly instead of waiting for timeout
-            if self.cancellation_token.is_cancelled() {
-                tracing::debug!("Healthcheck wait for '{}' cancelled", name);
-                return Err(Error::Cancelled(name.to_string()));
-            }
-
-            // Check if the service died while we were waiting.
-            // Read PID/container info under manager lock, then drop it before
-            // acquiring state_tracker write lock (preserves lock ordering:
-            // state_tracker → manager, never the reverse).
-            let (pid, container_id) = {
-                let manager = manager_arc.lock().await;
-                (manager.get_pid(), manager.get_container_id())
-            };
-            // manager lock released here
-
-            // Process/Gradle services: check PID liveness via signal 0
-            if let Some(pid) = pid {
-                let nix_pid = nix::unistd::Pid::from_raw(pid as i32);
-                if nix::sys::signal::kill(nix_pid, None).is_err() {
-                    tracing::warn!(
-                        "Service '{}' (PID {}) died during healthcheck wait",
-                        name,
-                        pid
-                    );
-                    let mut tracker = self.state_tracker.write().await;
-                    tracker.update_service_status(name, Status::Stopped).await?;
-                    tracker.save().await?;
-                    return Err(Error::ServiceStartFailed(
-                        name.to_string(),
-                        format!("Service '{}' crashed during healthcheck wait", name),
-                    ));
-                }
-            }
-
-            // Docker services: check container is still running
-            if let Some(ref container_id) = container_id {
-                let output = tokio::process::Command::new("docker")
-                    .args([
-                        "ps",
-                        "-q",
-                        "--no-trunc",
-                        "-f",
-                        &format!("id={}", container_id),
-                    ])
-                    .output()
-                    .await;
-                let is_running = output.map(|o| !o.stdout.is_empty()).unwrap_or(true); // assume running if docker cmd fails
-                if !is_running {
-                    tracing::warn!(
-                        "Service '{}' container {} stopped during healthcheck wait",
-                        name,
-                        container_id
-                    );
-                    let mut tracker = self.state_tracker.write().await;
-                    tracker.update_service_status(name, Status::Stopped).await?;
-                    tracker.save().await?;
-                    return Err(Error::ServiceStartFailed(
-                        name.to_string(),
-                        format!(
-                            "Service '{}' container stopped during healthcheck wait",
-                            name
-                        ),
-                    ));
-                }
-            }
-
-            // Poll the healthcheck
-            match checker.check().await {
-                Ok(true) => {
-                    tracing::info!("Service '{}' is healthy", name);
-                    let mut tracker = self.state_tracker.write().await;
-                    tracker.update_service_status(name, Status::Healthy).await?;
-                    tracker.save().await?;
-                    return Ok(());
-                }
-                Ok(false) => {
-                    tracing::debug!("Service '{}' not healthy yet, waiting...", name);
-                }
-                Err(e) => {
-                    tracing::debug!("Service '{}' health check error: {}, retrying...", name, e);
-                }
-            }
-
-            tokio::time::sleep(check_interval).await;
-        }
+        let runner = super::health::HealthCheckRunner::new(self);
+        runner.await_healthcheck(name, manager_arc).await
     }
 
     /// Force run install command for a service (clears install state first).
@@ -1141,9 +741,9 @@ impl Orchestrator {
 
         // Determine service type
         let service_type = if let Some(service_config) = self.config.services.get(name) {
-            format!("{:?}", service_config.service_type())
+            service_config.service_type()
         } else {
-            "unknown".to_string()
+            ServiceType::Undefined
         };
 
         // Atomically register service in state tracker before starting.
@@ -1468,34 +1068,11 @@ impl Orchestrator {
     /// in the state database and removes them with `docker rm -f`.
     ///
     /// Returns the number of containers removed.
+    ///
+    /// Delegates to `OrphanCleaner`.
     pub async fn remove_orphaned_containers(&self) -> Result<usize> {
-        let orphans = self.detect_untracked_containers().await?;
-
-        if orphans.is_empty() {
-            return Ok(0);
-        }
-
-        let mut removed = 0;
-        for container in &orphans {
-            tracing::info!("Removing orphaned container: {}", container);
-            let output = tokio::process::Command::new("docker")
-                .args(["rm", "-f", container])
-                .output()
-                .await
-                .map_err(|e| Error::Config(format!("Failed to remove container: {}", e)))?;
-
-            if output.status.success() {
-                removed += 1;
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                // Ignore "No such container" - already gone
-                if !stderr.contains("No such container") {
-                    tracing::warn!("Failed to remove orphaned container '{}': {}", container, stderr.trim());
-                }
-            }
-        }
-
-        Ok(removed)
+        let cleaner = super::orphans::OrphanCleaner::new(self);
+        cleaner.remove_orphaned_containers().await
     }
 
     /// Restart all services in dependency-aware order.
@@ -1593,11 +1170,6 @@ impl Orchestrator {
         self.resolver.get_resolved_parameters().clone()
     }
 
-    /// Get names of parameters with `type: port`.
-    pub fn get_port_parameter_names(&self) -> &[String] {
-        self.resolver.get_port_parameter_names()
-    }
-
     /// Get port resolution decisions for display in dry-run and status commands.
     pub fn get_port_resolutions(&self) -> &[crate::parameter::PortResolution] {
         self.resolver.get_port_resolutions()
@@ -1680,93 +1252,12 @@ impl Orchestrator {
         Ok(manager.get_pid())
     }
 
-    /// Run a script by name
+    /// Run a script non-interactively, capturing output.
+    ///
+    /// Delegates to `ScriptRunner`.
     pub async fn run_script(&self, script_name: &str) -> Result<std::process::Output> {
-        let script = self
-            .config
-            .scripts
-            .get(script_name)
-            .ok_or_else(|| Error::ScriptNotFound(script_name.to_string()))?
-            .clone();
-
-        // Resolve dependencies - can be services or other scripts (SF-00035)
-        // Note: We handle script deps by running them via run_script_interactive
-        // since run_script can't easily be made recursive without boxing
-        for dep in &script.depends_on {
-            if self.config.scripts.contains_key(dep) {
-                // Dependency is a script - run it via interactive runner
-                // (which handles recursion via Box::pin)
-                self.run_script_interactive(dep, &[]).await?;
-            } else {
-                // Dependency is a service - start it if not running
-                if !self.is_service_running(dep).await {
-                    self.start(dep).await?;
-                }
-            }
-        }
-
-        // Resolve script at execution time (scripts are not pre-resolved to support isolated)
-        let params = self.resolver.get_resolved_parameters().clone();
-        let resolved_env = self
-            .resolver
-            .resolve_environment(&script.environment, &params)
-            .map_err(|e| {
-                Error::Config(format!(
-                    "Failed to resolve environment for script '{}': {}",
-                    script_name, e
-                ))
-            })?;
-
-        let resolved_script_cmd = self
-            .resolver
-            .resolve_template_shell_safe(&script.script, &params)
-            .map_err(|e| {
-                Error::Config(format!("Failed to resolve script '{}': {}", script_name, e))
-            })?;
-
-        // Determine working directory
-        let work_dir = if let Some(ref cwd) = script.cwd {
-            std::path::Path::new(cwd).to_path_buf()
-        } else {
-            self.work_dir.clone()
-        };
-
-        // Build command - handle both single commands and shell scripts
-        let mut command = if cfg!(target_os = "windows") {
-            let mut cmd = tokio::process::Command::new("cmd");
-            cmd.args(["/C", &resolved_script_cmd]);
-            cmd
-        } else {
-            let mut cmd = tokio::process::Command::new("sh");
-            cmd.args(["-c", &resolved_script_cmd]);
-            cmd
-        };
-
-        command.current_dir(&work_dir);
-        command.envs(&resolved_env);
-
-        // Execute with timeout - default 5 minutes to prevent hanging
-        let timeout = std::time::Duration::from_secs(300);
-        let output_result = tokio::time::timeout(timeout, command.output()).await;
-
-        let output = match output_result {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => {
-                return Err(Error::Config(format!(
-                    "Failed to execute script '{}': {}",
-                    script_name, e
-                )));
-            }
-            Err(_) => {
-                return Err(Error::Config(format!(
-                    "Script '{}' exceeded timeout of {} seconds",
-                    script_name,
-                    timeout.as_secs()
-                )));
-            }
-        };
-
-        Ok(output)
+        let runner = super::scripts::ScriptRunner::new(self);
+        runner.run_script(script_name).await
     }
 
     /// Run a script interactively with stdin/stdout/stderr passthrough.
@@ -1778,331 +1269,19 @@ impl Orchestrator {
     ///
     /// If the script has `isolated: true`, it runs in an isolated context
     /// with fresh port allocations and isolated service instances.
+    ///
+    /// Delegates to `ScriptRunner`.
     pub async fn run_script_interactive(
         &self,
         script_name: &str,
         extra_args: &[String],
     ) -> Result<std::process::ExitStatus> {
-        let script = self
-            .config
-            .scripts
-            .get(script_name)
-            .ok_or_else(|| Error::ScriptNotFound(script_name.to_string()))?
-            .clone();
-
-        if script.isolated {
-            // Execute in isolated context with fresh port allocations
-            self.run_script_isolated(script_name, &script, extra_args)
-                .await
-        } else {
-            // Execute in shared context (existing behavior)
-            self.run_script_shared(script_name, &script, extra_args)
-                .await
-        }
+        let runner = super::scripts::ScriptRunner::new(self);
+        runner.run_script_interactive(script_name, extra_args).await
     }
 
-    /// Run a script in shared context (reuses session ports and services).
-    async fn run_script_shared(
-        &self,
-        script_name: &str,
-        script: &crate::config::Script,
-        extra_args: &[String],
-    ) -> Result<std::process::ExitStatus> {
-        // Resolve dependencies - can be services or other scripts (SF-00035)
-        for dep in &script.depends_on {
-            if self.config.scripts.contains_key(dep) {
-                // Dependency is a script - run it recursively
-                // Note: Circular dependencies are caught by graph validation during config parsing
-                // Use Box::pin to enable async recursion (avoids infinite future size)
-                Box::pin(self.run_script_interactive(dep, &[])).await?;
-            } else {
-                // Dependency is a service - start it if not running
-                if !self.is_service_running(dep).await {
-                    self.start(dep).await?;
-                }
-            }
-        }
-
-        // Resolve script at execution time (scripts are not pre-resolved to support isolated)
-        let params = self.resolver.get_resolved_parameters().clone();
-        let resolved_env = self
-            .resolver
-            .resolve_environment(&script.environment, &params)
-            .map_err(|e| {
-                Error::Config(format!(
-                    "Failed to resolve environment for script '{}': {}",
-                    script_name, e
-                ))
-            })?;
-
-        let resolved_script = self
-            .resolver
-            .resolve_template_shell_safe(&script.script, &params)
-            .map_err(|e| {
-                Error::Config(format!("Failed to resolve script '{}': {}", script_name, e))
-            })?;
-
-        // Create resolved script for execution
-        let resolved = crate::config::Script {
-            cwd: script.cwd.clone(),
-            depends_on: vec![], // Already resolved above
-            environment: resolved_env,
-            script: resolved_script,
-            isolated: false,
-        };
-
-        // Execute the script command
-        Self::execute_script_command(&resolved, extra_args, &self.work_dir).await
-    }
-
-    /// Run a script in isolated context with fresh port allocations (SF-00034).
-    ///
-    /// Creates a child orchestrator that:
-    /// 1. Allocates fresh random ports for all port-type parameters
-    /// 2. Starts dependencies with the new ports
-    /// 3. Runs the script in isolation
-    /// 4. Cleans up all services after completion
-    async fn run_script_isolated(
-        &self,
-        script_name: &str,
-        _script: &crate::config::Script, // Unused - we get the script from original_config
-        extra_args: &[String],
-    ) -> Result<std::process::ExitStatus> {
-        tracing::info!(
-            "Running script '{}' in isolated context (isolated: true)",
-            script_name
-        );
-
-        // Use the ORIGINAL unresolved config so the child can re-resolve templates
-        // with fresh port allocations. If original_config is None (shouldn't happen),
-        // fall back to cloning the resolved config.
-        let child_config = self
-            .original_config
-            .clone()
-            .unwrap_or_else(|| self.config.clone());
-
-        // Get the script from the original config (has unresolved templates)
-        let original_script = child_config
-            .scripts
-            .get(script_name)
-            .ok_or_else(|| Error::ScriptNotFound(script_name.to_string()))?
-            .clone();
-
-        let mut child_orchestrator = Orchestrator::new(child_config, self.work_dir.clone()).await?;
-        child_orchestrator.output_mode = self.output_mode;
-
-        // Enable isolated mode to skip session port cache and allocate fresh ports
-        child_orchestrator.resolver.set_isolated_mode(true);
-
-        // Clear the state tracker before initialization so the child doesn't restore
-        // old container IDs from previous runs. Each isolated run should start fresh.
-        child_orchestrator
-            .state_tracker
-            .write()
-            .await
-            .clear()
-            .await?;
-
-        // Initialize child orchestrator (allocates fresh ports due to isolated mode)
-        child_orchestrator.initialize().await?;
-
-        // Run script dependencies in the child context
-        // Script-to-script dependencies run in parent context (they don't need isolation
-        // unless they also have isolated)
-        let mut service_deps = Vec::new();
-        for dep in &original_script.depends_on {
-            if self.config.scripts.contains_key(dep) {
-                // Script dependency: run in parent context
-                // (nested scripts get their own isolation if they have isolated)
-                Box::pin(self.run_script_interactive(dep, &[])).await?;
-            } else {
-                // Service dependency: start in child context with isolated ports
-                child_orchestrator.start(dep).await?;
-                service_deps.push(dep.clone());
-            }
-        }
-
-        // Wait for service dependencies to become healthy
-        // This is important for isolated scripts that need DB connections etc.
-        for dep in &service_deps {
-            child_orchestrator
-                .wait_for_healthy(dep, Duration::from_secs(60))
-                .await?;
-        }
-
-        // Get the child's resolved parameters for the script environment
-        let child_params = child_orchestrator
-            .resolver
-            .get_resolved_parameters()
-            .clone();
-
-        // Re-resolve the script's environment and command with child parameters
-        // Using original_script which has unresolved templates like {{DB_PORT}}
-        let resolved_env = child_orchestrator
-            .resolver
-            .resolve_environment(&original_script.environment, &child_params)
-            .map_err(|e| {
-                Error::Config(format!(
-                    "Failed to resolve environment for script '{}': {}",
-                    script_name, e
-                ))
-            })?;
-
-        let resolved_script_cmd = child_orchestrator
-            .resolver
-            .resolve_template_shell_safe(&original_script.script, &child_params)
-            .map_err(|e| {
-                Error::Config(format!("Failed to resolve script '{}': {}", script_name, e))
-            })?;
-
-        // Create a modified script with resolved environment and command
-        let isolated_script = crate::config::Script {
-            cwd: original_script.cwd.clone(),
-            depends_on: vec![], // Already resolved
-            environment: resolved_env,
-            script: resolved_script_cmd,
-            isolated: false, // Don't recurse
-        };
-
-        // Execute script in child context
-        let result =
-            Self::execute_script_command(&isolated_script, extra_args, &self.work_dir).await;
-
-        // Cleanup child orchestrator (stops all services started in isolation)
-        tracing::debug!("Cleaning up isolated context for script '{}'", script_name);
-        child_orchestrator.cleanup().await;
-
-        // Log which ports were used (helpful for debugging)
-        if !child_params.is_empty() {
-            let port_params: Vec<_> = child_params
-                .iter()
-                .filter(|(k, _)| k.to_uppercase().contains("PORT"))
-                .collect();
-            if !port_params.is_empty() {
-                tracing::debug!("Isolated ports released: {:?}", port_params);
-            }
-        }
-
-        result
-    }
-
-    /// Execute a script command with the given environment.
-    /// This is the common script execution logic shared by both shared and isolated contexts.
-    async fn execute_script_command(
-        script: &crate::config::Script,
-        extra_args: &[String],
-        work_dir: &std::path::Path,
-    ) -> Result<std::process::ExitStatus> {
-        use crate::parameter::shell_escape;
-        use std::process::Stdio;
-
-        // Determine working directory
-        let script_work_dir = if let Some(ref cwd) = script.cwd {
-            std::path::Path::new(cwd).to_path_buf()
-        } else {
-            work_dir.to_path_buf()
-        };
-
-        // Check if script uses positional parameters ($@, $*, $1, $2, etc.)
-        // If not, we'll auto-append arguments to the command for convenience
-        let uses_positional_params = Self::script_uses_positional_params(&script.script);
-
-        // Build command with inherited stdio for full TTY passthrough
-        let mut command = if cfg!(target_os = "windows") {
-            let mut cmd = tokio::process::Command::new("cmd");
-            if extra_args.is_empty() {
-                cmd.args(["/C", &script.script]);
-            } else {
-                // Windows: append args to the command
-                let escaped_args: Vec<String> =
-                    extra_args.iter().map(|arg| shell_escape(arg)).collect();
-                let trimmed_script = script.script.trim_end();
-                let full_script = format!("{} {}", trimmed_script, escaped_args.join(" "));
-                cmd.args(["/C", &full_script]);
-            }
-            cmd
-        } else {
-            let mut cmd = tokio::process::Command::new("sh");
-            cmd.arg("-c");
-
-            if extra_args.is_empty() {
-                // No arguments - just run the script
-                cmd.arg(&script.script);
-            } else if uses_positional_params {
-                // Script uses $@, $1, etc. - pass args as positional parameters
-                // Use: sh -c 'script' script_name arg1 arg2
-                // This makes $@, $1, $2, etc. work properly in the script
-                // The first arg after the script becomes $0 (shown in error messages)
-                cmd.arg(&script.script);
-                cmd.arg("script"); // $0 - appears in error messages
-                cmd.args(extra_args); // $1, $2, ... and $@
-            } else {
-                // Script doesn't use positional params - auto-append args to command
-                // This allows `script: prisma` to work with `fed prisma generate`
-                let escaped_args: Vec<String> =
-                    extra_args.iter().map(|arg| shell_escape(arg)).collect();
-                let trimmed_script = script.script.trim_end();
-                let full_script = format!("{} {}", trimmed_script, escaped_args.join(" "));
-                cmd.arg(&full_script);
-            }
-            cmd
-        };
-
-        command.current_dir(&script_work_dir);
-        command.envs(&script.environment);
-
-        // Inherit stdio for interactive use - enables TUI, colors, and user input
-        command.stdin(Stdio::inherit());
-        command.stdout(Stdio::inherit());
-        command.stderr(Stdio::inherit());
-
-        // Spawn and wait for completion (no timeout for interactive scripts)
-        let mut child = command
-            .spawn()
-            .map_err(|e| Error::Config(format!("Failed to spawn script: {}", e)))?;
-
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| Error::Config(format!("Failed to wait for script: {}", e)))?;
-
-        Ok(status)
-    }
-
-    /// Check if a script uses positional parameters ($@, $*, $1, $2, etc.)
-    /// Used to decide whether to pass args via positional params or auto-append.
-    fn script_uses_positional_params(script: &str) -> bool {
-        // Match common positional parameter patterns:
-        // $@ $* $1 $2 ... $9 ${1} ${@} ${*} ${10} etc.
-        // Also match "$@" "$*" etc. (quoted forms)
-        let patterns = [
-            "$@", "$*", "$1", "$2", "$3", "$4", "$5", "$6", "$7", "$8", "$9", "${@}", "${*}",
-        ];
-
-        for pattern in patterns {
-            if script.contains(pattern) {
-                return true;
-            }
-        }
-
-        // Check for ${N} where N is a number (handles $10, $11, etc.)
-        // Simple check: look for ${ followed by a digit
-        let bytes = script.as_bytes();
-        for i in 0..bytes.len().saturating_sub(2) {
-            if bytes[i] == b'$' && bytes[i + 1] == b'{' {
-                if let Some(&next) = bytes.get(i + 2) {
-                    if next.is_ascii_digit() {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        false
-    }
-
-    /// Check if a service is running
-    async fn is_service_running(&self, service_name: &str) -> bool {
+    /// Check if a service is currently running or healthy.
+    pub async fn is_service_running(&self, service_name: &str) -> bool {
         let services = self.services.read().await;
         match services.get(service_name) {
             Some(arc) => {
@@ -2114,9 +1293,12 @@ impl Orchestrator {
         }
     }
 
-    /// Get list of available scripts
+    /// Get list of available scripts.
+    ///
+    /// Delegates to `ScriptRunner`.
     pub fn list_scripts(&self) -> Vec<String> {
-        self.config.scripts.keys().cloned().collect()
+        let runner = super::scripts::ScriptRunner::new(self);
+        runner.list_scripts()
     }
 
     /// Mark startup as complete - allows monitoring to clean up dead services
@@ -2193,6 +1375,28 @@ impl Orchestrator {
             let _ = self.state_tracker.write().await.clear().await;
         }
         tracing::debug!("Cleanup: complete");
+    }
+}
+
+/// Check if a PID is alive (signal 0 check).
+///
+/// This is a free function shared across orchestrator submodules.
+/// Both `orphans` (orphan process detection) and `ports` (managed port
+/// collection) need it, so it lives here to avoid cross-module dependencies.
+pub(super) fn is_pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        use crate::error::validate_pid_for_check;
+        use nix::sys::signal::kill;
+        if let Some(nix_pid) = validate_pid_for_check(pid) {
+            return kill(nix_pid, None).is_ok();
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true // Can't check on non-unix, assume alive
     }
 }
 

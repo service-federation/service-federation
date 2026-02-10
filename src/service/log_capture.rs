@@ -341,9 +341,9 @@ impl LogCapture {
             Ok::<Vec<String>, std::io::Error>(result)
         })
         .await
-        .map_err(|e| Error::Config(format!("Log read task failed: {}", e)))?;
+        .map_err(|e| Error::Filesystem(format!("Log read task failed: {}", e)))?;
 
-        result.map_err(|e| Error::Config(format!("Failed to read log file: {}", e)))
+        result.map_err(|e| Error::Filesystem(format!("Failed to read log file: {}", e)))
     }
 
     /// Shutdown log capture tasks gracefully.

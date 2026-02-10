@@ -25,7 +25,7 @@ pub fn load_env_file<P: AsRef<Path>>(path: P) -> Result<HashMap<String, String>>
     let path = path.as_ref();
 
     if !path.exists() {
-        return Err(Error::Config(format!(
+        return Err(Error::Filesystem(format!(
             "Environment file not found: {}",
             path.display()
         )));
@@ -51,7 +51,7 @@ pub fn load_env_file<P: AsRef<Path>>(path: P) -> Result<HashMap<String, String>>
             }
         }
         Err(e) => {
-            return Err(Error::Config(format!(
+            return Err(Error::Filesystem(format!(
                 "Failed to read environment file {}: {}",
                 path.display(),
                 e

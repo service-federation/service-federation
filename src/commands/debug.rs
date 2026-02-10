@@ -1,7 +1,7 @@
 use crate::output::UserOutput;
 use serde::Serialize;
 use service_federation::config::Config;
-use service_federation::error::{Error, Result};
+use service_federation::error::Error;
 use service_federation::state::SqliteStateTracker;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -69,7 +69,7 @@ pub async fn run_debug(
     work_dir: PathBuf,
     json: bool,
     out: &dyn UserOutput,
-) -> Result<()> {
+) -> anyhow::Result<()> {
     match command {
         DebugCommand::State => {
             let state = collect_state_info(work_dir).await?;
@@ -104,7 +104,7 @@ pub async fn run_debug(
     Ok(())
 }
 
-async fn collect_state_info(work_dir: PathBuf) -> Result<StateDebugOutput> {
+async fn collect_state_info(work_dir: PathBuf) -> anyhow::Result<StateDebugOutput> {
     let state_tracker = SqliteStateTracker::new(work_dir).await?;
     let all_services = state_tracker.get_services().await;
 
@@ -123,7 +123,7 @@ async fn collect_state_info(work_dir: PathBuf) -> Result<StateDebugOutput> {
         services.push(ServiceDebugInfo {
             name: service_state.id.clone(),
             status: service_state.status.to_string(),
-            service_type: service_state.service_type.clone(),
+            service_type: service_state.service_type.to_string(),
             pid: service_state.pid,
             container_id: service_state.container_id.clone(),
             started_at: service_state.started_at.to_rfc3339(),
@@ -158,7 +158,7 @@ async fn collect_state_info(work_dir: PathBuf) -> Result<StateDebugOutput> {
 async fn collect_circuit_breaker_info(
     work_dir: PathBuf,
     service: &str,
-) -> Result<CircuitBreakerDebugOutput> {
+) -> anyhow::Result<CircuitBreakerDebugOutput> {
     let state_tracker = SqliteStateTracker::new(work_dir).await?;
 
     let service_state = state_tracker
@@ -191,7 +191,7 @@ async fn collect_circuit_breaker_info(
 async fn get_recent_restarts(
     state_tracker: &SqliteStateTracker,
     service: &str,
-) -> Result<Vec<RestartEvent>> {
+) -> anyhow::Result<Vec<RestartEvent>> {
     let timestamps = state_tracker.get_restart_history(service).await?;
     Ok(timestamps
         .into_iter()
@@ -279,10 +279,7 @@ fn print_ports_human_readable(ports: &[PortDebugInfo], out: &dyn UserOutput) {
 }
 
 fn print_circuit_breaker_human_readable(info: &CircuitBreakerDebugOutput, out: &dyn UserOutput) {
-    out.status(&format!(
-        "\nCircuit Breaker Status for '{}'",
-        info.service
-    ));
+    out.status(&format!("\nCircuit Breaker Status for '{}'", info.service));
     out.status("=====================================\n");
 
     out.status(&format!("Status: {}", info.status));

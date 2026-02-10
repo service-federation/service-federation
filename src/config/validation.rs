@@ -1,4 +1,4 @@
-use super::{Config, ServiceType};
+use super::{parse_duration_string, Config, HealthCheck, ServiceType};
 use crate::error::{Error, Result};
 use std::collections::HashSet;
 
@@ -43,10 +43,58 @@ impl Config {
             if let Some(service) = self.services.get(*ep_name) {
                 if service.startup_message.is_none() {
                     eprintln!(
-                        "\x1b[33mWarning: Entrypoint service '{}' has no startup_message.\n\
-                         \x1b[33m         Without this, isolated mode won't show where to access the application.\n\
-                         \x1b[33m         Add: startup_message: \"http://localhost:{{{{PORT}}}}\"\x1b[0m"
+                        "Warning: Entrypoint service '{}' has no startup_message.\n\
+                                  Without this, isolated mode won't show where to access the application.\n\
+                                  Add: startup_message: \"http://localhost:{{{{PORT}}}}\""
                         , ep_name);
+                }
+            }
+        }
+
+        // Validate each service has a defined type
+        for (name, service) in &self.services {
+            if service.service_type() == ServiceType::Undefined {
+                return Err(Error::Validation(format!(
+                    "Service '{}' has no type defined. Add one of: process, image, gradle_task, or compose_file + compose_service",
+                    name
+                )));
+            }
+        }
+
+        // Validate duration strings
+        for (name, service) in &self.services {
+            if let Some(ref gp) = service.grace_period {
+                if parse_duration_string(gp).is_none() {
+                    return Err(Error::Validation(format!(
+                        "Service '{}' has invalid grace_period '{}'. Use formats like '5s', '30s', '1m', '500ms'",
+                        name, gp
+                    )));
+                }
+            }
+            if let Some(ref hc) = service.healthcheck {
+                let timeout_str = match hc {
+                    HealthCheck::HttpGet { timeout, .. } => timeout.as_deref(),
+                    HealthCheck::CommandMap { timeout, .. } => timeout.as_deref(),
+                    HealthCheck::Command(_) => None,
+                };
+                if let Some(t) = timeout_str {
+                    if parse_duration_string(t).is_none() {
+                        return Err(Error::Validation(format!(
+                            "Service '{}' has invalid healthcheck timeout '{}'. Use formats like '5s', '30s', '1m', '500ms'",
+                            name, t
+                        )));
+                    }
+                }
+            }
+        }
+
+        for (name, script) in &self.scripts {
+            if let Some(ref t) = script.timeout {
+                if parse_duration_string(t).is_none() {
+                    return Err(Error::Validation(format!(
+                        "Script '{}' has invalid timeout '{}'. Use formats like '5s', '30s', '1m', '500ms'",
+                        name, t
+                    )));
                 }
             }
         }
@@ -77,14 +125,14 @@ impl Config {
                     let border = "─".repeat(box_width);
 
                     return Err(Error::Validation(format!(
-                        "Service '\x1b[1;36m{}\x1b[0m' depends on non-existent service '\x1b[1;31m{}\x1b[0m'\n\n\
-                        \x1b[33m╭{}╮\x1b[0m\n\
-                        \x1b[33m│\x1b[0m {} \x1b[33m│\x1b[0m\n\
-                        \x1b[33m╰{}╯\x1b[0m\n\n\
-                        \x1b[36mservices:\n  \
+                        "Service '{}' depends on non-existent service '{}'\n\n\
+                        ╭{}╮\n\
+                        │ {} │\n\
+                        ╰{}╯\n\n\
+                        services:\n  \
                           {}:\n    \
                             depends_on:\n      \
-                              - {}\x1b[0m  \x1b[31m# ← remove this line\x1b[0m",
+                              - {}  # ← remove this line",
                         name, dep_name, border, hint_text, border, name, dep_name
                     )));
                 }
@@ -117,14 +165,14 @@ impl Config {
                     let border = "─".repeat(box_width);
 
                     return Err(Error::Validation(format!(
-                        "Script '\x1b[1;36m{}\x1b[0m' depends on non-existent service or script '\x1b[1;31m{}\x1b[0m'\n\n\
-                        \x1b[33m╭{}╮\x1b[0m\n\
-                        \x1b[33m│\x1b[0m {} \x1b[33m│\x1b[0m\n\
-                        \x1b[33m╰{}╯\x1b[0m\n\n\
-                        \x1b[36mscripts:\n  \
+                        "Script '{}' depends on non-existent service or script '{}'\n\n\
+                        ╭{}╮\n\
+                        │ {} │\n\
+                        ╰{}╯\n\n\
+                        scripts:\n  \
                           {}:\n    \
                             depends_on:\n      \
-                              - {}\x1b[0m  \x1b[31m# ← remove this line\x1b[0m",
+                              - {}  # ← remove this line",
                         script_name, dep, border, hint_text, border, script_name, dep
                     )));
                 }
@@ -605,6 +653,7 @@ mod tests {
             depends_on: vec![],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.services.insert("app".to_string(), service);
@@ -628,6 +677,7 @@ mod tests {
             depends_on: vec!["nonexistent".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.scripts.insert("test".to_string(), script);
@@ -655,6 +705,7 @@ mod tests {
             depends_on: vec!["database".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.services.insert("database".to_string(), service);
@@ -675,6 +726,7 @@ mod tests {
             depends_on: vec![],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         let script2 = Script {
@@ -683,6 +735,7 @@ mod tests {
             depends_on: vec!["script1".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.scripts.insert("script1".to_string(), script1);
@@ -850,6 +903,7 @@ mod tests {
             depends_on: vec!["script_b".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         let script_b = Script {
@@ -858,6 +912,7 @@ mod tests {
             depends_on: vec!["script_a".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.scripts.insert("script_a".to_string(), script_a);
@@ -881,6 +936,7 @@ mod tests {
             depends_on: vec!["y".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         let script_y = Script {
@@ -889,6 +945,7 @@ mod tests {
             depends_on: vec!["z".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         let script_z = Script {
@@ -897,6 +954,7 @@ mod tests {
             depends_on: vec!["x".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.scripts.insert("x".to_string(), script_x);
@@ -935,6 +993,7 @@ mod tests {
             depends_on: vec!["database".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.services.insert("database".to_string(), service);
@@ -963,6 +1022,7 @@ mod tests {
             depends_on: vec!["db".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         let script_a = Script {
@@ -971,6 +1031,7 @@ mod tests {
             depends_on: vec!["script_b".to_string()],
             environment: HashMap::new(),
             isolated: false,
+            timeout: None,
         };
 
         config.services.insert("db".to_string(), service);
@@ -978,6 +1039,242 @@ mod tests {
         config.scripts.insert("script_a".to_string(), script_a);
 
         // This should be valid - no script→script cycle
+        assert!(config.validate().is_ok());
+    }
+
+    // ==================== Service Type Validation (SF-00115) ====================
+
+    #[test]
+    fn test_undefined_service_type_rejected() {
+        let mut config = Config::default();
+        config
+            .services
+            .insert("empty".to_string(), Service::default());
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("has no type defined"));
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn test_process_service_accepted() {
+        let mut config = Config::default();
+        config.services.insert(
+            "app".to_string(),
+            Service {
+                process: Some("echo hello".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_docker_service_accepted() {
+        let mut config = Config::default();
+        config.services.insert(
+            "db".to_string(),
+            Service {
+                image: Some("postgres:15".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_gradle_service_accepted() {
+        let mut config = Config::default();
+        config.services.insert(
+            "api".to_string(),
+            Service {
+                gradle_task: Some(":api:run".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_compose_service_accepted() {
+        let mut config = Config::default();
+        config.services.insert(
+            "web".to_string(),
+            Service {
+                compose_file: Some("docker-compose.yml".to_string()),
+                compose_service: Some("web".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.validate().is_ok());
+    }
+
+    // ==================== Duration Validation (SF-00116) ====================
+
+    #[test]
+    fn test_invalid_grace_period_rejected() {
+        let mut config = Config::default();
+        config.services.insert(
+            "app".to_string(),
+            Service {
+                process: Some("echo hello".to_string()),
+                grace_period: Some("invalid".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid grace_period"));
+        assert!(err.contains("invalid"));
+    }
+
+    #[test]
+    fn test_valid_grace_period_accepted() {
+        let mut config = Config::default();
+        config.services.insert(
+            "app".to_string(),
+            Service {
+                process: Some("echo hello".to_string()),
+                grace_period: Some("30s".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_healthcheck_timeout_rejected() {
+        use crate::config::HealthCheck;
+
+        let mut config = Config::default();
+        config.services.insert(
+            "app".to_string(),
+            Service {
+                process: Some("echo hello".to_string()),
+                healthcheck: Some(HealthCheck::HttpGet {
+                    http_get: "http://localhost:8080/health".to_string(),
+                    timeout: Some("not-a-duration".to_string()),
+                }),
+                ..Default::default()
+            },
+        );
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid healthcheck timeout"));
+    }
+
+    #[test]
+    fn test_valid_healthcheck_timeout_accepted() {
+        use crate::config::HealthCheck;
+
+        let mut config = Config::default();
+        config.services.insert(
+            "app".to_string(),
+            Service {
+                process: Some("echo hello".to_string()),
+                healthcheck: Some(HealthCheck::HttpGet {
+                    http_get: "http://localhost:8080/health".to_string(),
+                    timeout: Some("5s".to_string()),
+                }),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_healthcheck_no_timeout_accepted() {
+        use crate::config::HealthCheck;
+
+        let mut config = Config::default();
+        config.services.insert(
+            "app".to_string(),
+            Service {
+                process: Some("echo hello".to_string()),
+                healthcheck: Some(HealthCheck::Command("curl localhost".to_string())),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_command_healthcheck_timeout_rejected() {
+        use crate::config::HealthCheck;
+
+        let mut config = Config::default();
+        config.services.insert(
+            "app".to_string(),
+            Service {
+                process: Some("echo hello".to_string()),
+                healthcheck: Some(HealthCheck::CommandMap {
+                    command: "curl localhost".to_string(),
+                    timeout: Some("bogus".to_string()),
+                }),
+                ..Default::default()
+            },
+        );
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid healthcheck timeout"));
+    }
+
+    #[test]
+    fn test_invalid_script_timeout_rejected() {
+        use crate::config::Script;
+
+        let mut config = Config::default();
+        config.scripts.insert(
+            "migrate".to_string(),
+            Script {
+                script: "echo migrate".to_string(),
+                cwd: None,
+                depends_on: vec![],
+                environment: HashMap::new(),
+                isolated: false,
+                timeout: Some("nope".to_string()),
+            },
+        );
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid timeout"));
+        assert!(err.contains("migrate"));
+    }
+
+    #[test]
+    fn test_valid_script_timeout_accepted() {
+        use crate::config::Script;
+
+        let mut config = Config::default();
+        config.scripts.insert(
+            "migrate".to_string(),
+            Script {
+                script: "echo migrate".to_string(),
+                cwd: None,
+                depends_on: vec![],
+                environment: HashMap::new(),
+                isolated: false,
+                timeout: Some("5m".to_string()),
+            },
+        );
+
         assert!(config.validate().is_ok());
     }
 }

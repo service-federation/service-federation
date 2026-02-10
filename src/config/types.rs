@@ -122,6 +122,113 @@ impl Config {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to build a Config with the given services (name -> tags).
+    fn config_with_services(services: &[(&str, &[&str])]) -> Config {
+        let mut config = Config::default();
+        for &(name, tags) in services {
+            let svc = Service {
+                tags: tags.iter().map(|t| t.to_string()).collect(),
+                ..Default::default()
+            };
+            config.services.insert(name.to_string(), svc);
+        }
+        config
+    }
+
+    // ========================================================================
+    // expand_service_selection tests
+    // ========================================================================
+
+    #[test]
+    fn expand_single_service_name_passthrough() {
+        let config = config_with_services(&[("api", &[])]);
+        let result = config.expand_service_selection(&["api".to_string()]);
+        assert_eq!(result, vec!["api"]);
+    }
+
+    #[test]
+    fn expand_tag_to_matching_services() {
+        let config = config_with_services(&[
+            ("api", &["backend"]),
+            ("worker", &["backend"]),
+            ("web", &["frontend"]),
+        ]);
+        let result = config.expand_service_selection(&["@backend".to_string()]);
+        assert_eq!(result, vec!["api", "worker"]);
+    }
+
+    #[test]
+    fn expand_tag_no_matches_returns_empty() {
+        let config = config_with_services(&[("api", &["backend"])]);
+        let result = config.expand_service_selection(&["@nonexistent".to_string()]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn expand_mix_of_names_and_tags() {
+        let config = config_with_services(&[
+            ("api", &["backend"]),
+            ("worker", &["backend"]),
+            ("web", &["frontend"]),
+            ("db", &[]),
+        ]);
+        let result = config.expand_service_selection(&["db".to_string(), "@frontend".to_string()]);
+        assert_eq!(result, vec!["db", "web"]);
+    }
+
+    #[test]
+    fn expand_deduplicates_when_name_matches_tag() {
+        let config = config_with_services(&[("api", &["backend"]), ("worker", &["backend"])]);
+        // "api" appears both explicitly and via @backend
+        let result = config.expand_service_selection(&["api".to_string(), "@backend".to_string()]);
+        assert_eq!(result, vec!["api", "worker"]);
+    }
+
+    #[test]
+    fn expand_empty_input() {
+        let config = config_with_services(&[("api", &["backend"])]);
+        let result = config.expand_service_selection(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn expand_result_is_sorted() {
+        let config = config_with_services(&[
+            ("zebra", &["animals"]),
+            ("alpha", &["animals"]),
+            ("middle", &["animals"]),
+        ]);
+        let result = config.expand_service_selection(&["@animals".to_string()]);
+        assert_eq!(result, vec!["alpha", "middle", "zebra"]);
+    }
+
+    #[test]
+    fn expand_unknown_service_name_passes_through() {
+        // Direct names are inserted even if they don't exist in config.services
+        let config = config_with_services(&[]);
+        let result = config.expand_service_selection(&["ghost".to_string()]);
+        assert_eq!(result, vec!["ghost"]);
+    }
+
+    #[test]
+    fn expand_multiple_tags() {
+        let config = config_with_services(&[
+            ("api", &["backend", "critical"]),
+            ("worker", &["backend"]),
+            ("cache", &["critical"]),
+            ("web", &["frontend"]),
+        ]);
+        let result =
+            config.expand_service_selection(&["@backend".to_string(), "@critical".to_string()]);
+        // api, worker from @backend; api, cache from @critical — deduplicated
+        assert_eq!(result, vec!["api", "cache", "worker"]);
+    }
+}
+
 /// Package reference for importing external packages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageReference {

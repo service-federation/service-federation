@@ -67,10 +67,7 @@ pub fn run_validate(config_path: Option<PathBuf>, out: &dyn UserOutput) -> anyho
     if let Some(ref ep) = config.entrypoint {
         out.status(&format!("\nEntrypoint: {}", ep));
     } else if !config.entrypoints.is_empty() {
-        out.status(&format!(
-            "\nEntrypoints: {}",
-            config.entrypoints.join(", ")
-        ));
+        out.status(&format!("\nEntrypoints: {}", config.entrypoints.join(", ")));
     }
 
     Ok(())

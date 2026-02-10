@@ -2,6 +2,7 @@ use super::{BaseService, LogCapture, OutputMode, ServiceManager, Status};
 use crate::config::Service as ServiceConfig;
 use crate::error::{validate_pid, validate_pid_for_check, Error, Result};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use nix::sys::signal::{self, killpg, Signal};
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -55,6 +56,8 @@ pub struct ProcessService {
     health_cache: Arc<tokio::sync::Mutex<(Option<bool>, Instant)>>,
     /// Grace period for graceful shutdown before SIGKILL
     grace_period: Duration,
+    /// When the process was started (used to detect PID reuse in detached stop)
+    started_at: Arc<SyncMutex<Option<DateTime<Utc>>>>,
 }
 
 impl ProcessService {
@@ -81,15 +84,23 @@ impl ProcessService {
             log_capture: LogCapture::new(name, log_file_path, output_mode),
             health_cache: Arc::new(tokio::sync::Mutex::new((None, Instant::now()))),
             grace_period,
+            started_at: Arc::new(SyncMutex::new(None)),
         }
     }
 
     /// Restore PID from state (used when reattaching to detached processes)
     pub fn set_pid(&self, pid: u32) {
+        self.set_pid_with_start_time(pid, None);
+    }
+
+    /// Restore PID from state with a known start time (used when reattaching to detached processes).
+    /// The start time enables PID reuse detection during stop.
+    pub fn set_pid_with_start_time(&self, pid: u32, started_at: Option<DateTime<Utc>>) {
         if let Err(e) = self.validate_and_store_pid(pid) {
             tracing::error!("Failed to restore PID for '{}': {}", self.name, e);
             return;
         }
+        *self.started_at.lock() = started_at;
         // Also set status to Running since we're restoring an existing process
         let mut base = self.base.write();
         base.set_status(Status::Running);
@@ -333,6 +344,9 @@ impl ServiceManager for ProcessService {
         // Start the process
         let mut child = self.spawn_process().await?;
 
+        // Record start time for PID reuse detection in detached stop
+        *self.started_at.lock() = Some(Utc::now());
+
         if self.output_mode.is_file() {
             // In File mode: Read the background PID from stdout
             if let Some(stdout) = child.stdout.take() {
@@ -547,6 +561,27 @@ impl ServiceManager for ProcessService {
             if let Some(pid_val) = pid_opt {
                 // Validate PID: rejects 0, 1, and values > i32::MAX
                 let pid = validate_pid(pid_val, &self.name)?;
+
+                // Check for PID reuse before sending signals to avoid killing the wrong process
+                let started_at = *self.started_at.lock();
+                if let Some(expected_start) = started_at {
+                    if !crate::error::validate_pid_start_time(pid_val, expected_start) {
+                        tracing::warn!(
+                            "PID {} for service '{}' was reused by another process, skipping kill",
+                            pid_val,
+                            self.name
+                        );
+                        *self.pid.lock() = None;
+
+                        // Shutdown log capture tasks
+                        self.log_capture.shutdown().await;
+                        *self.health_cache.lock().await = (None, Instant::now());
+
+                        let mut base = self.base.write();
+                        base.set_status(Status::Stopped);
+                        return Ok(());
+                    }
+                }
 
                 // Try to get the actual process group ID (PGID) of the process.
                 // This is important because the PGID may differ from the PID if the process
@@ -1166,9 +1201,13 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_get_process_group_nonexistent_pid() {
-        // A very high (but valid) PID that almost certainly doesn't exist
-        // Using 4194304 which is a common PID_MAX on Linux
-        let pgid = ProcessService::get_process_group(4194303);
+        // Spawn a short-lived process and wait for it to finish, giving us a
+        // PID that is guaranteed to be dead without relying on magic constants.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+
+        let pgid = ProcessService::get_process_group(dead_pid);
         // This should return None gracefully (ESRCH error)
         assert!(
             pgid.is_none(),

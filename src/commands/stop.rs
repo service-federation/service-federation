@@ -1,10 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::{
-    config::Config,
-    service::Status,
-    state::StateTracker,
-    Orchestrator,
-};
+use service_federation::{config::Config, service::Status, state::StateTracker, Orchestrator};
 use std::path::Path;
 
 use super::lifecycle::{remove_orphan_containers_for_workdir, stop_service_by_state, StopResult};
@@ -80,10 +75,7 @@ fn state_status_is_active(status: Status) -> bool {
 ///
 /// This catches cases where services are running but no longer appear in the
 /// current config (e.g., services renamed/removed).
-async fn stop_remaining_state_services(
-    orchestrator: &Orchestrator,
-    out: &dyn UserOutput,
-) -> usize {
+async fn stop_remaining_state_services(orchestrator: &Orchestrator, out: &dyn UserOutput) -> usize {
     use service_federation::state::SqliteStateTracker;
 
     // Avoid holding the outer RwLock across await by cloning the DB connection.
@@ -126,9 +118,13 @@ async fn stop_remaining_state_services(
 
     let mut tracker = orchestrator.state_tracker.write().await;
     for name in &stopped_names {
-        let _ = tracker.unregister_service(name).await;
+        if let Err(e) = tracker.unregister_service(name).await {
+            tracing::warn!("Failed to unregister service '{}' from state: {}", name, e);
+        }
     }
-    let _ = tracker.save().await;
+    if let Err(e) = tracker.save().await {
+        tracing::warn!("Failed to save state after stopping services: {}", e);
+    }
 
     stopped_names.len()
 }
@@ -195,7 +191,9 @@ pub async fn run_stop_from_state(
         tracker.clear().await?;
     } else {
         for (name, _) in &services_to_stop {
-            let _ = tracker.unregister_service(name).await;
+            if let Err(e) = tracker.unregister_service(name).await {
+                tracing::warn!("Failed to unregister service '{}' from state: {}", name, e);
+            }
         }
         tracker.save().await?;
     }

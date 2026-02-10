@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "fed")]
+#[command(name = "fed", version)]
 #[command(about = "Service Federation - Orchestrate complex service dependencies")]
 pub struct Cli {
     /// Config file path (defaults to service-federation.yaml)
@@ -24,6 +24,10 @@ pub struct Cli {
     /// Offline mode: skip git operations and use only cached packages
     #[arg(long)]
     pub offline: bool,
+
+    /// Show verbose debug output
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -170,6 +174,10 @@ pub enum Commands {
     #[command(subcommand)]
     Docker(DockerCommands),
 
+    /// Manage git worktrees for isolated service stacks
+    #[command(subcommand, alias = "ws")]
+    Workspace(WorkspaceCommands),
+
     /// Run a script by name (shorthand for `fed run <script>`)
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -294,4 +302,39 @@ impl Default for PortsCommands {
     fn default() -> Self {
         PortsCommands::List { json: false }
     }
+}
+
+#[derive(Subcommand)]
+pub enum WorkspaceCommands {
+    /// Create a worktree and enter it
+    New {
+        /// Branch name (existing or new with -b)
+        branch: String,
+        /// Create a new branch instead of checking out an existing one
+        #[arg(short = 'b', long)]
+        create_branch: bool,
+    },
+    /// List all worktrees
+    #[command(alias = "ls")]
+    List,
+    /// Switch to an existing worktree
+    Cd {
+        /// Worktree branch name
+        name: String,
+    },
+    /// Remove a worktree (stops services first)
+    #[command(alias = "remove")]
+    Rm {
+        /// Worktree branch name
+        name: String,
+        /// Force removal even with uncommitted changes
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Remove worktrees for deleted branches
+    Prune,
+    /// Install shell integration into ~/.zshrc (one-time)
+    Setup,
+    /// Print shell function for eval (used internally by setup)
+    InitShell,
 }

@@ -1,4 +1,9 @@
+use std::fmt;
 use std::io::Write;
+use tracing::{Event, Subscriber};
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
+use tracing_subscriber::registry::LookupSpan;
 
 /// Abstraction over user-facing output.
 ///
@@ -28,8 +33,16 @@ pub trait UserOutput: Send + Sync {
     fn blank(&self);
 }
 
-/// Standard CLI output — writes to stdout/stderr with ANSI colors.
-pub struct CliOutput;
+/// Standard CLI output — writes to stdout/stderr with optional ANSI colors.
+pub struct CliOutput {
+    is_tty: bool,
+}
+
+impl CliOutput {
+    pub fn new(is_tty: bool) -> Self {
+        Self { is_tty }
+    }
+}
 
 impl UserOutput for CliOutput {
     fn status(&self, message: &str) {
@@ -37,15 +50,27 @@ impl UserOutput for CliOutput {
     }
 
     fn success(&self, message: &str) {
-        println!("{}", message);
+        if self.is_tty {
+            println!("\x1b[32m{}\x1b[0m", message);
+        } else {
+            println!("{}", message);
+        }
     }
 
     fn warning(&self, message: &str) {
-        eprintln!("{}", message);
+        if self.is_tty {
+            eprintln!("\x1b[33m{}\x1b[0m", message);
+        } else {
+            eprintln!("{}", message);
+        }
     }
 
     fn error(&self, message: &str) {
-        eprintln!("\x1b[31m{}\x1b[0m", message);
+        if self.is_tty {
+            eprintln!("\x1b[31m{}\x1b[0m", message);
+        } else {
+            eprintln!("{}", message);
+        }
     }
 
     fn progress(&self, message: &str) {
@@ -62,15 +87,112 @@ impl UserOutput for CliOutput {
     }
 }
 
-/// Suppresses all output. Used in TUI mode where the TUI renders its own UI.
-pub struct QuietOutput;
+// ── Custom tracing formatter for CLI output ─────────────────────────
 
-impl UserOutput for QuietOutput {
-    fn status(&self, _message: &str) {}
-    fn success(&self, _message: &str) {}
-    fn warning(&self, _message: &str) {}
-    fn error(&self, _message: &str) {}
-    fn progress(&self, _message: &str) {}
-    fn finish_progress(&self, _result: &str) {}
-    fn blank(&self) {}
+/// Extracts the `message` field from a tracing event.
+struct MessageVisitor {
+    message: String,
+}
+
+impl MessageVisitor {
+    fn new() -> Self {
+        Self {
+            message: String::new(),
+        }
+    }
+}
+
+impl tracing::field::Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+        if field.name() == "message" {
+            self.message = format!("{:?}", value);
+        }
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.message = value.to_string();
+        }
+    }
+}
+
+/// Pretty tracing formatter for CLI output.
+///
+/// **TTY mode** — no timestamps, no module paths, no spans:
+/// ```text
+/// ⚠ Another fed instance (PID 66233) is modifying this workspace.
+///   Waiting for healthcheck on 'redis' (timeout: 5s)
+/// ✓ Service 'redis' is healthy
+/// ✗ Failed to stop dependent service 'api': timeout
+/// ```
+///
+/// **Non-TTY mode** — short timestamp + level, no ANSI:
+/// ```text
+/// [19:55:40 WARN] Another fed instance is modifying this workspace.
+/// [19:55:50 INFO] Waiting for healthcheck on 'redis' (timeout: 5s)
+/// ```
+pub struct CliFormatter {
+    is_tty: bool,
+}
+
+impl CliFormatter {
+    pub fn new(is_tty: bool) -> Self {
+        Self { is_tty }
+    }
+}
+
+impl<S, N> FormatEvent<S, N> for CliFormatter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        _ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> fmt::Result {
+        let metadata = event.metadata();
+        let level = *metadata.level();
+
+        let mut visitor = MessageVisitor::new();
+        event.record(&mut visitor);
+        let msg = &visitor.message;
+
+        if self.is_tty {
+            match level {
+                tracing::Level::ERROR => {
+                    write!(writer, "\x1b[31m✗\x1b[0m {}", msg)?;
+                }
+                tracing::Level::WARN => {
+                    write!(writer, "\x1b[33m⚠\x1b[0m {}", msg)?;
+                }
+                tracing::Level::INFO => {
+                    if msg.ends_with("is healthy") {
+                        write!(writer, "\x1b[32m✓\x1b[0m {}", msg)?;
+                    } else {
+                        write!(writer, "  {}", msg)?;
+                    }
+                }
+                tracing::Level::DEBUG => {
+                    write!(writer, "\x1b[2m  {}\x1b[0m", msg)?;
+                }
+                tracing::Level::TRACE => {
+                    write!(writer, "\x1b[2m  {}\x1b[0m", msg)?;
+                }
+            }
+        } else {
+            let now = chrono::Local::now().format("%H:%M:%S");
+            let level_str = match level {
+                tracing::Level::ERROR => "ERROR",
+                tracing::Level::WARN => "WARN",
+                tracing::Level::INFO => "INFO",
+                tracing::Level::DEBUG => "DEBUG",
+                tracing::Level::TRACE => "TRACE",
+            };
+            write!(writer, "[{} {}] {}", now, level_str, msg)?;
+        }
+
+        writeln!(writer)
+    }
 }

@@ -15,7 +15,8 @@ pub async fn run_install(
             .map(|(name, _)| name.clone())
             .collect::<Vec<_>>()
     } else {
-        services
+        // Expand tag references (e.g., @backend) into service names
+        config.expand_service_selection(&services)
     };
 
     if services_to_install.is_empty() {

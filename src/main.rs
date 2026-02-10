@@ -2,6 +2,8 @@ mod cli;
 mod commands;
 mod output;
 
+use std::io::IsTerminal;
+
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands};
 use service_federation::{Error as FedError, Orchestrator, OutputMode, Parser as ConfigParser};
@@ -9,7 +11,13 @@ use service_federation::{Error as FedError, Orchestrator, OutputMode, Parser as 
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
-        // Check if the error is a service_federation::Error and add suggestions
+        // Script failures: the script's own stderr is the user feedback.
+        // Just propagate the exit code without printing a redundant error.
+        if let Some(FedError::ScriptFailed { exit_code, .. }) = e.downcast_ref::<FedError>() {
+            std::process::exit(*exit_code);
+        }
+
+        // All other errors: print with suggestions
         if let Some(fed_error) = e.downcast_ref::<FedError>() {
             eprintln!("Error: {}", fed_error);
             if let Some(suggestion) = fed_error.suggestion() {
@@ -80,9 +88,11 @@ async fn run() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Initialize tracing
+    // Initialize tracing and output
     let is_tui = matches!(cli.command, Commands::Tui { .. });
-    init_tracing(is_tui)?;
+    let is_tty = std::io::stderr().is_terminal();
+    init_tracing(is_tui, cli.verbose, is_tty)?;
+    let out = output::CliOutput::new(is_tty);
 
     // Auto-cleanup orphaned sessions on startup
     use service_federation::session::Session;
@@ -90,13 +100,13 @@ async fn run() -> anyhow::Result<()> {
         tracing::warn!("Failed to cleanup orphaned sessions: {}", e);
     }
 
-    // Handle commands that don't need orchestrator first
+    // ── Tier 1: Commands that need NO config ──────────────────────────
     match &cli.command {
         Commands::Init { output, force } => {
-            return commands::run_init(output, *force, &output::CliOutput);
+            return commands::run_init(output, *force, &out);
         }
         Commands::Validate => {
-            return commands::run_validate(cli.config.clone(), &output::CliOutput);
+            return commands::run_validate(cli.config.clone(), &out);
         }
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
@@ -105,41 +115,43 @@ async fn run() -> anyhow::Result<()> {
             return Ok(());
         }
         Commands::Doctor => {
-            return commands::run_doctor(&output::CliOutput).await;
+            return commands::run_doctor(&out).await;
         }
         Commands::Session(session_cmd) => {
-            return commands::run_session(session_cmd, cli.workdir.clone(), cli.profile.clone(), &output::CliOutput)
-                .await;
+            return commands::run_session(
+                session_cmd,
+                cli.workdir.clone(),
+                cli.profile.clone(),
+                &out,
+            )
+            .await;
         }
         Commands::Package(package_cmd) => {
-            return commands::run_package(package_cmd, &output::CliOutput)
-                .await
-                .map_err(|e| anyhow::anyhow!(e));
+            return commands::run_package(package_cmd, &out).await;
         }
         Commands::Ports(ref ports_cmd) => {
-            return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone(), &output::CliOutput).await;
+            return commands::run_ports(ports_cmd, cli.workdir.clone(), cli.config.clone(), &out)
+                .await;
         }
+        Commands::Workspace(ref ws_cmd) => {
+            return commands::run_workspace(ws_cmd, &out).await;
+        }
+        _ => {} // fall through to config-loading path
+    }
+
+    // ── Load config ─────────────────────────────────────────────────
+    let parser = ConfigParser::new();
+    let config_path = if let Some(path) = cli.config.clone() {
+        path
+    } else {
+        parser.find_config_file()?
+    };
+
+    // ── Tier 2: Commands that need config but NOT orchestrator ──────
+    match &cli.command {
         Commands::Docker(docker_cmd) => {
-            let parser = ConfigParser::new();
-            let config_path = if let Some(path) = cli.config.clone() {
-                path
-            } else {
-                parser.find_config_file()?
-            };
             let config = parser.load_config(&config_path)?;
-            let work_dir = if let Some(workdir) = cli.workdir {
-                workdir
-            } else {
-                if let Some(parent) = config_path.parent() {
-                    if parent.as_os_str().is_empty() {
-                        std::env::current_dir()?
-                    } else {
-                        parent.to_path_buf()
-                    }
-                } else {
-                    std::env::current_dir()?
-                }
-            };
+            let work_dir = resolve_work_dir(cli.workdir, &config_path)?;
             match docker_cmd {
                 cli::DockerCommands::Build {
                     services,
@@ -154,7 +166,7 @@ async fn run() -> anyhow::Result<()> {
                         tag.clone(),
                         build_args.clone(),
                         *json,
-                        &output::CliOutput,
+                        &out,
                     )
                     .await;
                 }
@@ -164,36 +176,15 @@ async fn run() -> anyhow::Result<()> {
                         &work_dir,
                         services.clone(),
                         tag.clone(),
-                        &output::CliOutput,
+                        &out,
                     )
                     .await;
                 }
             }
         }
         Commands::Debug(debug_cmd) => {
-            // Debug commands only need config and work_dir
-            let parser = ConfigParser::new();
-            let config_path = if let Some(path) = cli.config.clone() {
-                path
-            } else {
-                parser.find_config_file()?
-            };
             let config = parser.load_config(&config_path)?;
-
-            let work_dir = if let Some(workdir) = cli.workdir {
-                workdir
-            } else {
-                // Use config file's directory as working directory
-                if let Some(parent) = config_path.parent() {
-                    if parent.as_os_str().is_empty() {
-                        std::env::current_dir()?
-                    } else {
-                        parent.to_path_buf()
-                    }
-                } else {
-                    std::env::current_dir()?
-                }
-            };
+            let work_dir = resolve_work_dir(cli.workdir, &config_path)?;
 
             let debug_command = match debug_cmd {
                 cli::DebugCommands::State { .. } => commands::DebugCommand::State,
@@ -211,22 +202,12 @@ async fn run() -> anyhow::Result<()> {
                 cli::DebugCommands::CircuitBreaker { json, .. } => *json,
             };
 
-            return commands::run_debug(debug_command, &config, work_dir, json, &output::CliOutput)
-                .await
-                .map_err(|e| anyhow::anyhow!(e));
+            return commands::run_debug(debug_command, &config, work_dir, json, &out).await;
         }
-        _ => {}
+        _ => {} // fall through to orchestrator path
     }
 
-    // Load configuration
-    let parser = ConfigParser::new();
-    let config_path = if let Some(path) = cli.config.clone() {
-        path
-    } else {
-        parser.find_config_file()?
-    };
-
-    // Load config with package resolution (uses cache-only in offline mode)
+    // ── Load config with package resolution (uses cache-only in offline mode) ──
     let config_result = async {
         let config = parser
             .load_config_with_packages_offline(&config_path, cli.offline)
@@ -243,32 +224,18 @@ async fn run() -> anyhow::Result<()> {
                 "Warning: Config invalid ({}), stopping from state tracker",
                 config_err
             );
-            let work_dir = cli.workdir.unwrap_or_else(|| {
-                config_path
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-            });
-            commands::run_stop_from_state(&work_dir, services.clone(), &output::CliOutput).await?;
+            let work_dir = resolve_work_dir(cli.workdir, &config_path)
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+            commands::run_stop_from_state(&work_dir, services.clone(), &out).await?;
             return Ok(());
         }
         (_, Err(e)) => return Err(e),
         (_, Ok(config)) => config,
     };
 
-    // Determine work directory from CLI or config path
-    let work_dir = if let Some(workdir) = cli.workdir {
-        workdir
-    } else if let Some(parent) = config_path.parent() {
-        if parent.as_os_str().is_empty() {
-            std::env::current_dir()?
-        } else {
-            parent.to_path_buf()
-        }
-    } else {
-        std::env::current_dir()?
-    };
+    let work_dir = resolve_work_dir(cli.workdir, &config_path)?;
+
+    // ── Tier 3: Commands that need orchestrator ─────────────────────
 
     // Determine output mode before initializing.
     // File mode (background) disables the monitoring task since we don't need it for:
@@ -287,16 +254,10 @@ async fn run() -> anyhow::Result<()> {
             if *dry_run {
                 OutputMode::Captured
             } else if let Some(mode) = output {
-                // If explicit output mode is provided, use it
-                match mode.as_str() {
-                    "file" => OutputMode::File,
-                    "captured" => OutputMode::Captured,
-                    "passthrough" => OutputMode::Passthrough,
-                    _ => {
-                        eprintln!(
-                            "Invalid output mode: '{}'. Use 'file', 'captured', or 'passthrough'.",
-                            mode
-                        );
+                match mode.parse::<OutputMode>() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!("{}", e);
                         std::process::exit(1);
                     }
                 }
@@ -377,29 +338,31 @@ async fn run() -> anyhow::Result<()> {
                 &mut orchestrator,
                 &config,
                 services,
-                watch,
-                replace,
-                dry_run,
-                &config_path,
-                &output::CliOutput,
+                commands::StartOptions {
+                    watch,
+                    replace,
+                    dry_run,
+                    config_path: &config_path,
+                },
+                &out,
             )
             .await?;
         }
         Commands::Stop { services } => {
-            commands::run_stop(&mut orchestrator, &config, services, &output::CliOutput).await?;
+            commands::run_stop(&mut orchestrator, &config, services, &out).await?;
         }
         Commands::Restart { services } => {
-            commands::run_restart(&mut orchestrator, &config, services, &output::CliOutput).await?;
+            commands::run_restart(&mut orchestrator, &config, services, &out).await?;
         }
         Commands::Status { json, tag } => {
-            commands::run_status(&orchestrator, &config, json, tag, &output::CliOutput).await?;
+            commands::run_status(&orchestrator, &config, json, tag, &out).await?;
         }
         Commands::Logs {
             service,
             tail,
             follow,
         } => {
-            commands::run_logs(&orchestrator, &service, tail, follow, &output::CliOutput).await?;
+            commands::run_logs(&orchestrator, &service, tail, follow, &out).await?;
         }
         Commands::Tui { watch } => {
             commands::run_tui(orchestrator, watch, Some(&config)).await?;
@@ -407,7 +370,7 @@ async fn run() -> anyhow::Result<()> {
         Commands::Run { name, args } => {
             // Strip leading "--" from args (clap captures it literally)
             let extra_args: Vec<String> = args.into_iter().skip_while(|arg| arg == "--").collect();
-            commands::run_script(&mut orchestrator, &name, &extra_args, false, &output::CliOutput).await?;
+            commands::run_script(&mut orchestrator, &name, &extra_args, false, &out).await?;
         }
         Commands::External(args) => {
             // Handle `fed <script>` shorthand - first arg is the script name
@@ -429,7 +392,8 @@ async fn run() -> anyhow::Result<()> {
 
             let available_scripts = orchestrator.list_scripts();
             if available_scripts.contains(script_name) {
-                commands::run_script(&mut orchestrator, script_name, &extra_args, false, &output::CliOutput).await?;
+                commands::run_script(&mut orchestrator, script_name, &extra_args, false, &out)
+                    .await?;
             } else {
                 eprintln!("Unknown command or script: '{}'", script_name);
                 eprintln!("\nAvailable scripts:");
@@ -441,10 +405,10 @@ async fn run() -> anyhow::Result<()> {
             }
         }
         Commands::Install { services } => {
-            commands::run_install(&orchestrator, &config, services, &output::CliOutput).await?;
+            commands::run_install(&orchestrator, &config, services, &out).await?;
         }
         Commands::Clean { services } => {
-            commands::run_clean(&orchestrator, &config, services, &output::CliOutput).await?;
+            commands::run_clean(&orchestrator, &config, services, &out).await?;
         }
         Commands::Build {
             services,
@@ -452,29 +416,58 @@ async fn run() -> anyhow::Result<()> {
             build_args,
             json,
         } => {
-            commands::run_build(&orchestrator, &config, services, tag, build_args, json, &output::CliOutput).await?;
+            commands::run_build(
+                &orchestrator,
+                &config,
+                services,
+                tag,
+                build_args,
+                json,
+                &out,
+            )
+            .await?;
         }
         Commands::Top { interval } => {
-            commands::run_top(&orchestrator, interval, &output::CliOutput).await?;
+            commands::run_top(&orchestrator, interval, &out).await?;
         }
-        // These are handled earlier
-        Commands::Session(_)
-        | Commands::Package(_)
-        | Commands::Ports(_)
-        | Commands::Init { .. }
+        // Handled in earlier tiers
+        Commands::Init { .. }
         | Commands::Validate
         | Commands::Completions { .. }
         | Commands::Doctor
+        | Commands::Session(_)
+        | Commands::Package(_)
+        | Commands::Ports(_)
+        | Commands::Docker(_)
         | Commands::Debug(_)
-        | Commands::Docker(_) => {
-            unreachable!("These commands should have been handled earlier");
+        | Commands::Workspace(_) => {
+            unreachable!("handled in earlier dispatch tiers");
         }
     }
 
     Ok(())
 }
 
-fn init_tracing(is_tui: bool) -> anyhow::Result<()> {
+/// Resolve the work directory from CLI `--workdir` or the config file's parent directory.
+fn resolve_work_dir(
+    workdir: Option<std::path::PathBuf>,
+    config_path: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    if let Some(workdir) = workdir {
+        return Ok(workdir);
+    }
+    if let Some(parent) = config_path.parent() {
+        if parent.as_os_str().is_empty() {
+            Ok(std::env::current_dir()?)
+        } else {
+            Ok(parent.to_path_buf())
+        }
+    } else {
+        Ok(std::env::current_dir()?)
+    }
+}
+
+fn init_tracing(is_tui: bool, verbose: bool, is_tty: bool) -> anyhow::Result<()> {
     if is_tui {
         // For TUI mode, write logs to a file
         let log_dir = dirs::home_dir()
@@ -498,12 +491,15 @@ fn init_tracing(is_tui: bool) -> anyhow::Result<()> {
             .with_ansi(false)
             .init();
     } else {
+        let default_level = if verbose { "debug" } else { "info" };
         tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
             )
             .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .event_format(output::CliFormatter::new(is_tty))
             .init();
     }
 

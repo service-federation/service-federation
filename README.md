@@ -68,6 +68,21 @@ Both stacks run simultaneously on the same machine. `--randomize` allocates fres
 
 `--randomize` allocates fresh ports on every invocation. For stable randomized ports across restarts, use `fed ports randomize` once, then `fed start` without the flag.
 
+### Workspace management (beta)
+
+`fed ws` (alias for `fed workspace`) automates git worktree creation and switching:
+
+```bash
+fed ws setup                # One-time: install shell integration
+fed ws new -b my-feature    # Create branch + worktree, cd into it
+fed ws list                 # Show all worktrees with service status
+fed ws cd main              # Switch to another worktree
+fed ws rm my-feature        # Stop services and remove worktree
+fed ws prune                # Clean up worktrees for deleted branches
+```
+
+Worktrees are created as siblings to the repo in a `<repo>-worktrees/` directory. Shell integration enables auto-cd — without it, `fed ws new` and `fed ws cd` print the path instead.
+
 To find your allocated ports:
 
 ```bash
@@ -375,9 +390,12 @@ fed run <script> [-- args]   # Run a script
 fed install / build / clean  # Lifecycle hooks
 fed docker build [--json]    # Build Docker images
 fed docker push              # Push images to registry
+fed ws new / list / cd / rm  # Worktree management (beta)
 fed doctor                   # Check system requirements
 fed init                     # Create starter config
 ```
+
+Global flags: `--verbose` / `-v` for debug output, `--version` for version.
 
 Full reference: `fed --help`, `fed <command> --help`.
 

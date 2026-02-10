@@ -3,6 +3,7 @@
 //! These tests verify that PIDs are properly validated before storage and use,
 //! preventing potential signal misdirection bugs when PIDs exceed i32::MAX.
 
+use service_federation::config::ServiceType;
 use service_federation::service::Status;
 use service_federation::state::{ServiceState, StateTracker};
 use tempfile::TempDir;
@@ -26,7 +27,7 @@ async fn test_update_service_pid_valid() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -49,7 +50,7 @@ async fn test_update_service_pid_max_valid() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -75,7 +76,7 @@ async fn test_update_service_pid_overflow_rejected() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -107,7 +108,7 @@ async fn test_update_service_pid_u32_max_rejected() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -127,7 +128,7 @@ async fn test_update_service_pid_zero_rejected() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -147,7 +148,7 @@ async fn test_update_service_pid_one_accepted() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -184,7 +185,7 @@ async fn test_update_service_pid_boundary_values() {
         let service_name = format!("service-{}", pid);
         let service_state = ServiceState::new(
             service_name.clone(),
-            "Process".to_string(),
+            ServiceType::Process,
             "default".to_string(),
         );
         tracker.register_service(service_state).await.unwrap();
@@ -212,7 +213,7 @@ async fn test_pid_validation_preserves_existing_pid_on_failure() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -255,7 +256,7 @@ async fn test_deserialization_sanitizes_invalid_pids() {
 
         let service_state = ServiceState::new(
             "test-service".to_string(),
-            "Process".to_string(),
+            ServiceType::Process,
             "default".to_string(),
         );
         tracker.register_service(service_state).await.unwrap();
@@ -311,7 +312,7 @@ async fn test_pid_flow_through_state_tracker() {
     // Simulate full lifecycle: register -> update PID -> update status -> save
     let service_state = ServiceState::new(
         "lifecycle-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -353,7 +354,7 @@ async fn test_multiple_services_with_pids() {
     for (i, pid) in pids.iter().enumerate() {
         let name = format!("service-{}", i);
         let service_state =
-            ServiceState::new(name.clone(), "Process".to_string(), "default".to_string());
+            ServiceState::new(name.clone(), ServiceType::Process, "default".to_string());
         tracker.register_service(service_state).await.unwrap();
         tracker
             .update_service_pid(&name, *pid)
@@ -398,7 +399,7 @@ async fn test_rapid_pid_updates() {
 
     let service_state = ServiceState::new(
         "rapid-update".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -426,7 +427,7 @@ async fn test_pid_validation_error_messages_are_useful() {
 
     let service_state = ServiceState::new(
         "error-test".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();

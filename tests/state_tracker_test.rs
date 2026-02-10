@@ -1,3 +1,4 @@
+use service_federation::config::ServiceType;
 use service_federation::service::Status;
 use service_federation::state::{ServiceState, StateTracker};
 use tempfile::TempDir;
@@ -42,7 +43,7 @@ async fn test_register_and_get_service() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
 
@@ -66,7 +67,7 @@ async fn test_unregister_service() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
 
@@ -88,7 +89,7 @@ async fn test_update_service_status() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
 
@@ -127,7 +128,7 @@ async fn test_update_service_pid() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
 
@@ -168,7 +169,7 @@ async fn test_add_service_port() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
 
@@ -196,7 +197,7 @@ async fn test_save_and_load_lock_file() {
 
         let service_state = ServiceState::new(
             "test-service".to_string(),
-            "Process".to_string(),
+            ServiceType::Process,
             "default".to_string(),
         );
 
@@ -247,7 +248,7 @@ async fn test_clear_lock_file() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
 
@@ -274,7 +275,7 @@ async fn test_multiple_services() {
     for i in 1..=5 {
         let service_state = ServiceState::new(
             format!("service-{}", i),
-            "Process".to_string(),
+            ServiceType::Process,
             "default".to_string(),
         );
         tracker.register_service(service_state).await.unwrap();
@@ -330,12 +331,12 @@ async fn test_lock_file_path() {
 async fn test_service_state_creation() {
     let state = ServiceState::new(
         "my-service".to_string(),
-        "Docker".to_string(),
+        ServiceType::Docker,
         "production".to_string(),
     );
 
     assert_eq!(state.id, "my-service");
-    assert_eq!(state.service_type, "Docker");
+    assert_eq!(state.service_type, ServiceType::Docker);
     assert_eq!(state.namespace, "production");
     assert_eq!(state.status, Status::Starting);
     assert_eq!(state.pid, None);
@@ -353,7 +354,7 @@ async fn test_service_with_container_id() {
 
     let mut service_state = ServiceState::new(
         "docker-service".to_string(),
-        "Docker".to_string(),
+        ServiceType::Docker,
         "default".to_string(),
     );
     service_state.container_id = Some("abc123".to_string());
@@ -374,13 +375,13 @@ async fn test_namespace_handling() {
 
     let service1 = ServiceState::new(
         "service1".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "namespace-a".to_string(),
     );
 
     let service2 = ServiceState::new(
         "service2".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "namespace-b".to_string(),
     );
 
@@ -404,7 +405,7 @@ async fn test_update_service_multiple_times() {
 
     let service_state = ServiceState::new(
         "test-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
 
@@ -438,7 +439,7 @@ async fn test_port_allocations_per_service() {
 
     let service_state = ServiceState::new(
         "web-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "default".to_string(),
     );
 
@@ -519,7 +520,7 @@ async fn test_regression_service_stored_by_plain_name() {
     // Register service with plain name (correct behavior)
     let service_state = ServiceState::new(
         "docker-infra".to_string(), // Plain name, NOT "root/docker-infra"
-        "Docker".to_string(),
+        ServiceType::Docker,
         "root".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -544,7 +545,7 @@ async fn test_regression_update_status_requires_plain_name() {
 
     let service_state = ServiceState::new(
         "my-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "root".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();
@@ -573,7 +574,7 @@ async fn test_regression_unregister_requires_plain_name() {
 
     let service_state = ServiceState::new(
         "temp-service".to_string(),
-        "Process".to_string(),
+        ServiceType::Process,
         "root".to_string(),
     );
     tracker.register_service(service_state).await.unwrap();

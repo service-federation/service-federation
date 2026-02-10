@@ -5,6 +5,13 @@
 //! - Automatic restart with exponential backoff
 //! - Panic-safe monitoring loop
 //!
+//! # Lock ordering (see `lock_order.rs`)
+//!
+//! This module acquires `services`, `state_tracker`, and individual service
+//! mutexes. To prevent deadlocks, never hold a service mutex while acquiring
+//! `state_tracker`. Instead: scope the mutex, release it, then acquire
+//! `state_tracker` separately.
+//!
 //! # Architecture
 //!
 //! The monitoring system is decomposed into small, composable functions:
@@ -287,9 +294,21 @@ async fn execute_health_check_cycle(
         let mut tracker = state_tracker.write().await;
         for service_name in &healthy_names {
             // Close circuit breaker when service becomes healthy
-            let _ = tracker.close_circuit_breaker(service_name).await;
+            if let Err(e) = tracker.close_circuit_breaker(service_name).await {
+                tracing::warn!(
+                    "Failed to close circuit breaker for '{}': {}",
+                    service_name,
+                    e
+                );
+            }
             // Clear restart history to reset the crash loop counter
-            let _ = tracker.clear_restart_history(service_name).await;
+            if let Err(e) = tracker.clear_restart_history(service_name).await {
+                tracing::warn!(
+                    "Failed to clear restart history for '{}': {}",
+                    service_name,
+                    e
+                );
+            }
         }
     }
 
@@ -347,7 +366,9 @@ async fn execute_health_check_cycle(
             // Record restart attempt BEFORE restarting for circuit breaker tracking
             {
                 let mut tracker = state_tracker.write().await;
-                let _ = tracker.record_restart(&service_name).await;
+                if let Err(e) = tracker.record_restart(&service_name).await {
+                    tracing::warn!("Failed to record restart for '{}': {}", service_name, e);
+                }
             }
 
             // Check if we should trip the circuit breaker
@@ -367,9 +388,16 @@ async fn execute_health_check_cycle(
                 // Trip the circuit breaker
                 {
                     let mut tracker = state_tracker.write().await;
-                    let _ = tracker
+                    if let Err(e) = tracker
                         .open_circuit_breaker(&service_name, circuit_breaker.cooldown_secs)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to open circuit breaker for '{}': {}",
+                            service_name,
+                            e
+                        );
+                    }
                 }
 
                 tracing::error!(
@@ -399,9 +427,12 @@ async fn execute_health_check_cycle(
     // Batch update restart counts for successful restarts
     if !successful_restarts.is_empty() {
         let mut tracker = state_tracker.write().await;
-        let _ = tracker
+        if let Err(e) = tracker
             .batch_increment_restart_counts(successful_restarts)
-            .await;
+            .await
+        {
+            tracing::warn!("Failed to batch increment restart counts: {}", e);
+        }
     }
 
     // Handle dependency health propagation if there are unhealthy services
@@ -476,15 +507,21 @@ async fn handle_dependency_health_propagation(
                         };
 
                         if let Some(manager_arc) = manager_opt {
-                            let mut manager = manager_arc.lock().await;
-                            if let Err(e) = manager.stop().await {
+                            // LOCK ORDER: scope manager mutex, release it,
+                            // then acquire state_tracker separately.
+                            let stop_result = {
+                                let mut manager = manager_arc.lock().await;
+                                manager.stop().await
+                            };
+                            // manager lock released
+
+                            if let Err(e) = &stop_result {
                                 tracing::error!(
                                     "Failed to stop dependent service '{}': {}",
                                     dependent_name,
-                                    e
+                                    e,
                                 );
                             } else {
-                                // Update state tracker
                                 let mut tracker = state_tracker.write().await;
                                 let _ = tracker
                                     .update_service_status(dependent_name, Status::Stopped)
@@ -506,13 +543,19 @@ async fn handle_dependency_health_propagation(
                         };
 
                         if let Some(manager_arc) = manager_opt {
-                            let mut manager = manager_arc.lock().await;
-                            // Stop first
-                            if let Err(e) = manager.stop().await {
+                            // LOCK ORDER: scope manager mutex, release it,
+                            // then acquire state_tracker separately.
+                            let stop_result = {
+                                let mut manager = manager_arc.lock().await;
+                                manager.stop().await
+                            };
+                            // manager lock released
+
+                            if let Err(e) = &stop_result {
                                 tracing::error!(
                                     "Failed to stop dependent service '{}' for restart: {}",
                                     dependent_name,
-                                    e
+                                    e,
                                 );
                                 continue;
                             }
@@ -525,19 +568,28 @@ async fn handle_dependency_health_propagation(
                                     .await;
                             }
 
-                            // Start again
-                            if let Err(e) = manager.start().await {
-                                tracing::error!(
-                                    "Failed to restart dependent service '{}': {}",
-                                    dependent_name,
-                                    e
-                                );
-                            } else {
-                                // Update state to Starting (monitoring will transition to Running)
-                                let mut tracker = state_tracker.write().await;
-                                let _ = tracker
-                                    .update_service_status(dependent_name, Status::Starting)
-                                    .await;
+                            // LOCK ORDER: same pattern — scope mutex, then
+                            // acquire state_tracker.
+                            let start_result = {
+                                let mut manager = manager_arc.lock().await;
+                                manager.start().await
+                            };
+                            // manager lock released
+
+                            match start_result {
+                                Ok(_) => {
+                                    let mut tracker = state_tracker.write().await;
+                                    let _ = tracker
+                                        .update_service_status(dependent_name, Status::Starting)
+                                        .await;
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to restart dependent service '{}': {}",
+                                        dependent_name,
+                                        e
+                                    );
+                                }
                             }
                         }
                     }

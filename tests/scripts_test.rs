@@ -1064,6 +1064,166 @@ scripts:
     orchestrator.cleanup().await;
 }
 
+// ============================================================================
+// Tests for isolated state tracker isolation (SF-00104)
+// ============================================================================
+
+/// Verify that the parent orchestrator's state tracker survives an isolated
+/// script execution. Before the fix, the child's `clear()` would wipe the
+/// parent's `.fed/lock.db` because they shared the same file.
+#[tokio::test]
+async fn test_isolated_script_preserves_parent_state_tracker() {
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+
+    let yaml = r#"
+services:
+  parent-svc:
+    process: "sleep 30"
+
+scripts:
+  isolated-test:
+    isolated: true
+    script: "echo 'isolated ran'"
+"#;
+
+    let parser = Parser::new();
+    let config = parser.parse_config(yaml).expect("Failed to parse");
+
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
+        .await
+        .unwrap();
+    orchestrator
+        .set_work_dir(temp_dir.path().to_path_buf())
+        .await
+        .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
+    orchestrator
+        .initialize()
+        .await
+        .expect("Failed to initialize");
+
+    // Start a service in the parent context and verify it's tracked
+    orchestrator
+        .start("parent-svc")
+        .await
+        .expect("Failed to start parent-svc");
+
+    assert!(
+        orchestrator.is_service_running("parent-svc").await,
+        "parent-svc should be running before isolated script"
+    );
+
+    // Read the state tracker to confirm the service is registered
+    let services_before = {
+        let tracker = orchestrator.state_tracker.read().await;
+        tracker.get_services().await
+    };
+    assert!(
+        services_before.contains_key("parent-svc"),
+        "parent-svc should be in state tracker before isolated script"
+    );
+
+    // Run isolated script — this creates a child orchestrator with ephemeral state
+    let status = orchestrator
+        .run_script_interactive("isolated-test", &[])
+        .await
+        .expect("Failed to run isolated script");
+
+    assert!(status.success(), "Isolated script should succeed");
+
+    // Verify the parent's state tracker still has the service registered
+    let services_after = {
+        let tracker = orchestrator.state_tracker.read().await;
+        tracker.get_services().await
+    };
+    assert!(
+        services_after.contains_key("parent-svc"),
+        "parent-svc should still be in state tracker after isolated script"
+    );
+
+    // Verify the service is still actually running
+    assert!(
+        orchestrator.is_service_running("parent-svc").await,
+        "parent-svc should still be running after isolated script"
+    );
+
+    orchestrator.cleanup().await;
+}
+
+// ============================================================================
+// Tests for script failure cleanup (SF-00105)
+// ============================================================================
+
+/// Verify that service dependencies started by an isolated script are cleaned
+/// up even when the script fails. Before the fix, `std::process::exit()`
+/// bypassed Drop impls and left orphaned processes.
+#[tokio::test]
+async fn test_isolated_script_failure_cleans_up_dependencies() {
+    use service_federation::service::Status;
+    let temp_dir = tempdir().expect("Failed to create temp dir");
+
+    let yaml = r#"
+services:
+  dep-svc:
+    process: "sleep 30"
+
+scripts:
+  failing-isolated:
+    isolated: true
+    depends_on:
+      - dep-svc
+    script: "exit 1"
+"#;
+
+    let parser = Parser::new();
+    let config = parser.parse_config(yaml).expect("Failed to parse");
+
+    let orch_temp = tempfile::tempdir().unwrap();
+    let mut orchestrator = Orchestrator::new(config, orch_temp.path().to_path_buf())
+        .await
+        .unwrap();
+    orchestrator
+        .set_work_dir(temp_dir.path().to_path_buf())
+        .await
+        .expect("Failed to set work dir");
+    orchestrator.set_auto_resolve_conflicts(true);
+    orchestrator
+        .initialize()
+        .await
+        .expect("Failed to initialize");
+
+    // dep-svc should not be running initially
+    assert!(
+        !orchestrator.is_service_running("dep-svc").await,
+        "dep-svc should not be running before script"
+    );
+
+    // Run the failing isolated script
+    let result = orchestrator
+        .run_script_interactive("failing-isolated", &[])
+        .await;
+
+    // The script should have run (exit 1 is a valid execution, not a spawn error)
+    // ScriptFailed error is also acceptable
+    if let Ok(status) = result {
+        assert!(!status.success(), "Script should have failed with exit 1");
+    }
+
+    // After the failing script, dep-svc should NOT be running in the parent context.
+    // The child orchestrator's cleanup should have stopped it.
+    let status_after = orchestrator.get_status().await;
+    if let Some(svc_status) = status_after.get("dep-svc") {
+        assert_eq!(
+            *svc_status,
+            Status::Stopped,
+            "dep-svc should be stopped in parent context after failed isolated script"
+        );
+    }
+
+    orchestrator.cleanup().await;
+}
+
 // Check if Docker is available
 fn is_docker_available() -> bool {
     std::process::Command::new("docker")

@@ -108,14 +108,14 @@ impl DockerComposeService {
 
         // Validate compose file exists and is readable
         if !compose_file_path.exists() {
-            return Err(Error::Config(format!(
+            return Err(Error::Filesystem(format!(
                 "Compose file does not exist: {}",
                 compose_file_path.display()
             )));
         }
 
         if !compose_file_path.is_file() {
-            return Err(Error::Config(format!(
+            return Err(Error::Filesystem(format!(
                 "Compose file path is not a file: {}",
                 compose_file_path.display()
             )));
@@ -123,7 +123,7 @@ impl DockerComposeService {
 
         // Validate we can read the file
         if let Err(e) = std::fs::metadata(&compose_file_path) {
-            return Err(Error::Config(format!(
+            return Err(Error::Filesystem(format!(
                 "Cannot access compose file {}: {}",
                 compose_file_path.display(),
                 e

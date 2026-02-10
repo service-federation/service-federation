@@ -12,6 +12,24 @@ pub enum Error {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    #[error("Docker error: {0}")]
+    #[diagnostic(
+        code(fed::docker::error),
+        help("Check that Docker is running with `docker ps`")
+    )]
+    Docker(String),
+
+    #[error("Process error: {0}")]
+    #[diagnostic(
+        code(fed::process::error),
+        help("Check that the command exists and is executable")
+    )]
+    Process(String),
+
+    #[error("Filesystem error: {0}")]
+    #[diagnostic(code(fed::filesystem::error))]
+    Filesystem(String),
+
     #[error("Parse error: {0}")]
     Parse(String),
 
@@ -212,6 +230,10 @@ pub enum Error {
         help("Add parameter declaration:\n\nparameters:\n  {name}:\n    default: \"\"")
     )]
     UndeclaredEnvVariable { name: String, env_file: String },
+
+    #[error("Script '{name}' exited with code {exit_code}")]
+    #[diagnostic(code(fed::script::failed))]
+    ScriptFailed { name: String, exit_code: i32 },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -258,8 +280,15 @@ impl Error {
             Error::Session(msg) if msg.contains("not found") => Some(
                 "Start a session with: fed session start --id <name>".to_string()
             ),
+            Error::Config(msg) if msg.contains("Could not find") => None,
             Error::Config(_) | Error::Validation(_) => Some(
                 "Validate your config with: fed validate".to_string()
+            ),
+            Error::Docker(_) => Some(
+                "Check that Docker is running: docker ps".to_string()
+            ),
+            Error::Process(_) => Some(
+                "Check that the command exists and is executable".to_string()
             ),
             Error::ScriptNotFound(name) => Some(format!(
                 "Available scripts are defined in the 'scripts:' section of your config. Did you mean a different name than '{}'?",
@@ -270,7 +299,8 @@ impl Error {
                 name, name
             )),
             Error::Database(e) => {
-                // Match on specific SQLite error codes for targeted recovery hints
+                // String matching is unavoidable here: tokio_rusqlite wraps the
+                // underlying rusqlite error opaquely, so we can't match on error codes.
                 let err_str = e.to_string();
                 if err_str.contains("database is locked") || err_str.contains("SQLITE_BUSY") {
                     Some(
@@ -343,4 +373,186 @@ pub fn validate_pid_for_check(pid: u32) -> Option<nix::unistd::Pid> {
         return None;
     }
     Some(nix::unistd::Pid::from_raw(pid as i32))
+}
+
+/// Query the kernel clock tick rate (jiffies per second) at runtime.
+///
+/// Falls back to 100 (the common default) if sysconf fails.
+#[cfg(target_os = "linux")]
+fn get_clock_ticks_per_sec() -> u64 {
+    nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK)
+        .ok()
+        .flatten()
+        .map(|v| v as u64)
+        .unwrap_or(100)
+}
+
+/// Check if a PID belongs to the expected process by comparing start times.
+///
+/// Returns true if the PID appears valid (start time matches or cannot be determined),
+/// false if the PID was clearly reused by a different process.
+///
+/// This is a defensive check against PID reuse - if a service's PID was recorded
+/// but the process died and a new process reused the same PID, we don't want to
+/// accidentally kill an unrelated process.
+pub fn validate_pid_start_time(pid: u32, expected_start: chrono::DateTime<chrono::Utc>) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, read /proc/<pid>/stat to get process start time
+        let stat_path = format!("/proc/{}/stat", pid);
+        if let Ok(stat) = std::fs::read_to_string(&stat_path) {
+            // The stat file format has the process name in parens which can contain spaces,
+            // so we find the closing paren and parse from there
+            if let Some(close_paren) = stat.rfind(')') {
+                let fields: Vec<&str> = stat[close_paren + 2..].split_whitespace().collect();
+                // Field 20 (0-indexed after the first two fields) is starttime
+                if let Some(&starttime_str) = fields.get(19) {
+                    if let Ok(starttime_jiffies) = starttime_str.parse::<u64>() {
+                        let now = chrono::Utc::now();
+                        let expected_age = now.signed_duration_since(expected_start);
+
+                        // If the expected service is very old (>24h), be lenient
+                        if expected_age.num_hours() > 24 {
+                            return true;
+                        }
+
+                        // Get uptime to calculate approximate process start
+                        if let Ok(uptime_str) = std::fs::read_to_string("/proc/uptime") {
+                            if let Some(uptime_secs_str) = uptime_str.split_whitespace().next() {
+                                if let Ok(uptime_secs) = uptime_secs_str.parse::<f64>() {
+                                    let jiffies_per_sec = get_clock_ticks_per_sec();
+                                    let process_age_secs = uptime_secs
+                                        - (starttime_jiffies as f64 / jiffies_per_sec as f64);
+
+                                    // If process started more than 60 seconds before our expected time,
+                                    // it's likely a different process that reused the PID
+                                    let expected_age_secs = expected_age.num_seconds() as f64;
+                                    let time_diff = (process_age_secs - expected_age_secs).abs();
+
+                                    if time_diff > 60.0 {
+                                        tracing::warn!(
+                                            "PID {} appears to be reused: process age {:.0}s vs expected {:.0}s",
+                                            pid,
+                                            process_age_secs,
+                                            expected_age_secs
+                                        );
+                                        return false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, use ps to get process start time
+        use chrono::TimeZone;
+        use std::process::Command;
+        if let Ok(output) = Command::new("ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .output()
+        {
+            if output.status.success() {
+                let lstart = String::from_utf8_lossy(&output.stdout);
+                // Parse the lstart format: "Mon Jan  1 12:00:00 2024"
+                let lstart = lstart.trim();
+                if !lstart.is_empty() {
+                    if let Ok(process_start) =
+                        chrono::NaiveDateTime::parse_from_str(lstart, "%a %b %e %H:%M:%S %Y")
+                    {
+                        // ps lstart returns local time, not UTC
+                        let process_start_utc = chrono::Local
+                            .from_local_datetime(&process_start)
+                            .earliest()
+                            .map(|dt| dt.with_timezone(&chrono::Utc));
+                        let Some(process_start_utc) = process_start_utc else {
+                            // Ambiguous/nonexistent time (DST transition) — trust the PID
+                            tracing::debug!(
+                                "PID {} start time {:?} is ambiguous during DST, trusting PID",
+                                pid,
+                                process_start
+                            );
+                            return true;
+                        };
+                        let time_diff = (process_start_utc - expected_start).num_seconds().abs();
+
+                        // Allow 60 seconds tolerance for timing differences
+                        if time_diff > 60 {
+                            tracing::warn!(
+                                "PID {} appears to be reused: process started at {} vs expected {}",
+                                pid,
+                                process_start_utc,
+                                expected_start
+                            );
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Default: trust the PID if we can't determine start time
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    // ========================================================================
+    // validate_pid_start_time tests
+    //
+    // This function is platform-specific:
+    //   - macOS: calls `ps -o lstart=` and compares parsed time
+    //   - Linux: reads /proc/<pid>/stat and /proc/uptime
+    // Tests below use the current process PID (which is known to exist) and
+    // work on the current platform. On unsupported platforms, the function
+    // always returns true (trusts the PID).
+    // ========================================================================
+
+    #[test]
+    fn matching_start_time_returns_true() {
+        // Use our own PID — it's guaranteed to exist and we know roughly when it started.
+        let my_pid = std::process::id();
+        // Use "now" as the expected start time. Since the test process just started
+        // (within the last few seconds of the test runner), this should be within
+        // the 60-second tolerance window.
+        let recent = Utc::now();
+        assert!(
+            validate_pid_start_time(my_pid, recent),
+            "Current process PID with recent timestamp should validate"
+        );
+    }
+
+    #[test]
+    fn mismatched_start_time_returns_false() {
+        // Use our own PID but claim it started far in the past (2020).
+        // The function should detect the mismatch (>60s difference) and return false.
+        let my_pid = std::process::id();
+        let old_time = chrono::DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(
+            !validate_pid_start_time(my_pid, old_time),
+            "Current process PID with old timestamp should detect PID reuse"
+        );
+    }
+
+    #[test]
+    fn nonexistent_pid_returns_true() {
+        // PID that almost certainly doesn't exist. The function returns true
+        // (trusts the PID) when it can't determine the start time.
+        let bogus_pid = u32::MAX - 1;
+        let now = Utc::now();
+        assert!(
+            validate_pid_start_time(bogus_pid, now),
+            "Non-existent PID should return true (can't verify, so trust it)"
+        );
+    }
 }
