@@ -1,3 +1,4 @@
+use crate::docker::DockerClient;
 use std::process::Command;
 
 #[derive(Debug, Clone)]
@@ -312,13 +313,10 @@ impl PortConflict {
         let mut stopped = Vec::new();
         let mut errors = Vec::new();
 
+        let docker = DockerClient::new();
         for container in &containers {
-            match Command::new("docker")
-                .args(["rm", "-f", container])
-                .status()
-            {
-                Ok(status) if status.success() => stopped.push(container.clone()),
-                Ok(status) => errors.push(format!("{}: exit {}", container, status)),
+            match docker.rm_force_sync(container) {
+                Ok(()) => stopped.push(container.clone()),
                 Err(e) => errors.push(format!("{}: {}", container, e)),
             }
         }
@@ -346,26 +344,11 @@ impl PortConflict {
     /// This lists all containers and parses their port mappings to find ones
     /// that have the target port published on the host.
     fn find_docker_containers_on_port(port: u16) -> Vec<String> {
-        // Get container names and port mappings (tab-separated)
-        let output = match Command::new("docker")
-            .args(["ps", "--format", "{{.Names}}\t{{.Ports}}"])
-            .output()
-        {
-            Ok(o) if o.status.success() => o,
-            _ => return Vec::new(),
-        };
-
+        let entries = DockerClient::new().ps_names_and_ports_sync();
         let port_str = port.to_string();
         let mut containers = Vec::new();
 
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let parts: Vec<&str> = line.splitn(2, '\t').collect();
-            if parts.len() < 2 {
-                continue;
-            }
-            let name = parts[0];
-            let ports = parts[1];
-
+        for (name, ports) in &entries {
             // Port mappings look like: "0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp"
             // We need to match the host port (before "->")
             for mapping in ports.split(", ") {
@@ -376,7 +359,7 @@ impl PortConflict {
                     if let Some(colon_pos) = host_part.rfind(':') {
                         let host_port = &host_part[colon_pos + 1..];
                         if host_port == port_str {
-                            containers.push(name.to_string());
+                            containers.push(name.clone());
                             break; // Found this container, move to next
                         }
                     }

@@ -1,39 +1,28 @@
 use crate::output::UserOutput;
+use service_federation::docker::DockerClient;
 
 pub async fn run_doctor(out: &dyn UserOutput) -> anyhow::Result<()> {
     out.status("Checking system requirements...\n");
 
     let mut all_ok = true;
+    let docker = DockerClient::new();
 
     // Check Docker
     out.progress("Docker: ");
-    match tokio::process::Command::new("docker")
-        .arg("--version")
-        .output()
-        .await
-    {
+    match docker.version().await {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             out.finish_progress(&version);
 
             // Check Docker daemon is actually running
             out.progress("Docker daemon: ");
-            match tokio::process::Command::new("docker")
-                .arg("info")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .await
-            {
-                Ok(status) if status.success() => {
-                    out.finish_progress("Running");
-                }
-                _ => {
-                    out.finish_progress(
-                        "Not running (start Docker Desktop or run: sudo systemctl start docker)",
-                    );
-                    all_ok = false;
-                }
+            if docker.info_status().await {
+                out.finish_progress("Running");
+            } else {
+                out.finish_progress(
+                    "Not running (start Docker Desktop or run: sudo systemctl start docker)",
+                );
+                all_ok = false;
             }
         }
         _ => {
@@ -44,30 +33,13 @@ pub async fn run_doctor(out: &dyn UserOutput) -> anyhow::Result<()> {
 
     // Check docker-compose
     out.progress("docker-compose: ");
-    match tokio::process::Command::new("docker-compose")
-        .arg("--version")
-        .output()
-        .await
-    {
+    match docker.compose_version().await {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             out.finish_progress(&version);
         }
         _ => {
-            // Try "docker compose" (newer syntax)
-            match tokio::process::Command::new("docker")
-                .args(["compose", "version"])
-                .output()
-                .await
-            {
-                Ok(output) if output.status.success() => {
-                    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    out.finish_progress(&format!("{} (via docker compose)", version));
-                }
-                _ => {
-                    out.finish_progress("Not found (optional)");
-                }
-            }
+            out.finish_progress("Not found (optional)");
         }
     }
 

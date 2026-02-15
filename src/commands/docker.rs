@@ -1,6 +1,7 @@
 use crate::output::UserOutput;
 use service_federation::{
     config::{BuildConfig, Config, DockerBuildResult},
+    docker::DockerClient,
     orchestrator::ServiceLifecycleCommands,
 };
 use std::path::Path;
@@ -184,15 +185,13 @@ pub async fn run_docker_push(
 
         let full_image = format!("{}:{}", docker_config.image, resolved_tag);
 
-        // Check that image exists locally
-        let inspect = tokio::process::Command::new("docker")
-            .args(["image", "inspect", &full_image])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await?;
+        let docker = DockerClient::new();
 
-        if !inspect.success() {
+        // Check that image exists locally
+        let exists = docker.image_inspect_status(&full_image).await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        if !exists {
             anyhow::bail!(
                 "Image '{}' not found locally. Run `fed docker build` first.",
                 full_image
@@ -204,17 +203,8 @@ pub async fn run_docker_push(
             service_name, full_image
         ));
 
-        let status = tokio::process::Command::new("docker")
-            .args(["push", &full_image])
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .await?;
-
-        if !status.success() {
-            anyhow::bail!("Docker push failed for '{}'", full_image);
-        }
+        docker.push(&full_image).await
+            .map_err(|e| anyhow::anyhow!("Docker push failed for '{}': {}", full_image, e))?;
     }
 
     out.success("\nAll Docker images pushed successfully.");
