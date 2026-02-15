@@ -3,8 +3,10 @@
 //! Provides shared functions for interacting with Docker containers,
 //! consolidating duplicate implementations across the codebase.
 
+pub mod client;
 pub mod error;
 
+pub use client::DockerClient;
 pub use error::DockerError;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
