@@ -27,16 +27,10 @@ impl DockerClient {
     // ========================================================================
 
     /// Run a docker command with a timeout, returning raw Output.
-    async fn run(
-        &self,
-        args: &[&str],
-        timeout: Duration,
-    ) -> Result<Output, DockerError> {
+    async fn run(&self, args: &[&str], timeout: Duration) -> Result<Output, DockerError> {
         let result = tokio::time::timeout(
             timeout,
-            tokio::process::Command::new("docker")
-                .args(args)
-                .output(),
+            tokio::process::Command::new("docker").args(args).output(),
         )
         .await;
 
@@ -50,11 +44,7 @@ impl DockerClient {
     }
 
     /// Run a docker command with a timeout, returning Output only if exit 0.
-    async fn run_success(
-        &self,
-        args: &[&str],
-        timeout: Duration,
-    ) -> Result<Output, DockerError> {
+    async fn run_success(&self, args: &[&str], timeout: Duration) -> Result<Output, DockerError> {
         let output = self.run(args, timeout).await?;
         if output.status.success() {
             Ok(output)
@@ -78,11 +68,7 @@ impl DockerClient {
     // ========================================================================
 
     /// Force-remove a container. Returns `Ok(())` if container doesn't exist.
-    pub async fn rm_force(
-        &self,
-        container: &str,
-        timeout: Duration,
-    ) -> Result<(), DockerError> {
+    pub async fn rm_force(&self, container: &str, timeout: Duration) -> Result<(), DockerError> {
         let output = self.run(&["rm", "-f", container], timeout).await?;
         if output.status.success() {
             return Ok(());
@@ -108,11 +94,7 @@ impl DockerClient {
     }
 
     /// Stop a container gracefully.
-    pub async fn stop(
-        &self,
-        container: &str,
-        timeout: Duration,
-    ) -> Result<(), DockerError> {
+    pub async fn stop(&self, container: &str, timeout: Duration) -> Result<(), DockerError> {
         let output = self.run(&["stop", container], timeout).await?;
         if output.status.success() {
             return Ok(());
@@ -128,7 +110,9 @@ impl DockerClient {
         timeout: Duration,
     ) -> Result<bool, DockerError> {
         let grace = grace_secs.to_string();
-        let output = self.run(&["stop", "-t", &grace, container], timeout).await?;
+        let output = self
+            .run(&["stop", "-t", &grace, container], timeout)
+            .await?;
         let stopped = output.status.success();
         // Always try to remove, even if stop failed
         let _ = self.rm_force(container, timeout).await;
@@ -136,11 +120,7 @@ impl DockerClient {
     }
 
     /// Kill a container (SIGKILL).
-    pub async fn kill(
-        &self,
-        container: &str,
-        timeout: Duration,
-    ) -> Result<(), DockerError> {
+    pub async fn kill(&self, container: &str, timeout: Duration) -> Result<(), DockerError> {
         let output = self.run(&["kill", container], timeout).await?;
         if output.status.success() {
             return Ok(());
@@ -165,11 +145,7 @@ impl DockerClient {
     }
 
     /// Pull a Docker image.
-    pub async fn pull(
-        &self,
-        image: &str,
-        timeout: Duration,
-    ) -> Result<(), DockerError> {
+    pub async fn pull(&self, image: &str, timeout: Duration) -> Result<(), DockerError> {
         let output = self.run(&["pull", image], timeout).await?;
         if output.status.success() {
             return Ok(());
@@ -187,18 +163,12 @@ impl DockerClient {
     // ========================================================================
 
     /// Check if a container is running (async).
-    pub async fn is_running(
-        &self,
-        container: &str,
-        timeout: Duration,
-    ) -> bool {
+    pub async fn is_running(&self, container: &str, timeout: Duration) -> bool {
         let output = self
             .run(&["inspect", "-f", "{{.State.Running}}", container], timeout)
             .await;
         match output {
-            Ok(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).trim() == "true"
-            }
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim() == "true",
             _ => false,
         }
     }
@@ -206,9 +176,7 @@ impl DockerClient {
     /// Check if a container is running (synchronous).
     pub fn is_running_sync(&self, container: &str) -> bool {
         match self.run_sync(&["inspect", "-f", "{{.State.Running}}", container]) {
-            Ok(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).trim() == "true"
-            }
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim() == "true",
             _ => false,
         }
     }
@@ -217,7 +185,13 @@ impl DockerClient {
     pub async fn is_alive(&self, container_id: &str, timeout: Duration) -> bool {
         let output = self
             .run(
-                &["ps", "-q", "--no-trunc", "-f", &format!("id={}", container_id)],
+                &[
+                    "ps",
+                    "-q",
+                    "--no-trunc",
+                    "-f",
+                    &format!("id={}", container_id),
+                ],
                 timeout,
             )
             .await;
@@ -236,7 +210,11 @@ impl DockerClient {
     ) -> HashMap<String, String> {
         let output = self
             .run(
-                &["inspect", "--format={{json .NetworkSettings.Ports}}", container],
+                &[
+                    "inspect",
+                    "--format={{json .NetworkSettings.Ports}}",
+                    container,
+                ],
                 timeout,
             )
             .await;
@@ -325,7 +303,10 @@ impl DockerClient {
 
     /// Check if an image exists locally.
     pub async fn image_exists(&self, image: &str) -> bool {
-        match self.run(&["inspect", "--type=image", image], Duration::from_secs(10)).await {
+        match self
+            .run(&["inspect", "--type=image", image], Duration::from_secs(10))
+            .await
+        {
             Ok(o) => o.status.success(),
             Err(_) => false,
         }
@@ -354,11 +335,8 @@ impl DockerClient {
         shell_cmd: &str,
         timeout: Duration,
     ) -> Result<Output, DockerError> {
-        self.run(
-            &["exec", container, "/bin/sh", "-c", shell_cmd],
-            timeout,
-        )
-        .await
+        self.run(&["exec", container, "/bin/sh", "-c", shell_cmd], timeout)
+            .await
     }
 
     /// Fetch container logs.
@@ -369,11 +347,8 @@ impl DockerClient {
         timeout: Duration,
     ) -> Result<Output, DockerError> {
         let tail_str = tail.to_string();
-        self.run(
-            &["logs", "--tail", &tail_str, container],
-            timeout,
-        )
-        .await
+        self.run(&["logs", "--tail", &tail_str, container], timeout)
+            .await
     }
 
     // ========================================================================
@@ -381,10 +356,7 @@ impl DockerClient {
     // ========================================================================
 
     /// Build a Docker image. Inherits stdio for interactive output.
-    pub async fn build(
-        &self,
-        args: &[&str],
-    ) -> Result<(), DockerError> {
+    pub async fn build(&self, args: &[&str]) -> Result<(), DockerError> {
         let mut full_args = vec!["build"];
         full_args.extend_from_slice(args);
 
@@ -432,17 +404,16 @@ impl DockerClient {
         }
     }
 
-    /// Check if an image exists locally. Inherits stdio for output.
-    pub async fn image_inspect_status(&self, image: &str) -> Result<bool, DockerError> {
-        let cmd_str = format!("docker image inspect {}", image);
-        let status = tokio::process::Command::new("docker")
-            .args(["image", "inspect", image])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+    /// Check if an image exists locally (returns `Result` for error propagation).
+    pub async fn image_exists_checked(&self, image: &str) -> Result<bool, DockerError> {
+        match self
+            .run(&["image", "inspect", image], Duration::from_secs(10))
             .await
-            .map_err(|e| DockerError::exec_failed(cmd_str, e))?;
-        Ok(status.success())
+        {
+            Ok(o) => Ok(o.status.success()),
+            Err(DockerError::CommandFailed { .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     // ========================================================================
@@ -451,11 +422,8 @@ impl DockerClient {
 
     /// Force-remove a Docker volume.
     pub async fn volume_rm(&self, volume: &str) -> Result<Output, DockerError> {
-        self.run(
-            &["volume", "rm", "-f", volume],
-            Duration::from_secs(10),
-        )
-        .await
+        self.run(&["volume", "rm", "-f", volume], Duration::from_secs(10))
+            .await
     }
 
     // ========================================================================
@@ -464,7 +432,10 @@ impl DockerClient {
 
     /// Check if the Docker daemon is healthy (async).
     pub async fn daemon_healthy(&self, timeout: Duration) -> bool {
-        match self.run(&["info", "--format", "{{.ServerVersion}}"], timeout).await {
+        match self
+            .run(&["info", "--format", "{{.ServerVersion}}"], timeout)
+            .await
+        {
             Ok(o) => o.status.success(),
             Err(_) => false,
         }
@@ -485,14 +456,8 @@ impl DockerClient {
 
     /// Run `docker info` (for daemon status checks).
     pub async fn info_status(&self) -> bool {
-        let result = tokio::process::Command::new("docker")
-            .arg("info")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await;
-        match result {
-            Ok(s) => s.success(),
+        match self.run(&["info"], Duration::from_secs(5)).await {
+            Ok(o) => o.status.success(),
             Err(_) => false,
         }
     }
@@ -500,7 +465,9 @@ impl DockerClient {
     /// Detect Docker Compose variant (v1 or v2).
     pub async fn compose_version(&self) -> Result<Output, DockerError> {
         // Try v2 first
-        let v2 = self.run(&["compose", "version"], Duration::from_secs(5)).await;
+        let v2 = self
+            .run(&["compose", "version"], Duration::from_secs(5))
+            .await;
         if let Ok(ref o) = v2 {
             if o.status.success() {
                 return v2;

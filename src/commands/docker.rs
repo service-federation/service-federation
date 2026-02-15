@@ -189,7 +189,7 @@ pub async fn run_docker_push(
 
         // Check that image exists locally
         let exists = docker
-            .image_inspect_status(&full_image)
+            .image_exists_checked(&full_image)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
