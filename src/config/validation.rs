@@ -51,12 +51,35 @@ impl Config {
             }
         }
 
-        // Validate each service has a defined type
+        // Validate each service has exactly one type
         for (name, service) in &self.services {
             if service.service_type() == ServiceType::Undefined {
                 return Err(Error::Validation(format!(
                     "Service '{}' has no type defined. Add one of: process, image, gradle_task, or compose_file + compose_service",
                     name
+                )));
+            }
+
+            // Reject ambiguous configs with multiple type-defining fields
+            let type_fields: Vec<&str> = [
+                service.process.as_ref().map(|_| "process"),
+                service.image.as_ref().map(|_| "image"),
+                service.gradle_task.as_ref().map(|_| "gradle_task"),
+                service
+                    .compose_file
+                    .as_ref()
+                    .and(service.compose_service.as_ref())
+                    .map(|_| "compose_file + compose_service"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+
+            if type_fields.len() > 1 {
+                return Err(Error::Validation(format!(
+                    "Service '{}' has multiple type-defining fields: {}. Remove all but one.",
+                    name,
+                    type_fields.join(", ")
                 )));
             }
         }
@@ -94,6 +117,27 @@ impl Config {
                     return Err(Error::Validation(format!(
                         "Script '{}' has invalid timeout '{}'. Use formats like '5s', '30s', '1m', '500ms'",
                         name, t
+                    )));
+                }
+            }
+        }
+
+        // Validate parameter defaults against either constraints
+        for (name, param) in self.get_effective_parameters() {
+            if param.either.is_empty() {
+                continue;
+            }
+            if let Some(ref default_value) = param.default {
+                let default_str = match default_value {
+                    serde_yaml::Value::String(s) => s.clone(),
+                    serde_yaml::Value::Number(n) => n.to_string(),
+                    serde_yaml::Value::Bool(b) => b.to_string(),
+                    _ => continue, // Skip complex values
+                };
+                if !param.either.contains(&default_str) {
+                    return Err(Error::Validation(format!(
+                        "Parameter '{}' has default '{}' which is not in allowed values: {:?}",
+                        name, default_str, param.either
                     )));
                 }
             }
@@ -1272,6 +1316,106 @@ mod tests {
                 environment: HashMap::new(),
                 isolated: false,
                 timeout: Some("5m".to_string()),
+            },
+        );
+
+        assert!(config.validate().is_ok());
+    }
+
+    // ==================== Multi-Type Rejection (SF-00152) ====================
+
+    #[test]
+    fn test_multiple_service_types_rejected() {
+        let mut config = Config::default();
+        config.services.insert(
+            "confused".to_string(),
+            Service {
+                process: Some("npm run".to_string()),
+                image: Some("postgres:15".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("multiple type-defining fields"));
+        assert!(err.contains("process"));
+        assert!(err.contains("image"));
+    }
+
+    #[test]
+    fn test_single_service_type_accepted() {
+        let mut config = Config::default();
+        config.services.insert(
+            "app".to_string(),
+            Service {
+                process: Some("npm run".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.validate().is_ok());
+    }
+
+    // ==================== Parameter Default Validation (SF-00153) ====================
+
+    #[test]
+    fn test_parameter_default_violating_either_rejected() {
+        use crate::config::Parameter;
+
+        let mut config = Config::default();
+        config.variables.insert(
+            "ENV".to_string(),
+            Parameter {
+                either: vec![
+                    "development".to_string(),
+                    "staging".to_string(),
+                    "production".to_string(),
+                ],
+                default: Some(serde_yaml::Value::String("invalid".to_string())),
+                ..Default::default()
+            },
+        );
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not in allowed values"));
+        assert!(err.contains("ENV"));
+    }
+
+    #[test]
+    fn test_parameter_default_satisfying_either_accepted() {
+        use crate::config::Parameter;
+
+        let mut config = Config::default();
+        config.variables.insert(
+            "ENV".to_string(),
+            Parameter {
+                either: vec![
+                    "development".to_string(),
+                    "staging".to_string(),
+                    "production".to_string(),
+                ],
+                default: Some(serde_yaml::Value::String("development".to_string())),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_parameter_no_either_no_validation() {
+        use crate::config::Parameter;
+
+        let mut config = Config::default();
+        config.variables.insert(
+            "PORT".to_string(),
+            Parameter {
+                default: Some(serde_yaml::Value::String("8080".to_string())),
+                ..Default::default()
             },
         );
 

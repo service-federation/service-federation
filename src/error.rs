@@ -95,22 +95,6 @@ pub enum Error {
     )]
     PortAllocation(String),
 
-    #[error("Port {port} is in use{}",
-        .process_name.as_ref()
-            .zip(.pid.as_ref())
-            .map(|(name, pid)| format!(" by process '{}' (PID {})", name, pid))
-            .unwrap_or_default()
-    )]
-    #[diagnostic(
-        code(fed::port::conflict),
-        help("Find what's using the port with: lsof -i :{port} (macOS/Linux) or netstat -ano | findstr :{port} (Windows)\nTo free the port, stop the conflicting process or use a different port in your config")
-    )]
-    PortConflict {
-        port: u16,
-        pid: Option<u32>,
-        process_name: Option<String>,
-    },
-
     #[error("{service} – port {port} already allocated")]
     #[diagnostic(
         code(fed::docker::port_conflict),
@@ -248,17 +232,6 @@ impl Error {
                 "Start the service with: fed start {}",
                 name
             )),
-            Error::PortConflict { port, pid, process_name } => {
-                let kill_hint = match (pid, process_name) {
-                    (Some(p), Some(name)) => format!("To free the port, stop '{}' (PID {}) or use a different port.", name, p),
-                    (Some(p), None) => format!("To free the port, kill PID {} or use a different port.", p),
-                    _ => "To use a different port, add 'default: <port>' to your parameter or let fed auto-allocate.".to_string(),
-                };
-                Some(format!(
-                    "Port {} is already in use. {}",
-                    port, kill_hint
-                ))
-            }
             Error::PortAllocation(msg) => Some(format!(
                 "Port allocation failed: {}. Try using 'type: port' parameters which auto-fallback to available ports.",
                 msg

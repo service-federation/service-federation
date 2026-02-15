@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// - Environment-specific values (development, staging, production)
 /// - Type constraints (e.g., "port" for automatic port allocation)
 /// - Either constraints for validation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Parameter {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub param_type: Option<String>,
