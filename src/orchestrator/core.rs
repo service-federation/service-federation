@@ -3,7 +3,7 @@ use crate::dependency::{ExternalServiceExpander, Graph};
 use crate::error::{Error, Result};
 use crate::parameter::Resolver;
 use crate::service::{OutputMode, ServiceManager, Status};
-use crate::state::{RegistrationOutcome, ServiceState, StateTracker};
+use crate::state::{ServiceState, StateTracker};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 // Using tokio::sync::RwLock for async-aware locking
@@ -746,97 +746,43 @@ impl Orchestrator {
             ServiceType::Undefined
         };
 
-        // Atomically register service in state tracker before starting.
-        // This prevents TOCTOU race conditions where multiple threads try to start the same service.
-        // SQLite's ACID transactions ensure only one thread succeeds in registration.
-        //
-        // Note: The state tracker lock is released before actual service startup.
-        // This is intentional - we use SQLite's atomic INSERT OR IGNORE pattern
-        // for concurrency control, not the lock itself.
+        // Register with scope guard — Drop auto-unregisters on any failure path.
+        // SQLite's ACID transactions ensure only one thread wins registration.
         let mut service_state =
             ServiceState::new(name.to_string(), service_type, self.namespace.clone());
         if let Some(service_config) = self.config.services.get(name) {
             service_state.startup_message = service_config.startup_message.clone();
         }
 
-        match self
-            .state_tracker
-            .write()
-            .await
-            .register_service(service_state)
-            .await?
-        {
-            RegistrationOutcome::Registered => { /* continue with start */ }
-            RegistrationOutcome::AlreadyExists { status } => {
-                tracing::debug!(
-                    "Service '{}' already registered (status: {}), skipping start",
-                    name,
-                    status
-                );
-                return Ok(());
-            }
-        }
+        let Some(registration) = super::registration::ServiceRegistration::register(
+            &self.state_tracker,
+            service_state,
+        )
+        .await?
+        else {
+            return Ok(()); // already registered by another thread
+        };
 
-        // Run install step if needed
+        // All ? from here to commit() are safe — the guard cleans up on drop.
+
         self.run_install_if_needed(name)
             .instrument(tracing::info_span!("install_if_needed"))
             .await?;
 
-        // Check cancellation before the expensive start operation
         if self.cancellation_token.is_cancelled() {
-            tracing::debug!(
-                "start_service: cancellation detected before start for '{}'",
-                name
-            );
-            // Unregister since we registered but won't start
-            self.state_tracker
-                .write()
-                .await
-                .unregister_service(name)
-                .await?;
             return Err(Error::Cancelled(name.to_string()));
         }
 
-        // Start the service
-        // Lock the mutex and call start()
-        // Service stays in HashMap during entire operation - no race conditions!
-        let start_result = async {
+        // Start the service — hold manager lock for cancellation check + start
+        async {
             let mut manager = manager_arc.lock().await;
-
-            // Final cancellation check inside the lock
             if self.cancellation_token.is_cancelled() {
-                tracing::debug!(
-                    "start_service: cancellation detected inside start lock for '{}'",
-                    name
-                );
-                // Don't call unregister here - it's called below in cleanup
                 return Err(Error::Cancelled(name.to_string()));
             }
-
-            manager.start().await?;
-            Ok(())
+            manager.start().await
         }
         .instrument(tracing::info_span!("spawn_service"))
-        .await;
-
-        // Unregister on failure so stale "Starting" entries don't block future starts
-        if let Err(ref e) = start_result {
-            tracing::warn!("start_service: '{}' failed to start: {}", name, e);
-            if let Err(unreg_err) = self
-                .state_tracker
-                .write()
-                .await
-                .unregister_service(name)
-                .await
-            {
-                tracing::warn!(
-                    "start_service: failed to unregister '{}' after start failure: {}",
-                    name,
-                    unreg_err
-                );
-            }
-        }
-        start_result?;
+        .await?;
 
         // Update state to running and save atomically
         // IMPORTANT: Hold write lock across all updates AND save to prevent race conditions
@@ -872,6 +818,9 @@ impl Orchestrator {
         }
         .instrument(tracing::info_span!("update_state"))
         .await?;
+
+        // Service is Running in DB — commit the guard so Drop won't unregister.
+        registration.commit();
 
         // If a healthcheck is registered, poll it before declaring the service ready.
         // This ensures services that crash immediately or need warmup time are detected
