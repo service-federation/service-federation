@@ -3,7 +3,7 @@ use crate::dependency::{ExternalServiceExpander, Graph};
 use crate::error::{Error, Result};
 use crate::parameter::Resolver;
 use crate::service::{OutputMode, ServiceManager, Status};
-use crate::state::{ServiceState, StateTracker};
+use crate::state::{RegistrationOutcome, ServiceState, StateTracker};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 // Using tokio::sync::RwLock for async-aware locking
@@ -759,15 +759,22 @@ impl Orchestrator {
             service_state.startup_message = service_config.startup_message.clone();
         }
 
-        if !self
+        match self
             .state_tracker
             .write()
             .await
             .register_service(service_state)
             .await?
         {
-            // Service was already registered by another thread, bail out
-            return Ok(());
+            RegistrationOutcome::Registered => { /* continue with start */ }
+            RegistrationOutcome::AlreadyExists { status } => {
+                tracing::debug!(
+                    "Service '{}' already registered (status: {}), skipping start",
+                    name,
+                    status
+                );
+                return Ok(());
+            }
         }
 
         // Run install step if needed

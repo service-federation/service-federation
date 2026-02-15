@@ -116,3 +116,17 @@ impl ServiceState {
         self
     }
 }
+
+/// Result of attempting to register a service in the state tracker.
+///
+/// This replaces the previous `bool` return (`true` = new, `false` = existed)
+/// with a richer type that communicates the existing service's status, letting
+/// callers make informed decisions without querying the DB again.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RegistrationOutcome {
+    /// Service was newly registered with `Starting` status.
+    Registered,
+    /// Service already exists in the state tracker with this status.
+    /// The caller should not attempt to start it again.
+    AlreadyExists { status: Status },
+}

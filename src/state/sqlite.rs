@@ -1,4 +1,4 @@
-use super::types::{LockFile, ServiceState};
+use super::types::{LockFile, RegistrationOutcome, ServiceState};
 use crate::config::ServiceType;
 use crate::error::{validate_pid_for_check, Error, Result};
 use crate::service::Status;
@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use rusqlite::OptionalExtension;
 use tokio_rusqlite::Connection;
 use tracing::{debug, info, warn};
 
@@ -767,9 +768,16 @@ impl SqliteStateTracker {
     }
 
     /// Register a new service in the state.
-    /// Returns Ok(true) if newly registered, Ok(false) if already existed.
-    /// Returns Err on database failures instead of silently swallowing them.
-    pub async fn register_service(&mut self, service_state: ServiceState) -> Result<bool> {
+    ///
+    /// Returns `Registered` if the service was newly inserted, or
+    /// `AlreadyExists { status }` if it was already in the DB. When a service
+    /// already exists, its row is left untouched — no status, PID, or timestamp
+    /// clobbering. The caller should inspect the outcome and skip starting if
+    /// the service already exists.
+    pub async fn register_service(
+        &mut self,
+        service_state: ServiceState,
+    ) -> Result<RegistrationOutcome> {
         debug!("Registering service: {}", service_state.id);
 
         let id = service_state.id.clone();
@@ -785,32 +793,27 @@ impl SqliteStateTracker {
         let consecutive_failures = service_state.consecutive_failures;
         let startup_message = service_state.startup_message.clone();
 
-        self.conn.call(move |conn: &mut rusqlite::Connection| {
-            let tx = conn.transaction()?;
+        self.conn
+            .call(move |conn: &mut rusqlite::Connection| {
+                let tx = conn.transaction()?;
 
-            // Check if exists
-            let exists: bool = tx.query_row(
-                "SELECT COUNT(*) > 0 FROM services WHERE id = ?1",
-                rusqlite::params![&id],
-                |row| row.get(0),
-            )?;
+                // Check if service already exists and retrieve its current status
+                let existing_status: Option<String> = tx
+                    .query_row(
+                        "SELECT status FROM services WHERE id = ?1",
+                        rusqlite::params![&id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
 
-            if exists {
-                // Service already registered — don't clobber its current status, PID,
-                // or started_at. The caller should check the return value (false) and
-                // skip starting the service. Only update metadata that won't corrupt
-                // the running service's state.
-                tx.execute(
-                    "UPDATE services SET service_type = ?1, namespace = ?2, startup_message = ?3 WHERE id = ?4",
-                    rusqlite::params![
-                        &service_type,
-                        &namespace,
-                        startup_message.as_deref(),
-                        &id,
-                    ],
-                )?;
-            } else {
-                // Insert new
+                if let Some(status_str) = existing_status {
+                    // Service already registered — leave its row untouched.
+                    tx.commit()?;
+                    let status = status_str.parse::<Status>().unwrap_or(Status::Starting);
+                    return Ok(RegistrationOutcome::AlreadyExists { status });
+                }
+
+                // Insert new service
                 tx.execute(
                     "INSERT INTO services (id, status, service_type, pid, container_id, started_at, external_repo, namespace, restart_count, last_restart_at, consecutive_failures, startup_message)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -829,17 +832,18 @@ impl SqliteStateTracker {
                         startup_message.as_deref(),
                     ],
                 )?;
-            }
 
-            // Update lock file timestamp
-            tx.execute(
-                "UPDATE lock_file SET updated_at = datetime('now') WHERE id = 1",
-                [],
-            )?;
+                // Update lock file timestamp
+                tx.execute(
+                    "UPDATE lock_file SET updated_at = datetime('now') WHERE id = 1",
+                    [],
+                )?;
 
-            tx.commit()?;
-            Ok(!exists)
-        }).await.map_err(Error::from)
+                tx.commit()?;
+                Ok(RegistrationOutcome::Registered)
+            })
+            .await
+            .map_err(Error::from)
     }
 
     /// Update service status
@@ -2586,9 +2590,13 @@ mod tests {
         let mut tracker = create_ephemeral_tracker().await;
 
         let state = make_service_state("svc-a", ServiceType::Process);
-        let is_new = tracker.register_service(state).await.unwrap();
+        let outcome = tracker.register_service(state).await.unwrap();
 
-        assert!(is_new, "First registration should return true (new)");
+        assert_eq!(
+            outcome,
+            RegistrationOutcome::Registered,
+            "First registration should return Registered"
+        );
 
         let retrieved = tracker.get_service("svc-a").await;
         assert!(
@@ -2604,26 +2612,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_service_duplicate_returns_false() {
+    async fn test_register_service_duplicate_returns_already_exists() {
         let mut tracker = create_ephemeral_tracker().await;
 
         let state = make_service_state("svc-a", ServiceType::Process);
         let first = tracker.register_service(state).await.unwrap();
-        assert!(first, "First registration is new");
+        assert_eq!(first, RegistrationOutcome::Registered);
 
         let state2 = make_service_state("svc-a", ServiceType::Docker);
         let second = tracker.register_service(state2).await.unwrap();
-        assert!(
-            !second,
-            "Second registration of same id should return false (updated)"
+        assert_eq!(
+            second,
+            RegistrationOutcome::AlreadyExists {
+                status: Status::Running
+            },
+            "Second registration should return AlreadyExists with current status"
         );
 
-        // The update path only updates status, service_type, namespace, started_at, startup_message
+        // The existing row must be left completely untouched
         let retrieved = tracker.get_service("svc-a").await.unwrap();
         assert_eq!(
             retrieved.service_type,
-            ServiceType::Docker,
-            "service_type should be updated"
+            ServiceType::Process,
+            "service_type must not change on duplicate registration"
         );
     }
 
@@ -3347,10 +3358,16 @@ mod tests {
             port_allocations: HashMap::new(),
             startup_message: None,
         };
-        let is_new = tracker.register_service(new_state).await.unwrap();
-        assert!(!is_new, "Should return false for existing service");
+        let outcome = tracker.register_service(new_state).await.unwrap();
+        assert_eq!(
+            outcome,
+            RegistrationOutcome::AlreadyExists {
+                status: Status::Running
+            },
+            "Should return AlreadyExists with the existing Running status"
+        );
 
-        // The existing service's status must NOT be clobbered
+        // The existing service's row must be completely untouched
         let retrieved = tracker.get_service("svc").await.unwrap();
         assert_eq!(
             retrieved.status,
