@@ -41,48 +41,24 @@ pub async fn stop_service_by_state(
 /// derived from `work_dir`) and force-removes them. Returns the number of
 /// containers successfully removed.
 pub async fn remove_orphan_containers_for_workdir(work_dir: &std::path::Path) -> usize {
+    use service_federation::docker::DockerClient;
     use service_federation::service::hash_work_dir;
-    use tokio::process::Command;
+    use std::time::Duration;
 
+    let client = DockerClient::new();
+    let timeout = Duration::from_secs(10);
     let work_dir_hash = hash_work_dir(work_dir);
     let prefix = format!("fed-{}-", work_dir_hash);
 
-    let output = Command::new("docker")
-        .args([
-            "ps",
-            "-a",
-            "--filter",
-            &format!("name=^{}", prefix),
-            "--format",
-            "{{.Names}}",
-        ])
-        .output()
-        .await;
-
-    let Ok(output) = output else {
-        return 0;
+    let containers = match client.ps_names(&format!("name=^{}", prefix), timeout).await {
+        Ok(c) => c,
+        Err(_) => return 0,
     };
-    if !output.status.success() {
-        return 0;
-    }
-
-    let containers: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
 
     let mut removed = 0;
     for container in containers {
-        let rm_output = Command::new("docker")
-            .args(["rm", "-f", &container])
-            .output()
-            .await;
-
-        if let Ok(out) = rm_output {
-            if out.status.success() {
-                removed += 1;
-            }
+        if client.rm_force(&container, timeout).await.is_ok() {
+            removed += 1;
         }
     }
 
@@ -93,38 +69,17 @@ pub async fn remove_orphan_containers_for_workdir(work_dir: &std::path::Path) ->
 ///
 /// Tries `docker stop` first (sends SIGTERM, waits), then `docker rm -f`.
 pub async fn graceful_docker_stop(container_id: &str) -> bool {
-    use tokio::process::Command;
+    use service_federation::docker::DockerClient;
+    use std::time::Duration;
 
-    // Try graceful stop first (SIGTERM with 10 second timeout)
-    let stop_result = Command::new("docker")
-        .args(["stop", "-t", "10", container_id])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
+    let client = DockerClient::new();
+    let timeout = Duration::from_secs(30);
 
-    if let Ok(status) = stop_result {
-        if status.success() {
-            // Remove the stopped container
-            let _ = Command::new("docker")
-                .args(["rm", "-f", container_id])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .await;
-            return true;
-        }
-    }
-
-    // Fallback: force remove
-    let rm_result = Command::new("docker")
-        .args(["rm", "-f", container_id])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
-
-    rm_result.map(|s| s.success()).unwrap_or(false)
+    // stop_and_remove: docker stop -t 10, then docker rm -f
+    client
+        .stop_and_remove(container_id, 10, timeout)
+        .await
+        .unwrap_or(false)
 }
 
 /// Re-export from error module for backwards compatibility with command imports.

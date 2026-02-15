@@ -234,17 +234,8 @@ impl<'a> HealthCheckRunner<'a> {
 
             // Docker services: check container is still running
             if let Some(ref container_id) = container_id {
-                let output = tokio::process::Command::new("docker")
-                    .args([
-                        "ps",
-                        "-q",
-                        "--no-trunc",
-                        "-f",
-                        &format!("id={}", container_id),
-                    ])
-                    .output()
-                    .await;
-                let is_running = output.map(|o| !o.stdout.is_empty()).unwrap_or(false); // if docker cmd fails, assume dead
+                let client = crate::docker::DockerClient::new();
+                let is_running = client.is_alive(container_id, Duration::from_secs(5)).await;
                 if !is_running {
                     tracing::warn!(
                         "Service '{}' container {} stopped during healthcheck wait",
