@@ -433,6 +433,15 @@ impl Session {
         Self::save_ports(&self.session_dir, &self.ports)
     }
 
+    /// Clear all cached port allocations.
+    ///
+    /// Used by `fed ports reset` to ensure randomized ports don't survive a reset
+    /// via the session cache (which takes priority over persisted_ports in resolution).
+    pub fn clear_ports(&mut self) -> Result<()> {
+        self.ports.clear();
+        Self::save_ports(&self.session_dir, &self.ports)
+    }
+
     /// Check if a service has been installed
     pub fn is_installed(&self, service_name: &str) -> bool {
         let installed_dir = self.session_dir.join("installed");

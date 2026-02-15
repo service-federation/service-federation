@@ -749,12 +749,16 @@ impl SqliteStateTracker {
     /// - "stopping" - service is shutting down, PID/container may be gone
     /// - any other status - unknown/invalid, err on side of not cleaning up
     ///
-    /// Note: "starting" is explicitly excluded because in concurrent scenarios,
-    /// one process may have registered the service but not yet assigned a PID,
-    /// while another process reads the state. We don't want to clean up services
-    /// that are legitimately in the process of starting.
+    /// Note: "starting" is included because a service stuck in Starting with no
+    /// PID and no container ID indicates a failed start that wasn't cleaned up.
+    /// The caller (`mark_dead_services`) additionally checks for missing PID/container,
+    /// so a legitimately-starting service that has already received a PID won't be
+    /// incorrectly cleaned up.
     fn status_indicates_should_be_running(status: Status) -> bool {
-        matches!(status, Status::Running | Status::Healthy | Status::Failing)
+        matches!(
+            status,
+            Status::Running | Status::Healthy | Status::Failing | Status::Starting
+        )
     }
 
     /// Check if a status indicates the service is stale (marked for cleanup).
@@ -792,14 +796,15 @@ impl SqliteStateTracker {
             )?;
 
             if exists {
-                // Update existing
+                // Service already registered — don't clobber its current status, PID,
+                // or started_at. The caller should check the return value (false) and
+                // skip starting the service. Only update metadata that won't corrupt
+                // the running service's state.
                 tx.execute(
-                    "UPDATE services SET status = ?1, service_type = ?2, namespace = ?3, started_at = ?4, startup_message = ?5 WHERE id = ?6",
+                    "UPDATE services SET service_type = ?1, namespace = ?2, startup_message = ?3 WHERE id = ?4",
                     rusqlite::params![
-                        &status,
                         &service_type,
                         &namespace,
-                        &started_at,
                         startup_message.as_deref(),
                         &id,
                     ],
@@ -3260,6 +3265,102 @@ mod tests {
             globals.get("PRESERVED_PORT"),
             Some(&9999),
             "Persisted port resolutions should survive clear()"
+        );
+    }
+
+    // --- Bug: Starting status not marked stale ---
+
+    #[tokio::test]
+    async fn test_mark_dead_services_starting_no_pid_is_stale() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        // A service with Starting status but no PID and no container_id
+        // is clearly stale — the process was never spawned (start failed
+        // between registration and actual process creation).
+        let state = ServiceState {
+            id: "stuck-starting".to_string(),
+            status: Status::Starting,
+            service_type: ServiceType::Process,
+            pid: None,
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        };
+        tracker.register_service(state).await.unwrap();
+
+        let marked = tracker.mark_dead_services().await.unwrap();
+        assert_eq!(
+            marked, 1,
+            "Service with Starting status and no PID should be marked stale"
+        );
+
+        let services = tracker.get_services().await;
+        assert!(
+            services.is_empty(),
+            "Stale Starting service should be filtered from get_services()"
+        );
+    }
+
+    // --- Bug: register_service clobbers existing service status ---
+
+    #[tokio::test]
+    async fn test_register_service_does_not_clobber_running_status() {
+        let mut tracker = create_ephemeral_tracker().await;
+
+        // Register a service as Running (simulates a successfully started service)
+        let state = ServiceState {
+            id: "svc".to_string(),
+            status: Status::Running,
+            service_type: ServiceType::Process,
+            pid: Some(12345),
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        };
+        tracker.register_service(state).await.unwrap();
+
+        // Try to register again (simulates a concurrent or duplicate start attempt)
+        let new_state = ServiceState {
+            id: "svc".to_string(),
+            status: Status::Starting,
+            service_type: ServiceType::Process,
+            pid: None,
+            container_id: None,
+            started_at: Utc::now(),
+            external_repo: None,
+            namespace: "test".to_string(),
+            restart_count: 0,
+            last_restart_at: None,
+            consecutive_failures: 0,
+            port_allocations: HashMap::new(),
+            startup_message: None,
+        };
+        let is_new = tracker.register_service(new_state).await.unwrap();
+        assert!(!is_new, "Should return false for existing service");
+
+        // The existing service's status must NOT be clobbered
+        let retrieved = tracker.get_service("svc").await.unwrap();
+        assert_eq!(
+            retrieved.status,
+            Status::Running,
+            "register_service must not clobber existing Running status to Starting"
+        );
+        assert_eq!(
+            retrieved.pid,
+            Some(12345),
+            "register_service must not lose the existing PID"
         );
     }
 

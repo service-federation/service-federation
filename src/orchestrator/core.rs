@@ -793,7 +793,7 @@ impl Orchestrator {
         // Start the service
         // Lock the mutex and call start()
         // Service stays in HashMap during entire operation - no race conditions!
-        async {
+        let start_result = async {
             let mut manager = manager_arc.lock().await;
 
             // Final cancellation check inside the lock
@@ -810,10 +810,26 @@ impl Orchestrator {
             Ok(())
         }
         .instrument(tracing::info_span!("spawn_service"))
-        .await?;
+        .await;
 
-        // Unregister on failure if needed
-        // (moved outside the lock to avoid holding it during state tracker operations)
+        // Unregister on failure so stale "Starting" entries don't block future starts
+        if let Err(ref e) = start_result {
+            tracing::warn!("start_service: '{}' failed to start: {}", name, e);
+            if let Err(unreg_err) = self
+                .state_tracker
+                .write()
+                .await
+                .unregister_service(name)
+                .await
+            {
+                tracing::warn!(
+                    "start_service: failed to unregister '{}' after start failure: {}",
+                    name,
+                    unreg_err
+                );
+            }
+        }
+        start_result?;
 
         // Update state to running and save atomically
         // IMPORTANT: Hold write lock across all updates AND save to prevent race conditions
