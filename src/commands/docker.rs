@@ -188,7 +188,9 @@ pub async fn run_docker_push(
         let docker = DockerClient::new();
 
         // Check that image exists locally
-        let exists = docker.image_inspect_status(&full_image).await
+        let exists = docker
+            .image_inspect_status(&full_image)
+            .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         if !exists {
@@ -203,7 +205,9 @@ pub async fn run_docker_push(
             service_name, full_image
         ));
 
-        docker.push(&full_image).await
+        docker
+            .push(&full_image)
+            .await
             .map_err(|e| anyhow::anyhow!("Docker push failed for '{}': {}", full_image, e))?;
     }
 

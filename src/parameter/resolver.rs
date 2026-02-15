@@ -173,9 +173,9 @@ impl Resolver {
     /// Set the port store backend.
     ///
     /// The resolver uses this for all port lookups and saves instead of
-    /// directly accessing sessions or SQLite. Pass [`NoopPortStore`] for
-    /// isolated mode, [`SessionPortStore`] when a session is active, or
-    /// [`SqlitePortStore`] when using persisted ports without a session.
+    /// directly accessing sessions or SQLite. Pass [`crate::port::NoopPortStore`] for
+    /// isolated mode, [`crate::port::SessionPortStore`] when a session is active, or
+    /// [`crate::port::SqlitePortStore`] when using persisted ports without a session.
     pub fn set_port_store(&mut self, store: Box<dyn crate::port::PortStore>) {
         self.port_store = store;
     }
