@@ -1,6 +1,6 @@
 use super::{BaseService, ServiceManager, Status};
 use crate::config::Service as ServiceConfig;
-use crate::docker::DockerError;
+use crate::docker::{DockerClient, DockerError};
 use crate::error::{Error, Result};
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -125,6 +125,7 @@ pub struct DockerService {
     config: ServiceConfig,
     container_id: Arc<RwLock<Option<String>>>,
     session_id: Option<String>,
+    client: DockerClient,
     /// Cached logs to avoid spawning docker subprocess on every call
     log_cache: Arc<tokio::sync::RwLock<(Vec<String>, Instant)>>,
 }
@@ -143,6 +144,7 @@ impl DockerService {
             config,
             container_id: Arc::new(RwLock::new(None)),
             session_id,
+            client: DockerClient::new(),
             // Initialize with empty cache that's already expired
             log_cache: Arc::new(tokio::sync::RwLock::new((
                 Vec::new(),
@@ -258,25 +260,16 @@ impl DockerService {
     pub async fn cleanup_orphaned_containers() -> Result<usize> {
         use tracing::{debug, info};
 
-        // Get all managed containers
-        let output = tokio::process::Command::new("docker")
-            .args([
-                "ps",
-                "-a",
-                "--filter",
-                "label=com.service-federation.managed=true",
-                "--format",
-                "{{.ID}}\t{{.Label \"com.service-federation.session\"}}",
-            ])
-            .output()
-            .await?;
+        let client = DockerClient::new();
 
-        if !output.status.success() {
-            return Err(Error::ServiceStartFailed(
-                "docker".to_string(),
-                "Failed to list containers".to_string(),
-            ));
-        }
+        // Get all managed containers
+        let output = client
+            .ps_formatted(
+                "label=com.service-federation.managed=true",
+                "{{.ID}}\t{{.Label \"com.service-federation.session\"}}",
+                DOCKER_INSPECT_TIMEOUT,
+            )
+            .await?;
 
         let containers_output = String::from_utf8_lossy(&output.stdout);
         let mut removed = 0;
@@ -304,7 +297,7 @@ impl DockerService {
                         "Session {} not found, removing container {}",
                         session_id, container_id
                     );
-                    match Self::remove_container(container_id).await {
+                    match client.rm_force(container_id, DOCKER_REMOVE_TIMEOUT).await {
                         Ok(()) => removed += 1,
                         Err(e) => {
                             tracing::warn!(
@@ -323,7 +316,7 @@ impl DockerService {
                     "Session {} shell is dead, removing container {}",
                     session_id, container_id
                 );
-                match Self::remove_container(container_id).await {
+                match client.rm_force(container_id, DOCKER_REMOVE_TIMEOUT).await {
                     Ok(()) => removed += 1,
                     Err(e) => {
                         tracing::warn!(
@@ -342,38 +335,6 @@ impl DockerService {
         }
 
         Ok(removed)
-    }
-
-    /// Remove a Docker container by ID
-    async fn remove_container(container_id: &str) -> Result<()> {
-        let result = tokio::time::timeout(
-            DOCKER_REMOVE_TIMEOUT,
-            tokio::process::Command::new("docker")
-                .args(["rm", "-f", container_id])
-                .output(),
-        )
-        .await;
-
-        match result {
-            Ok(Ok(output)) if output.status.success() => Ok(()),
-            Ok(Ok(output)) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                // Ignore "No such container" errors (already removed)
-                if stderr.contains("No such container") {
-                    Ok(())
-                } else {
-                    Err(Error::ServiceStartFailed(
-                        "docker".to_string(),
-                        format!("Failed to remove container: {}", stderr),
-                    ))
-                }
-            }
-            Ok(Err(e)) => Err(Error::Io(e)),
-            Err(_) => Err(Error::Timeout(format!(
-                "docker rm container '{}'",
-                container_id
-            ))),
-        }
     }
 
     /// Validate volume specification for security.
@@ -561,29 +522,19 @@ impl ServiceManager for DockerService {
         // Using `docker rm -f` is atomic and avoids TOCTOU race conditions
         // that would occur with inspect-then-remove pattern.
         // The -f flag ensures this succeeds whether container exists or not.
-        let rm_result = tokio::time::timeout(
-            DOCKER_REMOVE_TIMEOUT,
-            tokio::process::Command::new("docker")
-                .args(["rm", "-f", &container_name])
-                .output(),
-        )
-        .await;
-
-        match rm_result {
-            Ok(Ok(output)) => {
-                // Log only if container was actually removed (not "No such container")
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if output.status.success() && !stderr.contains("No such container") {
-                    tracing::debug!("Removed existing container: {}", container_name);
-                }
+        match self
+            .client
+            .rm_force(&container_name, DOCKER_REMOVE_TIMEOUT)
+            .await
+        {
+            Ok(()) => {
+                tracing::debug!("Removed existing container (if any): {}", container_name);
             }
-            Ok(Err(e)) => {
-                tracing::warn!("Failed to run docker rm for {}: {}", container_name, e);
-            }
-            Err(_) => {
+            Err(e) => {
                 tracing::warn!(
-                    "Timeout removing container {}, continuing anyway",
-                    container_name
+                    "Failed to remove container {}: {}, continuing anyway",
+                    container_name,
+                    e
                 );
             }
         }
@@ -682,94 +633,31 @@ impl ServiceManager for DockerService {
         args.push(image.clone());
 
         // PERFORMANCE: Check if image exists locally before pulling (avoid 5min timeout on cached images)
-        // Use 'docker inspect' instead of 'docker images' for faster lookup
-        use tokio::time::timeout;
-
-        let check_result = tokio::process::Command::new("docker")
-            .args(["inspect", "--type=image", image])
-            .output()
-            .await;
-
-        let needs_pull = !check_result
-            .map(|output| output.status.success())
-            .unwrap_or(false);
+        let needs_pull = !self.client.image_exists(image).await;
 
         if needs_pull {
             tracing::info!("Pulling image '{}' (not found locally)", image);
-            let pull_result = timeout(
-                DOCKER_PULL_TIMEOUT,
-                tokio::process::Command::new("docker")
-                    .args(["pull", image])
-                    .output(),
-            )
-            .await;
-
-            match pull_result {
-                Ok(Ok(pull_output)) => {
-                    if !pull_output.status.success() {
-                        let error = String::from_utf8_lossy(&pull_output.stderr);
-                        // Only fail if it's not an "already exists" type error
-                        if !error.contains("up to date") && !error.contains("already exists") {
-                            let mut base = self.base.write();
-                            base.set_status(Status::Failing);
-                            return Err(Error::ServiceStartFailed(
-                                service_name.clone(),
-                                format!("Failed to pull image '{}': {}", image, error),
-                            ));
-                        }
-                    }
-                }
-                Ok(Err(e)) => {
-                    let mut base = self.base.write();
-                    base.set_status(Status::Failing);
-                    return Err(Error::ServiceStartFailed(
-                        service_name.clone(),
-                        format!("Failed to execute docker pull command: {}", e),
-                    ));
-                }
-                Err(_) => {
-                    let mut base = self.base.write();
-                    base.set_status(Status::Failing);
-                    return Err(Error::ServiceStartFailed(
-                        service_name.clone(),
-                        format!(
-                            "Timeout pulling image '{}' (exceeded {} seconds)",
-                            image,
-                            DOCKER_PULL_TIMEOUT.as_secs()
-                        ),
-                    ));
-                }
+            if let Err(e) = self.client.pull(image, DOCKER_PULL_TIMEOUT).await {
+                let mut base = self.base.write();
+                base.set_status(Status::Failing);
+                return Err(Error::ServiceStartFailed(
+                    service_name.clone(),
+                    format!("Failed to pull image '{}': {}", image, e),
+                ));
             }
         } else {
             tracing::debug!("Image '{}' found locally, skipping pull", image);
         }
 
         // Run docker command with timeout
-        let run_result = timeout(
-            DOCKER_START_TIMEOUT,
-            tokio::process::Command::new("docker").args(&args).output(),
-        )
-        .await;
-
-        let output = match run_result {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => {
+        let output = match self.client.run_detached(&args, DOCKER_START_TIMEOUT).await {
+            Ok(out) => out,
+            Err(e) => {
                 let mut base = self.base.write();
                 base.set_status(Status::Failing);
                 return Err(Error::ServiceStartFailed(
                     service_name.clone(),
                     e.to_string(),
-                ));
-            }
-            Err(_) => {
-                let mut base = self.base.write();
-                base.set_status(Status::Failing);
-                return Err(Error::ServiceStartFailed(
-                    service_name.clone(),
-                    format!(
-                        "Timeout starting container (exceeded {} seconds)",
-                        DOCKER_START_TIMEOUT.as_secs()
-                    ),
                 ));
             }
         };
@@ -783,9 +671,9 @@ impl ServiceManager for DockerService {
             let error = String::from_utf8_lossy(&output.stderr);
 
             // Clean up the orphaned container that Docker created but couldn't start
-            let _ = tokio::process::Command::new("docker")
-                .args(["rm", "-f", &container_name])
-                .output()
+            let _ = self
+                .client
+                .rm_force(&container_name, DOCKER_REMOVE_TIMEOUT)
                 .await;
 
             // Parse port conflict errors for better messaging
@@ -822,93 +710,58 @@ impl ServiceManager for DockerService {
         let container_id = self.container_id.read().clone();
         if let Some(ref id) = container_id {
             // Stop the container
-            let stop_result = tokio::time::timeout(
-                DOCKER_STOP_TIMEOUT,
-                tokio::process::Command::new("docker")
-                    .args(["stop", id])
-                    .output(),
-            )
-            .await;
-
-            match stop_result {
-                Ok(Ok(output)) => {
-                    if !output.status.success() {
-                        let mut base = self.base.write();
-                        base.set_status(Status::Failing);
-                        return Err(DockerError::failed("docker stop", &output).into());
-                    }
-                }
-                Ok(Err(e)) => {
-                    let mut base = self.base.write();
-                    base.set_status(Status::Failing);
-                    return Err(DockerError::exec_failed("docker stop", e).into());
-                }
-                Err(_) => {
-                    let mut base = self.base.write();
-                    base.set_status(Status::Failing);
-                    return Err(Error::Timeout(format!(
-                        "docker stop container '{}' (exceeded {} seconds)",
-                        id,
-                        DOCKER_STOP_TIMEOUT.as_secs()
-                    )));
-                }
+            if let Err(e) = self.client.stop(id, DOCKER_STOP_TIMEOUT).await {
+                let mut base = self.base.write();
+                base.set_status(Status::Failing);
+                return Err(e.into());
             }
 
             // Remove the container with retry logic (since we don't use --rm flag)
             // Use -f flag to force removal even if container is still busy
             const MAX_RETRIES: u32 = 3;
-            let mut last_error = String::new();
+            let mut last_error = None;
 
             for attempt in 1..=MAX_RETRIES {
-                let rm_output = tokio::process::Command::new("docker")
-                    .args(["rm", "-f", id])
-                    .output()
-                    .await
-                    .map_err(|e| DockerError::exec_failed("docker rm", e))?;
-
-                if rm_output.status.success() {
-                    // Successfully removed
-                    break;
+                match self.client.rm_force(id, DOCKER_REMOVE_TIMEOUT).await {
+                    Ok(()) => {
+                        last_error = None;
+                        break;
+                    }
+                    Err(e) => {
+                        if attempt < MAX_RETRIES {
+                            // Wait before retry with exponential backoff
+                            let delay_ms = 100 * 2u64.pow(attempt);
+                            tracing::warn!(
+                                "Failed to remove container {} (attempt {}/{}): {}. Retrying in {}ms...",
+                                id,
+                                attempt,
+                                MAX_RETRIES,
+                                e,
+                                delay_ms
+                            );
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            last_error = Some(e);
+                        } else {
+                            last_error = Some(e);
+                        }
+                    }
                 }
+            }
 
-                let error = String::from_utf8_lossy(&rm_output.stderr);
-
-                // Ignore "No such container" errors - container already gone
-                if error.contains("No such container") {
-                    break;
-                }
-
-                last_error = error.to_string();
-
-                if attempt < MAX_RETRIES {
-                    // Wait before retry with exponential backoff
-                    let delay_ms = 100 * 2u64.pow(attempt);
-                    tracing::warn!(
-                        "Failed to remove container {} (attempt {}/{}): {}. Retrying in {}ms...",
-                        id,
-                        attempt,
-                        MAX_RETRIES,
-                        error.trim(),
-                        delay_ms
-                    );
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                } else {
-                    // All retries exhausted - this is a real failure
-                    let mut base = self.base.write();
-                    base.set_status(Status::Failing);
-                    return Err(DockerError::cmd_failed(
-                        "docker rm",
-                        format!(
-                            "Failed to remove container {} after {} attempts: {}. \
-                            Container may be orphaned. Run 'fed stop' or 'fed clean' to retry.",
-                            id,
-                            MAX_RETRIES,
-                            last_error.trim()
-                        ),
-                        None,
-                    )
-                    .into());
-                }
+            if let Some(e) = last_error {
+                // All retries exhausted - this is a real failure
+                let mut base = self.base.write();
+                base.set_status(Status::Failing);
+                return Err(DockerError::cmd_failed(
+                    "docker rm",
+                    format!(
+                        "Failed to remove container {} after {} attempts: {}. \
+                        Container may be orphaned. Run 'fed stop' or 'fed clean' to retry.",
+                        id, MAX_RETRIES, e
+                    ),
+                    None,
+                )
+                .into());
             }
         }
 
@@ -926,48 +779,13 @@ impl ServiceManager for DockerService {
     async fn kill(&mut self) -> Result<()> {
         let container_id = self.container_id.read().clone();
         if let Some(ref id) = container_id {
-            let kill_result = tokio::time::timeout(
-                DOCKER_STOP_TIMEOUT,
-                tokio::process::Command::new("docker")
-                    .args(["kill", id])
-                    .output(),
-            )
-            .await;
-
-            match kill_result {
-                Ok(Ok(output)) => {
-                    if !output.status.success() {
-                        let error = String::from_utf8_lossy(&output.stderr);
-                        // Ignore "No such container" errors - container already gone
-                        if !error.contains("No such container") && !error.contains("is not running")
-                        {
-                            return Err(DockerError::failed("docker kill", &output).into());
-                        }
-                    }
-                }
-                Ok(Err(e)) => {
-                    return Err(DockerError::exec_failed("docker kill", e).into());
-                }
-                Err(_) => {
-                    return Err(Error::Timeout(format!(
-                        "docker kill container '{}' (exceeded {} seconds)",
-                        id,
-                        DOCKER_STOP_TIMEOUT.as_secs()
-                    )));
-                }
-            }
+            // Kill the container (Ok(()) if not found/not running)
+            self.client.kill(id, DOCKER_STOP_TIMEOUT).await?;
 
             // Remove the container after killing
-            let rm_output = tokio::process::Command::new("docker")
-                .args(["rm", "-f", id])
-                .output()
-                .await
-                .map_err(|e| DockerError::exec_failed("docker rm", e))?;
-
-            if !rm_output.status.success() {
-                let error = String::from_utf8_lossy(&rm_output.stderr);
+            if let Err(e) = self.client.rm_force(id, DOCKER_REMOVE_TIMEOUT).await {
                 // Log warning but don't fail - container might already be removed
-                tracing::warn!("Failed to remove container {}: {}", id, error);
+                tracing::warn!("Failed to remove container {}: {}", id, e);
             }
         }
 
@@ -1004,33 +822,20 @@ impl ServiceManager for DockerService {
                         id,
                         cmd
                     );
-                    // Run healthcheck inside container using docker exec
-                    // Use '/bin/sh' (full path) for Alpine-based images which don't have bash
-                    let exec_result = tokio::time::timeout(
-                        DOCKER_HEALTHCHECK_TIMEOUT,
-                        tokio::process::Command::new("docker")
-                            .args(["exec", id, "/bin/sh", "-c", cmd])
-                            .output(),
-                    )
-                    .await;
 
-                    let output = match exec_result {
-                        Ok(Ok(out)) => out,
-                        Ok(Err(e)) => {
+                    let output = match self
+                        .client
+                        .exec_sh(id, cmd, DOCKER_HEALTHCHECK_TIMEOUT)
+                        .await
+                    {
+                        Ok(out) => out,
+                        Err(e) => {
                             tracing::debug!(
                                 "Healthcheck command failed for {}: {:?}",
                                 self.name,
                                 e
                             );
                             return Ok(false); // Container doesn't exist or docker error
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                "Healthcheck timed out for '{}' (exceeded {} seconds)",
-                                self.name,
-                                DOCKER_HEALTHCHECK_TIMEOUT.as_secs()
-                            );
-                            return Ok(false); // Treat timeout as unhealthy
                         }
                     };
 
@@ -1070,35 +875,7 @@ impl ServiceManager for DockerService {
             }
 
             // No healthcheck configured - fall back to checking if container is running
-            // TOCTOU protection: Container might be removed between ID read and inspect
-            let inspect_result = tokio::time::timeout(
-                DOCKER_INSPECT_TIMEOUT,
-                tokio::process::Command::new("docker")
-                    .args(["inspect", "--format={{.State.Running}}", id])
-                    .output(),
-            )
-            .await;
-
-            let output = match inspect_result {
-                Ok(Ok(out)) => out,
-                Ok(Err(_)) => return Ok(false), // Container doesn't exist or docker error
-                Err(_) => {
-                    tracing::warn!(
-                        "docker inspect timed out for '{}' (exceeded {} seconds)",
-                        self.name,
-                        DOCKER_INSPECT_TIMEOUT.as_secs()
-                    );
-                    return Ok(false); // Treat timeout as not running
-                }
-            };
-
-            // If inspect command failed (e.g., "No such container"), treat as not running
-            if !output.status.success() {
-                return Ok(false);
-            }
-
-            let running = String::from_utf8_lossy(&output.stdout).trim() == "true";
-            Ok(running)
+            Ok(self.client.is_running(id, DOCKER_INSPECT_TIMEOUT).await)
         } else {
             Ok(false)
         }
@@ -1119,40 +896,10 @@ impl ServiceManager for DockerService {
     async fn get_port_mappings(&self) -> HashMap<String, String> {
         let container_id = self.container_id.read().clone();
         if let Some(ref id) = container_id {
-            // Query Docker for actual port mappings using async command
-            let output = tokio::process::Command::new("docker")
-                .args(["inspect", "--format={{json .NetworkSettings.Ports}}", id])
-                .output()
-                .await;
-
-            if let Ok(output) = output {
-                if output.status.success() {
-                    let json_str = String::from_utf8_lossy(&output.stdout);
-                    // Parse JSON: {"5432/tcp":[{"HostIp":"0.0.0.0","HostPort":"59890"}]}
-                    if let Ok(ports_json) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                        let mut mappings = HashMap::new();
-                        if let Some(ports_obj) = ports_json.as_object() {
-                            for (container_port, bindings) in ports_obj {
-                                if let Some(bindings_array) = bindings.as_array() {
-                                    if let Some(first_binding) = bindings_array.first() {
-                                        if let Some(host_port) =
-                                            first_binding.get("HostPort").and_then(|v| v.as_str())
-                                        {
-                                            mappings.insert(
-                                                container_port.clone(),
-                                                host_port.to_string(),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        return mappings;
-                    }
-                }
-            }
+            self.client.inspect_ports(id, DOCKER_INSPECT_TIMEOUT).await
+        } else {
+            HashMap::new()
         }
-        HashMap::new()
     }
 
     fn get_last_error(&self) -> Option<String> {
@@ -1176,31 +923,11 @@ impl ServiceManager for DockerService {
         if let Some(ref id) = container_id {
             // Always fetch a reasonable number of logs for caching
             let fetch_count = 200;
-            let args = vec![
-                "logs".to_string(),
-                "--tail".to_string(),
-                fetch_count.to_string(),
-                id.clone(),
-            ];
 
             // Gracefully handle container not found or other errors
-            let logs_result = tokio::time::timeout(
-                DOCKER_LOGS_TIMEOUT,
-                tokio::process::Command::new("docker").args(&args).output(),
-            )
-            .await;
-
-            let output = match logs_result {
-                Ok(Ok(out)) => out,
-                Ok(Err(_)) => return Ok(Vec::new()), // Container doesn't exist or docker error
-                Err(_) => {
-                    tracing::warn!(
-                        "docker logs timed out for '{}' (exceeded {} seconds)",
-                        self.name,
-                        DOCKER_LOGS_TIMEOUT.as_secs()
-                    );
-                    return Ok(Vec::new()); // Return empty logs on timeout
-                }
+            let output = match self.client.logs(id, fetch_count, DOCKER_LOGS_TIMEOUT).await {
+                Ok(out) => out,
+                Err(_) => return Ok(Vec::new()),
             };
 
             // If command failed (e.g., "No such container"), return empty logs
