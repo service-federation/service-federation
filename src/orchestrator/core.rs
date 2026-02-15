@@ -104,6 +104,8 @@ pub struct Orchestrator {
     pub stop_timeout: Duration,
     /// Guard to ensure cleanup runs exactly once
     cleanup_started: AtomicBool,
+    /// When true, skip port cache and allocate fresh random ports
+    randomize_ports: bool,
 }
 
 impl Orchestrator {
@@ -159,6 +161,7 @@ impl Orchestrator {
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             stop_timeout: DEFAULT_STOP_TIMEOUT,
             cleanup_started: AtomicBool::new(false),
+            randomize_ports: false,
         })
     }
 
@@ -190,6 +193,7 @@ impl Orchestrator {
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             stop_timeout: DEFAULT_STOP_TIMEOUT,
             cleanup_started: AtomicBool::new(false),
+            randomize_ports: false,
         })
     }
 
@@ -223,6 +227,7 @@ impl Orchestrator {
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             stop_timeout: DEFAULT_STOP_TIMEOUT,
             cleanup_started: AtomicBool::new(false),
+            randomize_ports: false,
         })
     }
 
@@ -306,7 +311,7 @@ impl Orchestrator {
     /// conflict prompts. Useful for running a second instance of the same
     /// project in a different worktree.
     pub fn set_randomize_ports(&mut self, randomize: bool) {
-        self.resolver.set_isolated_mode(randomize);
+        self.randomize_ports = randomize;
         self.resolver.set_auto_resolve_conflicts(randomize);
     }
 
@@ -441,21 +446,34 @@ impl Orchestrator {
             }
         }
 
-        // Load persisted port allocations from previous `fed start` so the
-        // resolver can reuse ports across invocations without an explicit session.
-        let persisted_ports = self
-            .state_tracker
-            .read()
-            .await
-            .get_global_port_allocations()
-            .await;
-        if !persisted_ports.is_empty() {
-            tracing::debug!(
-                "Loaded {} persisted port allocation(s) from state",
-                persisted_ports.len()
-            );
-            self.resolver.set_persisted_ports(persisted_ports);
-        }
+        // Build the port store based on mode:
+        // - Randomize mode → NoopPortStore (forces fresh random allocation)
+        // - Session active → SessionPortStore (reads/writes ports.json)
+        // - No session → SqlitePortStore (reads/writes persisted_ports table)
+        let port_store: Box<dyn crate::port::PortStore> = if self.randomize_ports {
+            tracing::debug!("Randomize mode: using NoopPortStore for fresh allocation");
+            Box::new(crate::port::NoopPortStore)
+        } else if let Ok(Some(session)) =
+            crate::session::Session::current_for_workdir(Some(&self.work_dir))
+        {
+            tracing::debug!("Session active: using SessionPortStore");
+            Box::new(crate::port::SessionPortStore::new(session))
+        } else {
+            let persisted_ports = self
+                .state_tracker
+                .read()
+                .await
+                .get_global_port_allocations()
+                .await;
+            if !persisted_ports.is_empty() {
+                tracing::debug!(
+                    "No session: using SqlitePortStore with {} persisted port(s)",
+                    persisted_ports.len()
+                );
+            }
+            Box::new(crate::port::SqlitePortStore::new(persisted_ports))
+        };
+        self.resolver.set_port_store(port_store);
 
         // First pass: resolve parent parameters only (not services yet)
         // This allows us to use resolved parameter values when expanding external services

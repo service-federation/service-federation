@@ -260,8 +260,8 @@ impl<'a> ScriptRunner<'a> {
             Orchestrator::new_ephemeral(child_config, self.orchestrator.work_dir.clone()).await?;
         child_orchestrator.output_mode = self.orchestrator.output_mode;
 
-        // Enable isolated mode to skip session port cache and allocate fresh ports
-        child_orchestrator.resolver.set_isolated_mode(true);
+        // Enable randomize mode for port isolation — NoopPortStore forces fresh allocation
+        child_orchestrator.set_randomize_ports(true);
 
         // Initialize child orchestrator (allocates fresh ports due to isolated mode)
         child_orchestrator.initialize().await?;
