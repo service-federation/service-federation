@@ -75,24 +75,9 @@ pub async fn is_daemon_healthy() -> bool {
 /// Uses `docker info` with a short timeout. This command is lightweight
 /// and reliable for checking daemon responsiveness.
 async fn check_daemon_health_uncached() -> bool {
-    use tokio::time::timeout;
-
-    // Use a short timeout - if daemon doesn't respond quickly, it's effectively down
-    let check_timeout = Duration::from_secs(2);
-
-    let result = timeout(
-        check_timeout,
-        tokio::process::Command::new("docker")
-            .args(["info", "--format", "{{.ServerVersion}}"])
-            .output(),
-    )
-    .await;
-
-    match result {
-        Ok(Ok(output)) => output.status.success(),
-        Ok(Err(_)) => false, // Command failed to execute
-        Err(_) => false,     // Timeout
-    }
+    DockerClient::new()
+        .daemon_healthy(Duration::from_secs(2))
+        .await
 }
 
 /// Check Docker daemon health with retry and exponential backoff.
@@ -181,15 +166,7 @@ pub async fn check_daemon_with_retry_custom(max_attempts: u32, total_timeout: Du
 /// contexts where we want a fresh check. For cached behavior, use
 /// the async version.
 pub fn is_daemon_healthy_sync() -> bool {
-    use std::process::Command;
-
-    match Command::new("docker")
-        .args(["info", "--format", "{{.ServerVersion}}"])
-        .output()
-    {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    }
+    DockerClient::new().daemon_healthy_sync()
 }
 
 /// Check if a Docker container is running (synchronous version).
@@ -199,18 +176,7 @@ pub fn is_daemon_healthy_sync() -> bool {
 ///
 /// Use this in synchronous contexts where async is not available.
 pub fn is_container_running_sync(container_id: &str) -> bool {
-    use std::process::Command;
-
-    match Command::new("docker")
-        .args(["inspect", "-f", "{{.State.Running}}", container_id])
-        .output()
-    {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.trim() == "true"
-        }
-        Err(_) => false,
-    }
+    DockerClient::new().is_running_sync(container_id)
 }
 
 /// Check if a Docker container is running (asynchronous version).
@@ -220,17 +186,9 @@ pub fn is_container_running_sync(container_id: &str) -> bool {
 ///
 /// Use this in async contexts where non-blocking I/O is preferred.
 pub async fn is_container_running(container_id: &str) -> bool {
-    match tokio::process::Command::new("docker")
-        .args(["inspect", "-f", "{{.State.Running}}", container_id])
-        .output()
+    DockerClient::new()
+        .is_running(container_id, Duration::from_secs(5))
         .await
-    {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.trim() == "true"
-        }
-        Err(_) => false,
-    }
 }
 
 #[cfg(test)]
