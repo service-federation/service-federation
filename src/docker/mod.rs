@@ -3,6 +3,10 @@
 //! Provides shared functions for interacting with Docker containers,
 //! consolidating duplicate implementations across the codebase.
 
+pub mod error;
+
+pub use error::DockerError;
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 

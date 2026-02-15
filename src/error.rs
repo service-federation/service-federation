@@ -3,6 +3,7 @@
 // in the Display impl but rustc's lint pass doesn't see this.
 #![allow(unused_assignments)]
 
+use crate::docker::DockerError;
 use miette::Diagnostic;
 use std::io;
 use thiserror::Error;
@@ -13,11 +14,8 @@ pub enum Error {
     Config(String),
 
     #[error("Docker error: {0}")]
-    #[diagnostic(
-        code(fed::docker::error),
-        help("Check that Docker is running with `docker ps`")
-    )]
-    Docker(String),
+    #[diagnostic(code(fed::docker::error))]
+    Docker(#[from] DockerError),
 
     #[error("Process error: {0}")]
     #[diagnostic(
@@ -284,9 +282,27 @@ impl Error {
             Error::Config(_) | Error::Validation(_) => Some(
                 "Validate your config with: fed validate".to_string()
             ),
-            Error::Docker(_) => Some(
-                "Check that Docker is running: docker ps".to_string()
-            ),
+            Error::Docker(ref docker_err) => match docker_err {
+                DockerError::Timeout { command, timeout } => Some(format!(
+                    "'{}' timed out after {}s. Check Docker daemon responsiveness: docker ps",
+                    command,
+                    timeout.as_secs()
+                )),
+                DockerError::ExecFailed { .. } => Some(
+                    "Docker binary not found or not executable. Install Docker or check your PATH."
+                        .to_string(),
+                ),
+                DockerError::DaemonUnavailable => Some(
+                    "Start Docker Desktop or: sudo systemctl start docker".to_string(),
+                ),
+                DockerError::ContainerNotFound { container } => Some(format!(
+                    "Container '{}' does not exist. It may have already been removed.",
+                    container
+                )),
+                DockerError::CommandFailed { .. } => {
+                    Some("Check that Docker is running: docker ps".to_string())
+                }
+            },
             Error::Process(_) => Some(
                 "Check that the command exists and is executable".to_string()
             ),

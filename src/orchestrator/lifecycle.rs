@@ -6,6 +6,7 @@
 //! orchestrator core more focused on service coordination.
 
 use crate::config::Config;
+use crate::docker::DockerError;
 use crate::error::{Error, Result};
 use std::path::Path;
 use std::process::Stdio;
@@ -338,17 +339,16 @@ impl<'a> ServiceLifecycleCommands<'a> {
                     .stderr(Stdio::inherit());
 
                 let status = cmd.status().await.map_err(|e| {
-                    Error::Docker(format!(
-                        "Failed to execute docker build for '{}': {}",
-                        service_name, e
-                    ))
+                    DockerError::exec_failed(format!("docker build ({})", service_name), e)
                 })?;
 
                 if !status.success() {
-                    return Err(Error::Docker(format!(
-                        "Docker build failed for '{}'",
-                        service_name
-                    )));
+                    return Err(DockerError::cmd_failed(
+                        format!("docker build ({})", service_name),
+                        format!("Docker build failed for '{}'", service_name),
+                        status.code(),
+                    )
+                    .into());
                 }
 
                 tracing::info!(

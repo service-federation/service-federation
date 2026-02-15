@@ -8,7 +8,8 @@
 use std::time::Duration;
 
 use crate::config::ServiceType;
-use crate::error::{Error, Result};
+use crate::docker::DockerError;
+use crate::error::Result;
 use crate::service::Status;
 
 use super::core::Orchestrator;
@@ -57,13 +58,11 @@ impl<'a> OrphanCleaner<'a> {
                 .output(),
         )
         .await
-        .map_err(|_| Error::Docker("Timed out listing Docker containers".to_string()))?
-        .map_err(|e| Error::Docker(format!("Failed to list Docker containers: {}", e)))?;
+        .map_err(|_| DockerError::timeout("docker ps", DOCKER_LIST_TIMEOUT))?
+        .map_err(|e| DockerError::exec_failed("docker ps", e))?;
 
         if !output.status.success() {
-            return Err(Error::Docker(
-                "Failed to list Docker containers".to_string(),
-            ));
+            return Err(DockerError::failed("docker ps", &output).into());
         }
 
         let all_containers: HashSet<String> = String::from_utf8_lossy(&output.stdout)
@@ -145,13 +144,8 @@ impl<'a> OrphanCleaner<'a> {
                     .output(),
             )
             .await
-            .map_err(|_| {
-                Error::Docker(format!(
-                    "Timed out removing orphaned container '{}'",
-                    container
-                ))
-            })?
-            .map_err(|e| Error::Docker(format!("Failed to remove container: {}", e)))?;
+            .map_err(|_| DockerError::timeout("docker rm", DOCKER_LIST_TIMEOUT))?
+            .map_err(|e| DockerError::exec_failed("docker rm", e))?;
 
             if output.status.success() {
                 removed += 1;
