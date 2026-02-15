@@ -1,4 +1,5 @@
 use super::HealthChecker;
+use crate::docker::DockerClient;
 use crate::error::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -84,19 +85,12 @@ impl DockerCommandChecker {
 #[async_trait]
 impl HealthChecker for DockerCommandChecker {
     async fn check(&self) -> Result<bool> {
-        let result = tokio::time::timeout(
-            self.timeout,
-            Command::new("docker")
-                .args(["exec", &self.container_name, "sh", "-c", &self.command])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status(),
-        )
-        .await;
-
-        match result {
-            Ok(Ok(status)) => Ok(status.success()),
-            Ok(Err(_)) | Err(_) => Ok(false),
+        match DockerClient::new()
+            .exec_sh(&self.container_name, &self.command, self.timeout)
+            .await
+        {
+            Ok(output) => Ok(output.status.success()),
+            Err(_) => Ok(false),
         }
     }
 

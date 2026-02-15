@@ -8,7 +8,8 @@
 use std::time::Duration;
 
 use crate::config::ServiceType;
-use crate::error::{Error, Result};
+use crate::docker::DockerClient;
+use crate::error::Result;
 use crate::service::Status;
 
 use super::core::Orchestrator;
@@ -42,35 +43,12 @@ impl<'a> OrphanCleaner<'a> {
         let work_dir_hash = hash_work_dir(&self.orchestrator.work_dir);
         let prefix = format!("fed-{}-", work_dir_hash);
 
-        // List all containers matching our project prefix
-        let output = tokio::time::timeout(
-            DOCKER_LIST_TIMEOUT,
-            tokio::process::Command::new("docker")
-                .args([
-                    "ps",
-                    "-a",
-                    "--filter",
-                    &format!("name=^{}", prefix),
-                    "--format",
-                    "{{.Names}}",
-                ])
-                .output(),
-        )
-        .await
-        .map_err(|_| Error::Docker("Timed out listing Docker containers".to_string()))?
-        .map_err(|e| Error::Docker(format!("Failed to list Docker containers: {}", e)))?;
+        let client = DockerClient::new();
+        let names = client
+            .ps_names(&format!("name=^{}", prefix), DOCKER_LIST_TIMEOUT)
+            .await?;
 
-        if !output.status.success() {
-            return Err(Error::Docker(
-                "Failed to list Docker containers".to_string(),
-            ));
-        }
-
-        let all_containers: HashSet<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let all_containers: HashSet<String> = names.into_iter().collect();
 
         if all_containers.is_empty() {
             return Ok(Vec::new());
@@ -135,35 +113,16 @@ impl<'a> OrphanCleaner<'a> {
             return Ok(0);
         }
 
+        let client = DockerClient::new();
         let mut removed = 0;
         for container in &orphans {
             tracing::info!("Removing orphaned container: {}", container);
-            let output = tokio::time::timeout(
-                DOCKER_LIST_TIMEOUT,
-                tokio::process::Command::new("docker")
-                    .args(["rm", "-f", container])
-                    .output(),
-            )
-            .await
-            .map_err(|_| {
-                Error::Docker(format!(
-                    "Timed out removing orphaned container '{}'",
-                    container
-                ))
-            })?
-            .map_err(|e| Error::Docker(format!("Failed to remove container: {}", e)))?;
-
-            if output.status.success() {
-                removed += 1;
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                // Ignore "No such container" - already gone
-                if !stderr.contains("No such container") {
-                    tracing::warn!(
-                        "Failed to remove orphaned container '{}': {}",
-                        container,
-                        stderr.trim()
-                    );
+            match client.rm_force(container, DOCKER_LIST_TIMEOUT).await {
+                Ok(()) => {
+                    removed += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to remove orphaned container '{}': {}", container, e);
                 }
             }
         }

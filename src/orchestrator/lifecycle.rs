@@ -6,6 +6,7 @@
 //! orchestrator core more focused on service coordination.
 
 use crate::config::Config;
+use crate::docker::{DockerClient, DockerError};
 use crate::error::{Error, Result};
 use std::path::Path;
 use std::process::Stdio;
@@ -338,17 +339,16 @@ impl<'a> ServiceLifecycleCommands<'a> {
                     .stderr(Stdio::inherit());
 
                 let status = cmd.status().await.map_err(|e| {
-                    Error::Docker(format!(
-                        "Failed to execute docker build for '{}': {}",
-                        service_name, e
-                    ))
+                    DockerError::exec_failed(format!("docker build ({})", service_name), e)
                 })?;
 
                 if !status.success() {
-                    return Err(Error::Docker(format!(
-                        "Docker build failed for '{}'",
-                        service_name
-                    )));
+                    return Err(DockerError::cmd_failed(
+                        format!("docker build ({})", service_name),
+                        format!("Docker build failed for '{}'", service_name),
+                        status.code(),
+                    )
+                    .into());
                 }
 
                 tracing::info!(
@@ -537,18 +537,13 @@ impl<'a> ServiceLifecycleCommands<'a> {
         let mut failed: Vec<(String, String)> = Vec::new();
 
         for volume in &fed_volumes {
-            let output = tokio::process::Command::new("docker")
-                .args(["volume", "rm", "-f", volume])
-                .output()
-                .await;
-
-            match output {
-                Ok(result) if result.status.success() => {
+            match DockerClient::new().volume_rm(volume).await {
+                Ok(output) if output.status.success() => {
                     tracing::info!("Removed Docker volume: {}", volume);
                     removed.push(volume.clone());
                 }
-                Ok(result) => {
-                    let stderr = String::from_utf8_lossy(&result.stderr);
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
                     // Volume might not exist, which is fine
                     if stderr.contains("No such volume") {
                         tracing::debug!("Volume '{}' does not exist, skipping", volume);
