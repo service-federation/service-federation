@@ -90,9 +90,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_commit_prevents_unregister() {
-        let tracker = Arc::new(RwLock::new(
-            StateTracker::new_ephemeral().await.unwrap(),
-        ));
+        let tracker = Arc::new(RwLock::new(StateTracker::new_ephemeral().await.unwrap()));
         {
             let mut t = tracker.write().await;
             t.initialize().await.unwrap();
@@ -116,9 +114,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_drop_without_commit_unregisters() {
-        let tracker = Arc::new(RwLock::new(
-            StateTracker::new_ephemeral().await.unwrap(),
-        ));
+        let tracker = Arc::new(RwLock::new(StateTracker::new_ephemeral().await.unwrap()));
         {
             let mut t = tracker.write().await;
             t.initialize().await.unwrap();
@@ -147,9 +143,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_already_exists_returns_none() {
-        let tracker = Arc::new(RwLock::new(
-            StateTracker::new_ephemeral().await.unwrap(),
-        ));
+        let tracker = Arc::new(RwLock::new(StateTracker::new_ephemeral().await.unwrap()));
         {
             let mut t = tracker.write().await;
             t.initialize().await.unwrap();
@@ -167,6 +161,9 @@ mod tests {
         let result = ServiceRegistration::register(&tracker, state2)
             .await
             .unwrap();
-        assert!(result.is_none(), "Duplicate registration should return None");
+        assert!(
+            result.is_none(),
+            "Duplicate registration should return None"
+        );
     }
 }

@@ -4,11 +4,11 @@ use crate::error::{validate_pid_for_check, Error, Result};
 use crate::service::Status;
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
+use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use rusqlite::OptionalExtension;
 use tokio_rusqlite::Connection;
 use tracing::{debug, info, warn};
 

@@ -138,9 +138,8 @@ async fn count_running_services(worktree_path: &Path) -> Option<usize> {
         .call(|conn| {
             conn.pragma_update(None, "journal_mode", "WAL")?;
             conn.pragma_update(None, "query_only", "ON")?;
-            let mut stmt = conn.prepare(
-                "SELECT COUNT(*) FROM services WHERE status IN ('running', 'starting')",
-            )?;
+            let mut stmt = conn
+                .prepare("SELECT COUNT(*) FROM services WHERE status IN ('running', 'starting')")?;
             let count: i64 = stmt.query_row([], |row| row.get(0))?;
             Ok(count as usize)
         })
@@ -157,10 +156,7 @@ async fn ws_new(branch: &str, create_branch: bool, out: &dyn UserOutput) -> anyh
     let target = base.join(branch);
 
     if target.exists() {
-        bail!(
-            "Worktree directory already exists: {}",
-            target.display()
-        );
+        bail!("Worktree directory already exists: {}", target.display());
     }
 
     // Ensure base directory exists
@@ -226,20 +222,12 @@ async fn ws_list(out: &dyn UserOutput) -> anyhow::Result<()> {
     // Determine column widths
     let branch_width = worktrees
         .iter()
-        .map(|w| {
-            w.branch
-                .as_deref()
-                .unwrap_or("(detached)")
-                .len()
-        })
+        .map(|w| w.branch.as_deref().unwrap_or("(detached)").len())
         .max()
         .unwrap_or(10);
 
     for wt in &worktrees {
-        let branch_name = wt
-            .branch
-            .as_deref()
-            .unwrap_or("(detached)");
+        let branch_name = wt.branch.as_deref().unwrap_or("(detached)");
         let path_str = wt.path.display().to_string();
         let status = match count_running_services(&wt.path).await {
             Some(0) => "(stopped)".to_string(),
@@ -309,9 +297,7 @@ async fn ws_rm(name: &str, force: bool, out: &dyn UserOutput) -> anyhow::Result<
                 "  Stopping {} running service(s) in '{}'...",
                 count, name
             ));
-            if let Err(e) =
-                super::run_stop_from_state(&wt.path, vec![], out).await
-            {
+            if let Err(e) = super::run_stop_from_state(&wt.path, vec![], out).await {
                 tracing::warn!("Failed to stop services in worktree: {}", e);
             }
         }
@@ -518,10 +504,7 @@ mod tests {
     fn worktree_base_derived_from_main() {
         let main = PathBuf::from("/Users/dev/Projects/my-app");
         let base = get_worktree_base(&main);
-        assert_eq!(
-            base,
-            PathBuf::from("/Users/dev/Projects/my-app-worktrees")
-        );
+        assert_eq!(base, PathBuf::from("/Users/dev/Projects/my-app-worktrees"));
     }
 
     #[test]
@@ -567,7 +550,11 @@ mod tests {
         assert!(full_output.contains("command rm -f"));
         // Verify non-ws commands pass through
         let lines: Vec<&str> = full_output.lines().collect();
-        let last_fn_line = lines.iter().rev().find(|l| l.contains("command fed")).unwrap();
+        let last_fn_line = lines
+            .iter()
+            .rev()
+            .find(|l| l.contains("command fed"))
+            .unwrap();
         assert!(
             !last_fn_line.contains("FED_WS_CD_FILE"),
             "passthrough path should not set FED_WS_CD_FILE"
