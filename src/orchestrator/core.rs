@@ -313,6 +313,7 @@ impl Orchestrator {
     pub fn set_randomize_ports(&mut self, randomize: bool) {
         self.randomize_ports = randomize;
         self.resolver.set_auto_resolve_conflicts(randomize);
+        self.resolver.set_force_random_ports(randomize);
     }
 
     /// Set active profiles for service filtering
@@ -355,6 +356,112 @@ impl Orchestrator {
         .await;
     }
 
+    /// Configure resolver port store for the current mode.
+    ///
+    /// When `read_only` is true, the resolver receives an in-memory snapshot so
+    /// `resolve_parameters()` cannot mutate session/SQLite state.
+    async fn configure_port_store(&mut self, read_only: bool) {
+        let port_store: Box<dyn crate::port::PortStore> = if self.randomize_ports {
+            tracing::debug!("Randomize mode: using NoopPortStore for fresh allocation");
+            Box::new(crate::port::NoopPortStore)
+        } else if let Ok(Some(session)) =
+            crate::session::Session::current_for_workdir(Some(&self.work_dir))
+        {
+            if read_only {
+                tracing::debug!("Read-only mode: using in-memory snapshot of session port cache");
+                Box::new(crate::port::SqlitePortStore::new(
+                    session.get_all_ports().clone(),
+                ))
+            } else {
+                tracing::debug!("Session active: using SessionPortStore");
+                Box::new(crate::port::SessionPortStore::new(session))
+            }
+        } else {
+            let persisted_ports = if read_only {
+                Self::load_persisted_ports_read_only(&self.work_dir)
+            } else {
+                self.state_tracker
+                    .read()
+                    .await
+                    .get_global_port_allocations()
+                    .await
+            };
+            if !persisted_ports.is_empty() {
+                tracing::debug!(
+                    "No session: using SqlitePortStore with {} persisted port(s)",
+                    persisted_ports.len()
+                );
+            }
+            Box::new(crate::port::SqlitePortStore::new(persisted_ports))
+        };
+        self.resolver.set_port_store(port_store);
+    }
+
+    /// Read persisted port allocations directly from SQLite in read-only mode.
+    ///
+    /// Used by dry-run initialization so we can preview with existing persisted
+    /// allocations without opening state tracker tables in write mode.
+    fn load_persisted_ports_read_only(work_dir: &std::path::Path) -> HashMap<String, u16> {
+        let db_path = work_dir.join(".fed").join("lock.db");
+        if !db_path.exists() {
+            return HashMap::new();
+        }
+
+        let conn = match rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::debug!(
+                    "Dry-run could not open persisted state at '{}': {}",
+                    db_path.display(),
+                    e
+                );
+                return HashMap::new();
+            }
+        };
+
+        let mut stmt = match conn.prepare("SELECT param_name, port FROM persisted_ports") {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                tracing::debug!(
+                    "Dry-run could not read persisted_ports table from '{}': {}",
+                    db_path.display(),
+                    e
+                );
+                return HashMap::new();
+            }
+        };
+
+        let rows = match stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u16>(1)?))
+        }) {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::debug!(
+                    "Dry-run query failed for persisted_ports in '{}': {}",
+                    db_path.display(),
+                    e
+                );
+                return HashMap::new();
+            }
+        };
+
+        let mut ports = HashMap::new();
+        for row in rows {
+            match row {
+                Ok((name, port)) => {
+                    ports.insert(name, port);
+                }
+                Err(e) => {
+                    tracing::debug!("Dry-run skipped unreadable persisted port row: {}", e);
+                }
+            }
+        }
+        ports
+    }
+
     /// Lightweight initialization for read-only commands (status, logs).
     ///
     /// Unlike [`Orchestrator::initialize`], this skips parameter resolution, Docker orphan cleanup,
@@ -373,6 +480,43 @@ impl Orchestrator {
         // Create service managers and restore state (PIDs, container IDs)
         self.create_services().await?;
 
+        Ok(())
+    }
+
+    /// Initialization path for `fed start --dry-run`.
+    ///
+    /// This resolves parameters and builds dependency ordering, but intentionally
+    /// avoids mutating persistent state (no service registration, no port
+    /// persistence, no session cache writes, no Docker cleanup).
+    pub async fn initialize_dry_run(&mut self) -> Result<()> {
+        // Work dir is required for resolving global env_file paths.
+        self.resolver.set_work_dir(&self.work_dir);
+
+        // Use a read-only port-store snapshot so resolve_parameters() can't persist.
+        self.configure_port_store(true).await;
+
+        // Resolve parameters and expand external dependencies.
+        self.resolver.resolve_parameters(&mut self.config)?;
+        let expander =
+            ExternalServiceExpander::new(&self.config, &self.resolver, self.work_dir.clone());
+        self.config = expander.expand().await?;
+
+        // Resolve templates in full config.
+        self.resolver.set_work_dir(&self.work_dir);
+        let resolved = self.resolver.resolve_config(&self.config)?;
+        self.config = resolved;
+
+        // Apply profile filtering (same semantics as full initialize).
+        let active_profiles = &self.active_profiles;
+        self.config.services.retain(|_, service| {
+            if service.profiles.is_empty() {
+                return true;
+            }
+            service.profiles.iter().any(|p| active_profiles.contains(p))
+        });
+
+        // Build dependency graph for dry-run output.
+        self.build_dependency_graph()?;
         Ok(())
     }
 
@@ -446,34 +590,14 @@ impl Orchestrator {
             }
         }
 
+        // Work dir is required for resolving global env_file paths.
+        self.resolver.set_work_dir(&self.work_dir);
+
         // Build the port store based on mode:
         // - Randomize mode → NoopPortStore (forces fresh random allocation)
         // - Session active → SessionPortStore (reads/writes ports.json)
         // - No session → SqlitePortStore (reads/writes persisted_ports table)
-        let port_store: Box<dyn crate::port::PortStore> = if self.randomize_ports {
-            tracing::debug!("Randomize mode: using NoopPortStore for fresh allocation");
-            Box::new(crate::port::NoopPortStore)
-        } else if let Ok(Some(session)) =
-            crate::session::Session::current_for_workdir(Some(&self.work_dir))
-        {
-            tracing::debug!("Session active: using SessionPortStore");
-            Box::new(crate::port::SessionPortStore::new(session))
-        } else {
-            let persisted_ports = self
-                .state_tracker
-                .read()
-                .await
-                .get_global_port_allocations()
-                .await;
-            if !persisted_ports.is_empty() {
-                tracing::debug!(
-                    "No session: using SqlitePortStore with {} persisted port(s)",
-                    persisted_ports.len()
-                );
-            }
-            Box::new(crate::port::SqlitePortStore::new(persisted_ports))
-        };
-        self.resolver.set_port_store(port_store);
+        self.configure_port_store(false).await;
 
         // First pass: resolve parent parameters only (not services yet)
         // This allows us to use resolved parameter values when expanding external services
@@ -772,11 +896,9 @@ impl Orchestrator {
             service_state.startup_message = service_config.startup_message.clone();
         }
 
-        let Some(registration) = super::registration::ServiceRegistration::register(
-            &self.state_tracker,
-            service_state,
-        )
-        .await?
+        let Some(registration) =
+            super::registration::ServiceRegistration::register(&self.state_tracker, service_state)
+                .await?
         else {
             return Ok(()); // already registered by another thread
         };

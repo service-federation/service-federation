@@ -296,6 +296,9 @@ async fn run() -> anyhow::Result<()> {
     // --replace kills blocking processes/containers and uses original ports
     let replace = matches!(&cli.command, Commands::Start { replace: true, .. });
 
+    // start --dry-run should resolve configuration without mutating persisted state
+    let dry_run = matches!(&cli.command, Commands::Start { dry_run: true, .. });
+
     // For script commands, check if the script has isolated: true
     // If so, set auto_resolve_conflicts to avoid prompts for ports that will be re-allocated anyway
     let auto_resolve = match &cli.command {
@@ -320,6 +323,7 @@ async fn run() -> anyhow::Result<()> {
         .output_mode(output_mode)
         .randomize_ports(randomize)
         .replace_mode(replace)
+        .dry_run(dry_run)
         .auto_resolve_conflicts(auto_resolve)
         .readonly(readonly)
         .build()

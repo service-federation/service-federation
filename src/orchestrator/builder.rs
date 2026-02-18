@@ -39,6 +39,7 @@ pub struct OrchestratorBuilder {
     auto_resolve_conflicts: bool,
     randomize_ports: bool,
     replace_mode: bool,
+    dry_run: bool,
     readonly: bool,
     profiles: Vec<String>,
     startup_timeout: Option<Duration>,
@@ -55,6 +56,7 @@ impl OrchestratorBuilder {
             auto_resolve_conflicts: false,
             randomize_ports: false,
             replace_mode: false,
+            dry_run: false,
             readonly: false,
             profiles: Vec::new(),
             startup_timeout: None,
@@ -140,6 +142,15 @@ impl OrchestratorBuilder {
         self
     }
 
+    /// Enable dry-run initialization.
+    ///
+    /// When enabled, `build()` calls `initialize_dry_run()` and avoids
+    /// persisting resolved ports/session cache updates.
+    pub fn dry_run(mut self, dry_run: bool) -> Self {
+        self.dry_run = dry_run;
+        self
+    }
+
     /// Enable readonly initialization.
     ///
     /// When enabled, `build()` calls `initialize_readonly()` instead of
@@ -172,7 +183,15 @@ impl OrchestratorBuilder {
         // Create orchestrator
         let work_dir = self.work_dir.unwrap_or_else(|| PathBuf::from("."));
         let mut orchestrator = if self.profiles.is_empty() {
-            Orchestrator::new(config, work_dir).await?
+            if self.dry_run {
+                Orchestrator::new_ephemeral(config, work_dir).await?
+            } else {
+                Orchestrator::new(config, work_dir).await?
+            }
+        } else if self.dry_run {
+            Orchestrator::new_ephemeral(config, work_dir)
+                .await?
+                .with_profiles(self.profiles)
         } else {
             Orchestrator::new(config, work_dir)
                 .await?
@@ -197,8 +216,13 @@ impl OrchestratorBuilder {
             orchestrator.stop_timeout = timeout;
         }
 
-        // Initialize: readonly skips parameter resolution and Docker cleanup
-        if self.readonly {
+        // Initialize mode selection:
+        // - dry_run: resolve-only preview path (no persistent state writes)
+        // - readonly: status/logs path (skip parameter resolution)
+        // - default: full initialization
+        if self.dry_run {
+            orchestrator.initialize_dry_run().await?;
+        } else if self.readonly {
             orchestrator.initialize_readonly().await?;
         } else {
             orchestrator.initialize().await?;

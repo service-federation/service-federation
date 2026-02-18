@@ -1315,6 +1315,10 @@ fn test_ports_randomize_allocates_different_ports() {
         *api_port, 18080,
         "API port should differ from occupied default 18080"
     );
+    assert_ne!(
+        *db_port, 15432,
+        "DB port should differ from default 15432 in randomize mode"
+    );
     assert!(*api_port > 1024, "API port {} out of valid range", api_port);
     assert!(*db_port > 1024, "DB port {} out of valid range", db_port);
     assert_ne!(api_port, db_port, "Ports should differ from each other");
@@ -1425,6 +1429,63 @@ fn test_start_without_randomize_uses_defaults() {
     assert_eq!(
         db_port, 15632,
         "Without port randomization, DB port should be the default 15632"
+    );
+}
+
+#[test]
+fn test_start_dry_run_does_not_persist_ports() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = create_port_test_config(&temp_dir, 18281, 15633);
+
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "start",
+            "--dry-run",
+        ])
+        .output()
+        .expect("Failed to run fed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "start --dry-run failed.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Dry-run should not persist parameter->port mappings to SQLite state.
+    let list_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "ports",
+            "list",
+            "--json",
+        ])
+        .output()
+        .expect("Failed to run fed ports list");
+
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        list_output.status.success(),
+        "ports list --json failed.\nstdout: {}\nstderr: {}",
+        list_stdout,
+        String::from_utf8_lossy(&list_output.stderr)
+    );
+
+    let ports: std::collections::HashMap<String, u16> =
+        serde_json::from_str(&list_stdout).expect("Failed to parse ports JSON");
+    assert!(
+        ports.is_empty(),
+        "dry-run must not persist port allocations, found: {:?}",
+        ports
     );
 }
 

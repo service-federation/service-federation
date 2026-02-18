@@ -101,6 +101,9 @@ pub struct PortResolution {
 /// 3. Preferred port from `default:` (if available)
 /// 4. Random available port (fallback)
 ///
+/// In force-random mode (`fed start --randomize`, `fed ports randomize`),
+/// steps 2 and 3 are skipped and all port parameters allocate random ports.
+///
 /// Port listeners are held until services start to prevent TOCTOU races.
 ///
 /// # .env File Handling
@@ -136,6 +139,8 @@ pub struct Resolver {
     /// Unified port store — either session-backed, SQLite-backed, or no-op (isolated mode).
     /// The resolver doesn't need to know which backend is active.
     port_store: Box<dyn crate::port::PortStore>,
+    /// When true, ignore configured default ports and allocate fresh random ports.
+    force_random_ports: bool,
 }
 
 impl Resolver {
@@ -151,6 +156,7 @@ impl Resolver {
             port_resolutions: Vec::new(),
             managed_ports: HashSet::new(),
             port_store: Box::new(crate::port::NoopPortStore),
+            force_random_ports: false,
         }
     }
 
@@ -167,6 +173,7 @@ impl Resolver {
             port_resolutions: Vec::new(),
             managed_ports: HashSet::new(),
             port_store: Box::new(crate::port::NoopPortStore),
+            force_random_ports: false,
         }
     }
 
@@ -183,6 +190,14 @@ impl Resolver {
     /// Enable auto-resolve mode for port conflicts (use in TUI mode to avoid interactive prompts)
     pub fn set_auto_resolve_conflicts(&mut self, auto_resolve: bool) {
         self.auto_resolve_conflicts = auto_resolve;
+    }
+
+    /// Enable force-random port allocation mode.
+    ///
+    /// When enabled, port parameters skip configured default ports and
+    /// always allocate random available ports.
+    pub fn set_force_random_ports(&mut self, force_random: bool) {
+        self.force_random_ports = force_random;
     }
 
     /// Enable replace mode - kill blocking processes/containers and use original ports.
@@ -746,6 +761,13 @@ impl Resolver {
         param: &crate::config::Parameter,
         param_name: &str,
     ) -> Result<(u16, PortResolutionReason)> {
+        if self.force_random_ports {
+            return Ok((
+                self.port_allocator.allocate_random_port()?,
+                PortResolutionReason::Random,
+            ));
+        }
+
         if let Some(env_value) = param.get_value_for_environment(&self.environment) {
             let default_str = Self::value_to_string(env_value);
             if let Ok(default_port) = default_str.parse::<u16>() {
@@ -1044,6 +1066,51 @@ mod tests {
 
         // Should have allocated a random port
         assert!(port > 0);
+    }
+
+    #[test]
+    fn test_force_random_ports_ignores_defaults() {
+        use crate::config::{Config, Parameter};
+
+        let mut resolver = Resolver::new();
+        resolver.set_force_random_ports(true);
+
+        let mut config = Config::default();
+        config.parameters.insert(
+            "API_PORT".to_string(),
+            Parameter {
+                development: None,
+                develop: None,
+                staging: None,
+                production: None,
+                param_type: Some("port".to_string()),
+                default: Some(serde_yaml::Value::Number(18380.into())),
+                either: vec![],
+                value: None,
+            },
+        );
+        config.parameters.insert(
+            "DB_PORT".to_string(),
+            Parameter {
+                development: None,
+                develop: None,
+                staging: None,
+                production: None,
+                param_type: Some("port".to_string()),
+                default: Some(serde_yaml::Value::Number(15732.into())),
+                either: vec![],
+                value: None,
+            },
+        );
+
+        resolver.resolve_parameters(&mut config).unwrap();
+        let resolved = resolver.get_resolved_parameters();
+        let api_port: u16 = resolved.get("API_PORT").unwrap().parse().unwrap();
+        let db_port: u16 = resolved.get("DB_PORT").unwrap().parse().unwrap();
+
+        assert_ne!(api_port, 18380);
+        assert_ne!(db_port, 15732);
+        assert_ne!(api_port, db_port);
     }
 
     #[test]
