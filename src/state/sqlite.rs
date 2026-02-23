@@ -2037,6 +2037,72 @@ impl SqliteStateTracker {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    #[cfg(unix)]
+    use {
+        fs2::FileExt,
+        nix::sys::wait::waitpid,
+        nix::unistd::{fork, pipe, read, write, ForkResult, Pid},
+        std::fs::OpenOptions,
+        std::os::fd::AsRawFd,
+        std::path::Path,
+        std::time::Duration,
+    };
+
+    #[cfg(unix)]
+    enum LockOwnerPid {
+        SelfPid,
+        Literal(&'static str),
+    }
+
+    #[cfg(unix)]
+    fn spawn_lock_holder(lock_path: &Path, pid_mode: LockOwnerPid) -> Pid {
+        let (read_fd, write_fd) = pipe().expect("failed to create test sync pipe");
+
+        match unsafe { fork() }.expect("failed to fork lock holder process") {
+            ForkResult::Child => {
+                drop(read_fd);
+
+                let mut lock_file = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(lock_path)
+                    .expect("child failed to open lock path");
+
+                lock_file
+                    .try_lock_exclusive()
+                    .expect("child failed to acquire lock");
+
+                let owner_pid = match pid_mode {
+                    LockOwnerPid::SelfPid => std::process::id().to_string(),
+                    LockOwnerPid::Literal(value) => value.to_string(),
+                };
+
+                lock_file.set_len(0).expect("child failed to truncate lock file");
+                writeln!(lock_file, "{}", owner_pid).expect("child failed to write lock owner pid");
+
+                let _ = write(&write_fd, &[1u8]);
+                drop(write_fd);
+
+                // Keep lock alive long enough for parent to contend on it.
+                std::thread::sleep(Duration::from_secs(2));
+                std::process::exit(0);
+            }
+            ForkResult::Parent { child } => {
+                drop(write_fd);
+                let mut ready = [0u8; 1];
+                let _ = read(read_fd.as_raw_fd(), &mut ready)
+                    .expect("failed to wait for child lock holder");
+                drop(read_fd);
+                child
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn wait_for_child_exit(child: Pid) {
+        let _ = waitpid(child, None).expect("failed to wait for lock holder child");
+    }
 
     /// Create a test state tracker with a temporary directory
     async fn create_test_tracker() -> (SqliteStateTracker, TempDir) {
@@ -2066,6 +2132,48 @@ mod tests {
             startup_message: None,
         };
         tracker.register_service(state).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_try_acquire_lock_returns_none_when_held_by_another_process() {
+        let temp_dir = TempDir::new().unwrap();
+        let lock_path = temp_dir.path().join(".lock");
+
+        let child = spawn_lock_holder(&lock_path, LockOwnerPid::SelfPid);
+        let lock_while_contended = SqliteStateTracker::try_acquire_lock(&lock_path).unwrap();
+        wait_for_child_exit(child);
+        let lock_after_release = SqliteStateTracker::try_acquire_lock(&lock_path).unwrap();
+
+        assert!(
+            lock_while_contended.is_none(),
+            "Expected None when another process holds the workspace lock"
+        );
+        assert!(
+            lock_after_release.is_some(),
+            "Expected lock acquisition to succeed after the competing process exits"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_try_acquire_lock_returns_none_with_non_pid_lock_contents() {
+        let temp_dir = TempDir::new().unwrap();
+        let lock_path = temp_dir.path().join(".lock");
+
+        let child = spawn_lock_holder(&lock_path, LockOwnerPid::Literal("not-a-pid"));
+        let lock_while_contended = SqliteStateTracker::try_acquire_lock(&lock_path).unwrap();
+        wait_for_child_exit(child);
+        let lock_after_release = SqliteStateTracker::try_acquire_lock(&lock_path).unwrap();
+
+        assert!(
+            lock_while_contended.is_none(),
+            "Expected None on lock contention even when lock file PID contents are invalid"
+        );
+        assert!(
+            lock_after_release.is_some(),
+            "Expected lock acquisition to succeed once contention is gone"
+        );
     }
 
     #[tokio::test]
