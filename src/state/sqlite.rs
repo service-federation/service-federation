@@ -2135,7 +2135,9 @@ mod tests {
                     LockOwnerPid::Literal(value) => value.to_string(),
                 };
 
-                lock_file.set_len(0).expect("child failed to truncate lock file");
+                lock_file
+                    .set_len(0)
+                    .expect("child failed to truncate lock file");
                 writeln!(lock_file, "{}", owner_pid).expect("child failed to write lock owner pid");
 
                 let _ = write(&write_fd, &[1u8]);

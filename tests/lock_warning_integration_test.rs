@@ -7,8 +7,7 @@ mod tests {
     use std::process::{Command, Output};
     use tempfile::TempDir;
 
-    const WARNING_TEXT: &str =
-        "Another fed instance (PID";
+    const WARNING_TEXT: &str = "Another fed instance (PID";
 
     fn fed_binary() -> String {
         env!("CARGO_BIN_EXE_fed").to_string()
@@ -54,7 +53,9 @@ services:
         Command::new(fed_binary())
             .args([
                 "-c",
-                config_path.to_str().expect("config path is not valid UTF-8"),
+                config_path
+                    .to_str()
+                    .expect("config path is not valid UTF-8"),
                 "-w",
                 workdir.to_str().expect("workdir path is not valid UTF-8"),
                 "status",
@@ -75,10 +76,7 @@ services:
     fn status_warns_when_lock_is_held_and_pid_is_alive() {
         let (temp_dir, config_path) = create_test_workspace();
         // Write "<PID> fed" to simulate a real fed instance holding the lock
-        let _lock = hold_workspace_lock(
-            temp_dir.path(),
-            &format!("{} fed", std::process::id()),
-        );
+        let _lock = hold_workspace_lock(temp_dir.path(), &format!("{} fed", std::process::id()));
 
         let output = run_status(&config_path, temp_dir.path());
         assert!(

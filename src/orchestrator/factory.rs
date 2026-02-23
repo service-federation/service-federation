@@ -645,8 +645,7 @@ services:
         let work_dir = std::path::Path::new("/tmp/test-project");
 
         // Parent: no isolation_id → uses work_dir hash
-        let parent_name =
-            crate::service::docker_container_name("postgres", None, work_dir);
+        let parent_name = crate::service::docker_container_name("postgres", None, work_dir);
 
         // Child: with isolation_id → uses isolation_id as session
         let child_name =
