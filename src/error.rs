@@ -443,6 +443,7 @@ pub fn validate_pid_start_time(pid: u32, expected_start: chrono::DateTime<chrono
         use std::process::Command;
         if let Ok(output) = Command::new("ps")
             .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .env("LC_ALL", "C")
             .output()
         {
             if output.status.success() {
