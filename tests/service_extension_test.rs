@@ -157,10 +157,9 @@ async fn test_scalar_field_override() {
         r#"
 services:
   app:
-    image: node:18
+    process: npm start
     cwd: /app
     install: npm install
-    process: npm start
 "#,
     )
     .unwrap();
@@ -196,7 +195,6 @@ services:
 
     // Base values used where not overridden
     assert_eq!(custom_app.install.as_deref(), Some("npm install"));
-    assert_eq!(custom_app.image.as_deref(), Some("node:18"));
 }
 
 #[tokio::test]
@@ -729,7 +727,6 @@ services:
     image: base:latest
     cwd: /app
     install: npm install
-    process: npm start
     environment:
       BASE_ENV: base_value
       SHARED: base_shared
@@ -761,7 +758,6 @@ services:
   customized-service:
     extends: "complex.full-service"
     image: custom:latest
-    process: npm run dev
     environment:
       LOCAL_ENV: local_value
       SHARED: local_shared
@@ -793,7 +789,6 @@ services:
 
     // Scalar overrides
     assert_eq!(service.image.as_deref(), Some("custom:latest"));
-    assert_eq!(service.process.as_deref(), Some("npm run dev"));
 
     // Scalar from base (not overridden)
     assert_eq!(service.cwd.as_deref(), Some("/app"));

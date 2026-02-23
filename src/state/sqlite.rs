@@ -33,6 +33,43 @@ pub struct SqliteStateTracker {
     lock_file: Option<std::fs::File>,
 }
 
+/// Check if a given PID belongs to a `fed` process.
+///
+/// Used to distinguish between a genuine concurrent `fed` instance and a stale
+/// lock file whose PID was recycled by an unrelated process. Returns `true` if
+/// the process name starts with "fed" (covers "fed", "fed.exe", debug builds).
+/// Returns `true` (assumes fed) if we can't determine the process name — better
+/// a false warning than a silenced real conflict.
+#[cfg(unix)]
+fn is_fed_process(pid: u32) -> bool {
+    // Try /proc/<pid>/comm first (Linux)
+    #[cfg(target_os = "linux")]
+    {
+        let comm_path = format!("/proc/{}/comm", pid);
+        if let Ok(comm) = std::fs::read_to_string(&comm_path) {
+            return comm.trim().starts_with("fed");
+        }
+    }
+
+    // Fall back to ps -o comm= (macOS, BSDs)
+    if let Ok(output) = std::process::Command::new("ps")
+        .args(["-o", "comm=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
+        .output()
+    {
+        if output.status.success() {
+            let comm = String::from_utf8_lossy(&output.stdout);
+            let name = comm.trim();
+            // ps may return the full path (e.g. /usr/local/bin/fed) or just "fed"
+            let basename = name.rsplit('/').next().unwrap_or(name);
+            return basename.starts_with("fed");
+        }
+    }
+
+    // Can't determine — assume it's fed to be safe
+    true
+}
+
 impl SqliteStateTracker {
     /// Create a new SQLite state tracker with the given working directory.
     ///
@@ -111,21 +148,27 @@ impl SqliteStateTracker {
         // Try non-blocking exclusive lock
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => {
-                // Write our PID to the lock file for debugging
+                // Write PID + marker so readers can verify the lock holder is fed
+                // Format: "<PID> fed\n"
                 let _ = file.set_len(0); // Truncate
-                let _ = writeln!(file, "{}", std::process::id());
+                let _ = writeln!(file, "{} fed", std::process::id());
                 debug!("Acquired advisory lock on {:?}", lock_path);
                 Ok(Some(file))
             }
             Err(e) => {
                 // Lock failed - another fed instance may be running
                 debug!("Lock acquisition failed: {} (kind: {:?})", e, e.kind());
-                // Read the PID from the lock file to provide better diagnostics
+                // Read the lock file to provide better diagnostics.
+                // Format: "<PID> fed\n" (new) or "<PID>\n" (legacy).
                 if let Ok(contents) = std::fs::read_to_string(lock_path) {
-                    let owner_pid = contents.trim();
-                    if !owner_pid.is_empty() {
-                        // Check if the owner process is actually still running
-                        if let Ok(pid) = owner_pid.parse::<u32>() {
+                    let contents = contents.trim();
+                    if !contents.is_empty() {
+                        // Parse PID and optional marker
+                        let mut parts = contents.split_whitespace();
+                        let pid_str = parts.next().unwrap_or("");
+                        let marker = parts.next(); // Some("fed") or None (legacy format)
+
+                        if let Ok(pid) = pid_str.parse::<u32>() {
                             // Same process holding lock (e.g., during set_work_dir) - not a conflict
                             if pid == std::process::id() {
                                 debug!("Lock held by same process (state tracker recreation)");
@@ -136,11 +179,22 @@ impl SqliteStateTracker {
                                     use nix::unistd::Pid;
                                     // Check if process exists (signal 0 doesn't send anything)
                                     if kill(Pid::from_raw(pid as i32), None).is_ok() {
-                                        warn!(
-                                            "Another fed instance (PID {}) is modifying this workspace. \
-                                             Proceeding anyway, but state conflicts are possible.",
-                                            pid
-                                        );
+                                        // Process is alive — but is it actually a fed instance?
+                                        // New format: marker == Some("fed") confirms it.
+                                        // Legacy format (no marker): fall back to process name check.
+                                        let is_fed = marker == Some("fed") || is_fed_process(pid);
+                                        if is_fed {
+                                            warn!(
+                                                "Another fed instance (PID {}) is modifying this workspace. \
+                                                 Proceeding anyway, but state conflicts are possible.",
+                                                pid
+                                            );
+                                        } else {
+                                            debug!(
+                                                "Lock PID {} is alive but not a fed process - stale lock, proceeding",
+                                                pid
+                                            );
+                                        }
                                     } else {
                                         // Process is dead - stale lock file, we can proceed
                                         debug!(
@@ -151,11 +205,14 @@ impl SqliteStateTracker {
                                 }
                                 #[cfg(not(unix))]
                                 {
-                                    warn!(
-                                        "Another fed instance (PID {}) may be modifying this workspace. \
-                                         Proceeding anyway, but state conflicts are possible.",
-                                        pid
-                                    );
+                                    // Can't check process name — trust the marker if present
+                                    if marker == Some("fed") {
+                                        warn!(
+                                            "Another fed instance (PID {}) may be modifying this workspace. \
+                                             Proceeding anyway, but state conflicts are possible.",
+                                            pid
+                                        );
+                                    }
                                 }
                             }
                         }

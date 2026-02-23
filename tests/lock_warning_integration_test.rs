@@ -74,7 +74,11 @@ services:
     #[test]
     fn status_warns_when_lock_is_held_and_pid_is_alive() {
         let (temp_dir, config_path) = create_test_workspace();
-        let _lock = hold_workspace_lock(temp_dir.path(), &std::process::id().to_string());
+        // Write "<PID> fed" to simulate a real fed instance holding the lock
+        let _lock = hold_workspace_lock(
+            temp_dir.path(),
+            &format!("{} fed", std::process::id()),
+        );
 
         let output = run_status(&config_path, temp_dir.path());
         assert!(
