@@ -400,11 +400,6 @@ pub fn validate_pid_start_time(pid: u32, expected_start: chrono::DateTime<chrono
                         let now = chrono::Utc::now();
                         let expected_age = now.signed_duration_since(expected_start);
 
-                        // If the expected service is very old (>24h), be lenient
-                        if expected_age.num_hours() > 24 {
-                            return true;
-                        }
-
                         // Get uptime to calculate approximate process start
                         if let Ok(uptime_str) = std::fs::read_to_string("/proc/uptime") {
                             if let Some(uptime_secs_str) = uptime_str.split_whitespace().next() {
