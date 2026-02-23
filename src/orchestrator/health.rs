@@ -68,7 +68,11 @@ impl<'a> HealthCheckRunner<'a> {
                             if service.image.is_some() {
                                 // Docker service - use docker exec
                                 let session_id =
-                                    if let Ok(Some(session)) = crate::session::Session::current() {
+                                    if let Some(ref iso_id) = self.orchestrator.isolation_id {
+                                        Some(iso_id.clone())
+                                    } else if let Ok(Some(session)) =
+                                        crate::session::Session::current()
+                                    {
                                         Some(session.id().to_string())
                                     } else {
                                         None

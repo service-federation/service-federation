@@ -106,6 +106,10 @@ pub struct Orchestrator {
     cleanup_started: AtomicBool,
     /// When true, skip port cache and allocate fresh random ports
     randomize_ports: bool,
+    /// When set, Docker containers use this ID instead of the global session ID.
+    /// Used by isolated script execution to give child orchestrators their own
+    /// container namespace, preventing collisions with parent containers.
+    pub(super) isolation_id: Option<String>,
 }
 
 impl Orchestrator {
@@ -162,6 +166,7 @@ impl Orchestrator {
             stop_timeout: DEFAULT_STOP_TIMEOUT,
             cleanup_started: AtomicBool::new(false),
             randomize_ports: false,
+            isolation_id: None,
         })
     }
 
@@ -194,6 +199,7 @@ impl Orchestrator {
             stop_timeout: DEFAULT_STOP_TIMEOUT,
             cleanup_started: AtomicBool::new(false),
             randomize_ports: false,
+            isolation_id: None,
         })
     }
 
@@ -228,6 +234,7 @@ impl Orchestrator {
             stop_timeout: DEFAULT_STOP_TIMEOUT,
             cleanup_started: AtomicBool::new(false),
             randomize_ports: false,
+            isolation_id: None,
         })
     }
 
@@ -314,6 +321,15 @@ impl Orchestrator {
         self.randomize_ports = randomize;
         self.resolver.set_auto_resolve_conflicts(randomize);
         self.resolver.set_force_random_ports(randomize);
+    }
+
+    /// Set an isolation ID for this orchestrator's Docker containers.
+    ///
+    /// When set, Docker containers are named using this ID instead of the
+    /// global session ID, giving isolated scripts their own container namespace
+    /// and preventing collisions with the parent orchestrator's containers.
+    pub fn set_isolation_id(&mut self, id: String) {
+        self.isolation_id = Some(id);
     }
 
     /// Set active profiles for service filtering

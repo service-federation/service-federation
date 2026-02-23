@@ -260,6 +260,11 @@ impl<'a> ScriptRunner<'a> {
             Orchestrator::new_ephemeral(child_config, self.orchestrator.work_dir.clone()).await?;
         child_orchestrator.output_mode = self.orchestrator.output_mode;
 
+        // Give the child its own container namespace so Docker containers don't
+        // collide with (or kill) the parent's running containers.
+        let isolation_id = format!("iso-{:08x}", rand::random::<u32>());
+        child_orchestrator.set_isolation_id(isolation_id);
+
         // Enable randomize mode for port isolation — NoopPortStore forces fresh allocation
         child_orchestrator.set_randomize_ports(true);
 

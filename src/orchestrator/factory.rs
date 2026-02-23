@@ -261,8 +261,10 @@ impl Orchestrator {
         env: HashMap<String, String>,
         work_dir: String,
     ) -> Box<dyn ServiceManager> {
-        // Get session ID for container labeling
-        let session_id = if let Ok(Some(session)) = crate::session::Session::current() {
+        // Use isolation_id if set (isolated script execution), otherwise global session
+        let session_id = if let Some(ref iso_id) = self.isolation_id {
+            Some(iso_id.clone())
+        } else if let Ok(Some(session)) = crate::session::Session::current() {
             Some(session.id().to_string())
         } else {
             None
@@ -634,5 +636,64 @@ services:
         for group in &gradle_groups {
             assert_eq!(group.len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn test_isolation_id_produces_unique_container_name() {
+        // Verify that two orchestrators with different isolation_ids
+        // produce different Docker container names for the same service.
+        let work_dir = std::path::Path::new("/tmp/test-project");
+
+        // Parent: no isolation_id → uses work_dir hash
+        let parent_name =
+            crate::service::docker_container_name("postgres", None, work_dir);
+
+        // Child: with isolation_id → uses isolation_id as session
+        let child_name =
+            crate::service::docker_container_name("postgres", Some("iso-deadbeef"), work_dir);
+
+        assert_ne!(
+            parent_name, child_name,
+            "Isolated container name must differ from parent: parent={}, child={}",
+            parent_name, child_name
+        );
+        assert!(
+            child_name.contains("iso-deadbeef"),
+            "Isolated container name should contain the isolation_id: {}",
+            child_name
+        );
+    }
+
+    #[tokio::test]
+    async fn test_isolation_id_flows_through_factory() {
+        let parser = Parser::new();
+        let config = parser
+            .parse_config(
+                r#"
+services:
+  db:
+    image: postgres:15
+"#,
+            )
+            .expect("valid YAML");
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut orch = Orchestrator::new_ephemeral(config, temp.path().to_path_buf())
+            .await
+            .unwrap();
+
+        // Without isolation_id
+        assert!(
+            orch.isolation_id.is_none(),
+            "isolation_id should be None by default"
+        );
+
+        // Set isolation_id
+        orch.set_isolation_id("iso-cafebabe".to_string());
+        assert_eq!(
+            orch.isolation_id.as_deref(),
+            Some("iso-cafebabe"),
+            "isolation_id should be set after set_isolation_id()"
+        );
     }
 }
