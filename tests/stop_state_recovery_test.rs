@@ -94,6 +94,21 @@ services:
     process: [this is not valid yaml
 "#;
 
+fn child_spawner_config(child_pid_file: &Path) -> String {
+    format!(
+        r#"
+services:
+  spawner:
+    process: |
+      sleep 300 &
+      CHILD=$!
+      echo $CHILD > {pid_file}
+      wait
+"#,
+        pid_file = child_pid_file.display()
+    )
+}
+
 #[test]
 fn test_stop_stops_services_not_in_current_config() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -215,5 +230,145 @@ fn test_stop_from_state_does_not_clear_unstopped_services() {
         wait_for_pid_exit(beta_pid, Duration::from_secs(8)),
         "Expected beta PID {} to exit after stop all",
         beta_pid
+    );
+}
+
+/// When `fed stop` falls back to the state-tracker path (invalid config),
+/// it must kill child processes, not just the tracked wrapper PID.
+#[test]
+fn test_stop_from_state_kills_child_processes() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let workdir = temp_dir.path();
+    let child_pid_file = workdir.join("child.pid");
+    let config_content = child_spawner_config(&child_pid_file);
+    let config_path = create_test_config(&temp_dir, "config.yaml", &config_content);
+
+    let start = run_fed(&[
+        "-c",
+        config_path.to_str().unwrap(),
+        "-w",
+        workdir.to_str().unwrap(),
+        "start",
+        "spawner",
+    ]);
+    assert!(
+        start.status.success(),
+        "fed start failed: stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&start.stdout),
+        String::from_utf8_lossy(&start.stderr),
+    );
+
+    // Wait for the child PID file to be written
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !child_pid_file.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(child_pid_file.exists(), "Child PID file was never written");
+
+    let tracked_pid = get_service_pid(workdir, "spawner").expect("Expected spawner pid in lock db");
+    let child_pid: u32 = fs::read_to_string(&child_pid_file)
+        .expect("Failed to read child pid file")
+        .trim()
+        .parse()
+        .expect("Failed to parse child pid");
+
+    assert!(is_pid_alive(tracked_pid), "Expected tracked PID {} alive", tracked_pid);
+    assert!(is_pid_alive(child_pid), "Expected child PID {} alive", child_pid);
+
+    // Make config invalid to force state-based stop path
+    overwrite_config(&config_path, INVALID_CONFIG);
+
+    let stop = run_fed(&[
+        "-c",
+        config_path.to_str().unwrap(),
+        "-w",
+        workdir.to_str().unwrap(),
+        "stop",
+    ]);
+    assert!(
+        stop.status.success(),
+        "fed stop failed: stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&stop.stdout),
+        String::from_utf8_lossy(&stop.stderr),
+    );
+
+    assert!(
+        wait_for_pid_exit(tracked_pid, Duration::from_secs(8)),
+        "Expected tracked PID {} to exit after stop",
+        tracked_pid,
+    );
+    assert!(
+        wait_for_pid_exit(child_pid, Duration::from_secs(8)),
+        "Expected child PID {} to exit after stop (orphaned child survived)",
+        child_pid,
+    );
+}
+
+/// When `fed stop` uses the normal orchestrator path (valid config),
+/// `ProcessService::stop()` already kills process groups via `killpg`.
+#[test]
+fn test_orchestrator_stop_kills_child_processes() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let workdir = temp_dir.path();
+    let child_pid_file = workdir.join("child.pid");
+    let config_content = child_spawner_config(&child_pid_file);
+    let config_path = create_test_config(&temp_dir, "config.yaml", &config_content);
+
+    let start = run_fed(&[
+        "-c",
+        config_path.to_str().unwrap(),
+        "-w",
+        workdir.to_str().unwrap(),
+        "start",
+        "spawner",
+    ]);
+    assert!(
+        start.status.success(),
+        "fed start failed: stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&start.stdout),
+        String::from_utf8_lossy(&start.stderr),
+    );
+
+    // Wait for the child PID file to be written
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !child_pid_file.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(child_pid_file.exists(), "Child PID file was never written");
+
+    let tracked_pid = get_service_pid(workdir, "spawner").expect("Expected spawner pid in lock db");
+    let child_pid: u32 = fs::read_to_string(&child_pid_file)
+        .expect("Failed to read child pid file")
+        .trim()
+        .parse()
+        .expect("Failed to parse child pid");
+
+    assert!(is_pid_alive(tracked_pid), "Expected tracked PID {} alive", tracked_pid);
+    assert!(is_pid_alive(child_pid), "Expected child PID {} alive", child_pid);
+
+    // Config stays valid — this uses the orchestrator (killpg) path
+    let stop = run_fed(&[
+        "-c",
+        config_path.to_str().unwrap(),
+        "-w",
+        workdir.to_str().unwrap(),
+        "stop",
+    ]);
+    assert!(
+        stop.status.success(),
+        "fed stop failed: stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&stop.stdout),
+        String::from_utf8_lossy(&stop.stderr),
+    );
+
+    assert!(
+        wait_for_pid_exit(tracked_pid, Duration::from_secs(8)),
+        "Expected tracked PID {} to exit after stop",
+        tracked_pid,
+    );
+    assert!(
+        wait_for_pid_exit(child_pid, Duration::from_secs(8)),
+        "Expected child PID {} to exit after stop (child survived killpg)",
+        child_pid,
     );
 }

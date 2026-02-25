@@ -85,78 +85,74 @@ pub async fn graceful_docker_stop(container_id: &str) -> bool {
 /// Re-export from error module for backwards compatibility with command imports.
 pub use service_federation::error::validate_pid_start_time;
 
-/// Gracefully kill a process.
+/// Gracefully kill a process and its process group.
 ///
-/// Sends SIGTERM first, waits up to 5 seconds, then sends SIGKILL.
+/// Looks up the process group (PGID) and sends signals to the entire group
+/// so child processes are also cleaned up. Falls back to individual PID
+/// signaling if the PGID lookup fails. Sends SIGTERM first, waits up to
+/// 5 seconds, then sends SIGKILL.
 pub async fn graceful_process_kill(pid: u32) -> bool {
     use std::time::Duration;
-    use tokio::process::Command;
 
-    // Check if process exists first
-    let exists = Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false);
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{self, Signal};
+        use nix::unistd::{getpgid, Pid};
 
-    if !exists {
-        // Process already dead
-        return true;
-    }
+        let nix_pid = Pid::from_raw(pid as i32);
 
-    // Send SIGTERM
-    let term_result = Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
-
-    if term_result.is_err() {
-        return false;
-    }
-
-    // Wait for process to exit (up to 5 seconds)
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let still_exists = Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        if !still_exists {
+        // Check if process exists first
+        if signal::kill(nix_pid, None).is_err() {
+            // Process already dead
             return true;
         }
+
+        // Look up the process group ID so we kill child processes too.
+        // The tracked PID may be a bash wrapper whose children (pnpm, next dev,
+        // etc.) would otherwise survive as orphans reparented to init.
+        let pgid = getpgid(Some(nix_pid))
+            .ok()
+            .filter(|&pg| pg != Pid::from_raw(1));
+
+        // Send SIGTERM — prefer process group, fall back to individual PID
+        let term_ok = if let Some(pg) = pgid {
+            signal::killpg(pg, Signal::SIGTERM)
+                .or_else(|_| signal::kill(nix_pid, Signal::SIGTERM))
+                .is_ok()
+        } else {
+            signal::kill(nix_pid, Signal::SIGTERM).is_ok()
+        };
+
+        if !term_ok {
+            return false;
+        }
+
+        // Wait for process to exit (up to 5 seconds)
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if signal::kill(nix_pid, None).is_err() {
+                return true;
+            }
+        }
+
+        // Process didn't exit, send SIGKILL to process group
+        if let Some(pg) = pgid {
+            let _ = signal::killpg(pg, Signal::SIGKILL)
+                .or_else(|_| signal::kill(nix_pid, Signal::SIGKILL));
+        } else {
+            let _ = signal::kill(nix_pid, Signal::SIGKILL);
+        }
+
+        // Wait a bit more for SIGKILL to take effect
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        signal::kill(nix_pid, None).is_err()
     }
 
-    // Process didn't exit, send SIGKILL
-    let kill_result = Command::new("kill")
-        .args(["-KILL", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
-
-    // Wait a bit more for SIGKILL to take effect
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Check if finally dead
-    let dead = !Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    kill_result.is_ok() && dead
+    #[cfg(not(unix))]
+    {
+        // Non-unix fallback: shell out to taskkill or similar
+        let _ = pid;
+        false
+    }
 }
