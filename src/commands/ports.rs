@@ -16,13 +16,17 @@ pub async fn run_ports(
     match cmd {
         PortsCommands::List { json } => list_ports(&work_dir, *json, out).await,
         PortsCommands::Randomize { force } => {
+            eprintln!("Warning: `fed ports randomize` is deprecated. Use `fed isolate enable` instead.");
             randomize_ports(&work_dir, config_path, *force, out).await
         }
-        PortsCommands::Reset { force } => reset_ports(&work_dir, *force, out).await,
+        PortsCommands::Reset { force } => {
+            eprintln!("Warning: `fed ports reset` is deprecated. Use `fed isolate disable` instead.");
+            reset_ports(&work_dir, *force, out).await
+        }
     }
 }
 
-fn resolve_work_dir(
+pub(super) fn resolve_work_dir(
     workdir: Option<PathBuf>,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<PathBuf> {
@@ -63,7 +67,7 @@ async fn list_ports(
 
         if ports.is_empty() {
             out.status("No ports are currently allocated.");
-            out.status("Ports are allocated on `fed start` or `fed ports randomize`.\n");
+            out.status("Ports are allocated on `fed start` or `fed isolate enable`.\n");
             return Ok(());
         }
 
@@ -150,7 +154,7 @@ async fn reset_ports(
 
 /// Ensure no services are running. With --force, auto-stop them.
 /// Without --force, prompt the user.
-async fn ensure_services_stopped(
+pub(super) async fn ensure_services_stopped(
     work_dir: &std::path::Path,
     force: bool,
     out: &dyn UserOutput,

@@ -18,7 +18,7 @@ Start all services. Waits for health checks, then backgrounds.
 
 | Flag | Description |
 |------|-------------|
-| `--randomize` | Allocate fresh random ports before starting |
+| `--isolate` | Enable isolation mode before starting (persisted) |
 | `--replace` | Kill processes occupying required ports, then start |
 | `--dry-run` | Preview what would start without starting |
 | `-w` / `--watch` | Watch mode — foreground, auto-restart on file changes |
@@ -51,6 +51,36 @@ View logs for a service.
 | `--follow` / `-f` | Stream logs |
 | `--tail <n>` | Show last n lines |
 
+## Isolation
+
+### `fed isolate enable`
+
+Enable isolation mode — randomize ports and scope Docker containers.
+
+| Flag | Description |
+|------|-------------|
+| `--force` / `-f` | Auto-stop running services without prompting |
+
+### `fed isolate disable`
+
+Disable isolation mode — return to default ports and shared containers.
+
+| Flag | Description |
+|------|-------------|
+| `--force` / `-f` | Auto-stop running services without prompting |
+
+### `fed isolate status`
+
+Show current isolation state and port allocations.
+
+### `fed isolate rotate`
+
+Re-roll ports and isolation ID (requires services stopped or `--force`).
+
+| Flag | Description |
+|------|-------------|
+| `--force` / `-f` | Auto-stop running services without prompting |
+
 ## Ports
 
 ### `fed ports list`
@@ -60,14 +90,6 @@ Show current port allocations.
 | Flag | Description |
 |------|-------------|
 | `--json` | Machine-readable output |
-
-### `fed ports randomize`
-
-Randomize all port allocations. Persists across restarts.
-
-### `fed ports reset`
-
-Clear all port allocations.
 
 ## Scripts
 

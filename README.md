@@ -81,21 +81,22 @@ Git worktrees are first-class. Each worktree gets its own ports, containers, and
 
 ```bash
 ~/project        $ fed start                # Default ports
-~/project-review $ fed start --randomize    # Randomized ports, separate stack
+~/project-review $ fed start --isolate    # Isolated ports, separate stack
 ```
 
-Cursor's parallel agents create worktrees under the hood — `fed install && fed start --randomize` just works in each one. No plugin needed.
+Cursor's parallel agents create worktrees under the hood — `fed install && fed start --isolate` just works in each one. No plugin needed.
 
 `fed ws` manages worktrees directly: `fed ws new -b feature`, `fed ws list`, `fed ws cd main`. See [docs/isolation.md](docs/isolation.md).
 
 ## Commands
 
 ```bash
-fed start [--randomize|--replace|--dry-run|-w]  # Start services
+fed start [--isolate|--replace|--dry-run|-w]  # Start services
 fed stop / restart                               # Stop / restart
 fed status [--json]                              # Service status
 fed logs <svc> [--follow]                        # View logs
-fed ports list [--json] / randomize / reset      # Port management
+fed isolate enable / disable / status / rotate  # Isolation mode
+fed ports list [--json]                         # Port allocations
 fed run <script> [-- args]                       # Run a script
 fed install / build / clean                      # Lifecycle hooks
 fed docker build [--json] / push                 # Docker images
@@ -134,7 +135,7 @@ fed logs <service> --tail 100
 
 **Port conflicts?**
 ```bash
-fed start --randomize   # Sidestep conflicts
+fed start --isolate     # Sidestep conflicts
 fed start --replace     # Kill conflicting processes
 ```
 

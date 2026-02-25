@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 const FED_DIR: &str = ".fed";
 const DB_FILE_NAME: &str = "lock.db";
 const LOCK_FILE_NAME: &str = ".lock";
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 /// SQLite-backed state tracker for persistent service state management
 /// Provides ACID transactions and crash recovery via WAL mode.
@@ -425,6 +425,11 @@ impl SqliteStateTracker {
             self.migrate_v3_to_v4().await?;
         }
 
+        // Migration from v4 to v5: Add project_settings table
+        if current_version < 5 {
+            self.migrate_v4_to_v5().await?;
+        }
+
         Ok(())
     }
 
@@ -615,6 +620,50 @@ impl SqliteStateTracker {
         Ok(())
     }
 
+    /// Migration v4 -> v5: Add project_settings table
+    async fn migrate_v4_to_v5(&self) -> Result<()> {
+        debug!("Running migration v4 -> v5: Creating project_settings table");
+
+        self.conn
+            .call(
+                |conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
+                    let tx = conn.transaction()?;
+
+                    let already_applied: bool = tx
+                        .query_row(
+                            "SELECT COUNT(*) > 0 FROM schema_version WHERE version = 5",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(false);
+
+                    if already_applied {
+                        return Ok(());
+                    }
+
+                    tx.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS project_settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    );",
+                    )?;
+
+                    tx.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (5, datetime('now'))",
+                    [],
+                )?;
+
+                    tx.commit()?;
+                    Ok(())
+                },
+            )
+            .await?;
+
+        info!("Migration v4 -> v5 completed successfully");
+        Ok(())
+    }
+
     /// Create database schema
     async fn create_schema(&self) -> Result<()> {
         self.conn.call(|conn: &mut rusqlite::Connection| -> tokio_rusqlite::Result<()> {
@@ -692,6 +741,13 @@ impl SqliteStateTracker {
                 );
 
                 CREATE INDEX idx_restart_history_service ON restart_history(service_id, restarted_at);
+
+                -- Project-level key/value settings
+                CREATE TABLE project_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
 
                 "#,
             )?;
@@ -2087,6 +2143,94 @@ impl SqliteStateTracker {
             services,
             allocated_ports,
         })
+    }
+
+    /// Set isolation mode (enabled + optional isolation_id).
+    /// If enabled and isolation_id is None, a new ID is generated.
+    pub async fn set_isolation_mode(
+        &self,
+        enabled: bool,
+        isolation_id: Option<String>,
+    ) -> Result<()> {
+        let id = if enabled {
+            isolation_id.unwrap_or_else(|| format!("iso-{:08x}", rand::random::<u32>()))
+        } else {
+            String::new()
+        };
+        let enabled_str = enabled.to_string();
+        self.conn
+            .call(move |conn: &mut rusqlite::Connection| {
+                let tx = conn.transaction()?;
+                tx.execute(
+                    "INSERT INTO project_settings (key, value, updated_at) VALUES ('isolation_enabled', ?1, datetime('now'))
+                     ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')",
+                    rusqlite::params![&enabled_str],
+                )?;
+                if enabled {
+                    tx.execute(
+                        "INSERT INTO project_settings (key, value, updated_at) VALUES ('isolation_id', ?1, datetime('now'))
+                         ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')",
+                        rusqlite::params![&id],
+                    )?;
+                } else {
+                    tx.execute(
+                        "DELETE FROM project_settings WHERE key = 'isolation_id'",
+                        [],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .await
+            .map_err(Error::from)
+    }
+
+    /// Get current isolation mode: (enabled, optional isolation_id).
+    pub async fn get_isolation_mode(&self) -> (bool, Option<String>) {
+        let result = self
+            .conn
+            .call(|conn: &mut rusqlite::Connection| {
+                let enabled: Option<String> = conn
+                    .query_row(
+                        "SELECT value FROM project_settings WHERE key = 'isolation_enabled'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+
+                let isolation_id: Option<String> = conn
+                    .query_row(
+                        "SELECT value FROM project_settings WHERE key = 'isolation_id'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+
+                Ok((enabled, isolation_id))
+            })
+            .await;
+
+        match result {
+            Ok((Some(enabled_str), id)) => {
+                let enabled = enabled_str == "true";
+                (enabled, if enabled { id } else { None })
+            }
+            _ => (false, None),
+        }
+    }
+
+    /// Clear isolation mode entirely.
+    pub async fn clear_isolation_mode(&self) -> Result<()> {
+        self.conn
+            .call(|conn: &mut rusqlite::Connection| {
+                conn.execute(
+                    "DELETE FROM project_settings WHERE key IN ('isolation_enabled', 'isolation_id')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(Error::from)
     }
 }
 

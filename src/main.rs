@@ -136,6 +136,10 @@ async fn run() -> anyhow::Result<()> {
         Commands::Workspace(ref ws_cmd) => {
             return commands::run_workspace(ws_cmd, &out).await;
         }
+        Commands::Isolate(ref isolate_cmd) => {
+            return commands::run_isolate(isolate_cmd, cli.workdir.clone(), cli.config.clone(), &out)
+                .await;
+        }
         _ => {} // fall through to config-loading path
     }
 
@@ -233,7 +237,7 @@ async fn run() -> anyhow::Result<()> {
         (_, Ok(config)) => config,
     };
 
-    let work_dir = resolve_work_dir(cli.workdir, &config_path)?;
+    let work_dir = resolve_work_dir(cli.workdir.clone(), &config_path)?;
 
     // ── Tier 3: Commands that need orchestrator ─────────────────────
 
@@ -284,14 +288,29 @@ async fn run() -> anyhow::Result<()> {
         Commands::Status { .. } | Commands::Logs { .. } | Commands::Stop { .. }
     );
 
-    // --randomize allocates fresh random ports (same as `fed ports randomize` + `fed start`)
-    let randomize = matches!(
+    // --isolate enables isolation mode (randomize ports + unique container names)
+    let isolate = matches!(
+        &cli.command,
+        Commands::Start {
+            isolate: true,
+            ..
+        }
+    );
+
+    // --randomize is deprecated, treat as --isolate
+    let deprecated_randomize = matches!(
         &cli.command,
         Commands::Start {
             randomize: true,
             ..
         }
     );
+
+    if deprecated_randomize {
+        eprintln!("Warning: --randomize is deprecated. Use --isolate instead.");
+    }
+
+    let randomize = isolate || deprecated_randomize;
 
     // --replace kills blocking processes/containers and uses original ports
     let replace = matches!(&cli.command, Commands::Start { replace: true, .. });
@@ -315,6 +334,21 @@ async fn run() -> anyhow::Result<()> {
         _ => false,
     };
 
+    // If --isolate flag is used (and not dry-run), persist isolation mode before building orchestrator
+    if isolate && !dry_run {
+        let work_dir_for_isolation = resolve_work_dir(cli.workdir.clone(), &config_path)?;
+        let mut tracker =
+            service_federation::state::StateTracker::new(work_dir_for_isolation).await?;
+        tracker.initialize().await?;
+        let (already_isolated, _) = tracker.get_isolation_mode().await;
+        if !already_isolated {
+            let isolation_id = format!("iso-{:08x}", rand::random::<u32>());
+            tracker
+                .set_isolation_mode(true, Some(isolation_id))
+                .await?;
+        }
+    }
+
     // Build orchestrator with all settings applied and initialized
     let mut orchestrator = Orchestrator::builder()
         .config(config.clone())
@@ -337,6 +371,7 @@ async fn run() -> anyhow::Result<()> {
             output: _,
             dry_run,
             randomize: _,
+            isolate: _,
         } => {
             commands::run_start(
                 &mut orchestrator,
@@ -444,7 +479,8 @@ async fn run() -> anyhow::Result<()> {
         | Commands::Ports(_)
         | Commands::Docker(_)
         | Commands::Debug(_)
-        | Commands::Workspace(_) => {
+        | Commands::Workspace(_)
+        | Commands::Isolate(_) => {
             unreachable!("handled in earlier dispatch tiers");
         }
     }

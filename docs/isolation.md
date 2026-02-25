@@ -13,23 +13,39 @@ All state is scoped to the directory containing your `service-federation.yaml`:
 
 Two directories are two independent stacks. There's nothing to configure — it just works.
 
+## Project Isolation
+
+When you need multiple instances of the same project (e.g., worktrees, Cursor agents), enable isolation mode:
+
+```bash
+fed isolate enable       # Randomize ports + unique container names (persisted)
+fed isolate status       # Show isolation state and port allocations
+fed isolate rotate       # Re-roll ports and isolation ID
+fed isolate disable      # Return to default ports and shared containers
+```
+
+Isolation mode persists across restarts — `fed stop && fed start` reuses the same isolated allocations.
+
+### Quick isolation
+
+```bash
+fed start --isolate      # Enable isolation + start (one command)
+```
+
+### What isolation does
+
+- **Ports**: All port-type parameters get randomized values instead of defaults
+- **Docker containers**: Containers get a unique isolation ID in their names, preventing collisions
+- **Docker volumes**: Scoped to the isolation session
+
 ## Port Management
 
 ```bash
 fed ports list            # Show current allocations
 fed ports list --json     # Machine-readable output
-fed ports randomize       # Randomize ports (persisted across restarts)
-fed ports reset           # Clear all allocations
 ```
 
-Ports persist across restarts — `fed stop && fed start` reuses the same allocations until you `fed ports reset`.
-
-### Randomization
-
-There are two ways to randomize ports:
-
-- **`fed start --randomize`** — Allocates fresh random ports on every invocation. Good for one-off isolated runs.
-- **`fed ports randomize`** — Randomizes once, then `fed start` (without `--randomize`) reuses those allocations. Good for stable worktree setups.
+Ports persist across restarts — `fed stop && fed start` reuses the same allocations until you `fed isolate disable`.
 
 ## Git Worktrees
 
@@ -39,8 +55,8 @@ Git worktrees give you full isolation for free because each worktree is a separa
 # Main worktree — default ports
 ~/project $ fed start
 
-# Second worktree — randomized ports, separate volumes and containers
-~/project-review $ fed start --randomize
+# Second worktree — isolated ports, separate volumes and containers
+~/project-review $ fed start --isolate
 ```
 
 Both stacks run simultaneously on the same machine.
@@ -65,7 +81,7 @@ Worktrees are created as siblings to the repo in a `<repo>-worktrees/` directory
 Cursor's parallel agents create git worktrees under the hood — each agent works in its own directory. If your project has a `service-federation.yaml`, each agent can spin up the full stack independently:
 
 ```bash
-fed install && fed start --randomize
+fed install && fed start --isolate
 ```
 
 No plugin or integration needed. Directory-scoped isolation means it works the same whether Cursor created the worktree or you did.

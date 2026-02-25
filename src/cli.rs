@@ -59,9 +59,13 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
 
-        /// Allocate fresh random ports for all port parameters before starting
-        #[arg(long)]
+        /// [deprecated: use --isolate] Allocate fresh random ports
+        #[arg(long, hide = true)]
         randomize: bool,
+
+        /// Enable isolation mode before starting (persisted)
+        #[arg(long)]
+        isolate: bool,
     },
     /// Stop services
     Stop {
@@ -174,6 +178,10 @@ pub enum Commands {
     #[command(subcommand)]
     Docker(DockerCommands),
 
+    /// Manage project isolation (ports + containers)
+    #[command(subcommand)]
+    Isolate(IsolateCommands),
+
     /// Manage git worktrees for isolated service stacks
     #[command(subcommand, alias = "ws")]
     Workspace(WorkspaceCommands),
@@ -284,13 +292,15 @@ pub enum PortsCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Allocate fresh random ports for all port parameters
+    /// [deprecated: use `fed isolate enable`] Allocate fresh random ports for all port parameters
+    #[command(hide = true)]
     Randomize {
         /// Skip confirmation, auto-stop running services
         #[arg(long, short)]
         force: bool,
     },
-    /// Clear port allocations (next start uses defaults)
+    /// [deprecated: use `fed isolate disable`] Clear port allocations (next start uses defaults)
+    #[command(hide = true)]
     Reset {
         /// Skip confirmation, auto-stop running services
         #[arg(long, short)]
@@ -337,4 +347,28 @@ pub enum WorkspaceCommands {
     Setup,
     /// Print shell function for eval (used internally by setup)
     InitShell,
+}
+
+#[derive(Subcommand)]
+pub enum IsolateCommands {
+    /// Enable isolation mode (randomize ports + unique container names)
+    Enable {
+        /// Skip confirmation, auto-stop running services
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Disable isolation mode (return to default ports + shared containers)
+    Disable {
+        /// Skip confirmation, auto-stop running services
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Show current isolation status and port allocations
+    Status,
+    /// Re-roll ports and isolation ID (must be currently isolated)
+    Rotate {
+        /// Skip confirmation, auto-stop running services
+        #[arg(long, short)]
+        force: bool,
+    },
 }

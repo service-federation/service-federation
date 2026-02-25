@@ -1560,3 +1560,492 @@ fn test_start_randomize_dry_run_shows_non_default_ports() {
     assert!(db_port > 1024, "DB port {} out of valid range", db_port);
     assert_ne!(api_port, db_port, "Ports should differ from each other");
 }
+
+// ── Isolate command tests ───────────────────────────────────────────────
+
+#[test]
+fn test_isolate_enable_allocates_ports() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = create_port_test_config(&temp_dir, 18580, 15932);
+
+    // Occupy port 18580 so isolation is forced to allocate a different port
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", 18580)).expect("Failed to bind port 18580");
+
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "isolate",
+            "enable",
+            "-f",
+        ])
+        .output()
+        .expect("Failed to run fed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "isolate enable failed.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Verify via fed ports list --json
+    let list_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "ports",
+            "list",
+            "--json",
+        ])
+        .output()
+        .expect("Failed to run fed ports list");
+
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        list_output.status.success(),
+        "ports list --json failed.\nstdout: {}\nstderr: {}",
+        list_stdout,
+        String::from_utf8_lossy(&list_output.stderr)
+    );
+
+    let ports: std::collections::HashMap<String, u16> =
+        serde_json::from_str(&list_stdout).expect("Failed to parse ports JSON");
+
+    let api_port = ports
+        .get("TEST_API_PORT")
+        .expect("TEST_API_PORT not in ports");
+    let db_port = ports
+        .get("TEST_DB_PORT")
+        .expect("TEST_DB_PORT not in ports");
+
+    // Port 18580 is occupied, so isolation must allocate a different one
+    assert_ne!(
+        *api_port, 18580,
+        "API port should differ from occupied default 18580"
+    );
+    assert!(*api_port > 1024, "API port {} out of valid range", api_port);
+    assert!(*db_port > 1024, "DB port {} out of valid range", db_port);
+    assert_ne!(api_port, db_port, "Ports should differ from each other");
+
+    drop(listener);
+}
+
+#[test]
+fn test_isolate_disable_clears_allocations() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = create_port_test_config(&temp_dir, 18680, 16032);
+
+    // First enable isolation
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "isolate",
+            "enable",
+            "-f",
+        ])
+        .output()
+        .expect("Failed to run fed");
+    assert!(output.status.success(), "isolate enable failed");
+
+    // Then disable isolation
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "isolate",
+            "disable",
+            "-f",
+        ])
+        .output()
+        .expect("Failed to run fed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "isolate disable failed.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Verify ports are empty via list --json
+    let list_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "ports",
+            "list",
+            "--json",
+        ])
+        .output()
+        .expect("Failed to run fed ports list");
+
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    let ports: std::collections::HashMap<String, u16> =
+        serde_json::from_str(&list_stdout).expect("Failed to parse ports JSON");
+
+    assert!(
+        ports.is_empty(),
+        "After isolate disable, no ports should be allocated"
+    );
+}
+
+#[test]
+fn test_isolate_status_shows_isolation_info() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = create_port_test_config(&temp_dir, 18780, 16132);
+
+    // Enable isolation first
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "isolate",
+            "enable",
+            "-f",
+        ])
+        .output()
+        .expect("Failed to run fed");
+    assert!(
+        output.status.success(),
+        "isolate enable failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Check status
+    let status_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "isolate",
+            "status",
+        ])
+        .output()
+        .expect("Failed to run fed isolate status");
+
+    let stdout = String::from_utf8_lossy(&status_output.stdout);
+    let stderr = String::from_utf8_lossy(&status_output.stderr);
+    assert!(
+        status_output.status.success(),
+        "isolate status failed.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    assert!(
+        stdout.contains("enabled"),
+        "Status output should contain 'enabled', got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("iso-"),
+        "Status output should contain an isolation ID (iso-...), got:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn test_isolate_rotate_rerolls_ports() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = create_port_test_config(&temp_dir, 18880, 16232);
+
+    // Enable isolation first
+    let enable_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "isolate",
+            "enable",
+            "-f",
+        ])
+        .output()
+        .expect("Failed to run fed");
+    assert!(
+        enable_output.status.success(),
+        "isolate enable failed: {}",
+        String::from_utf8_lossy(&enable_output.stderr)
+    );
+
+    // Capture initial ports
+    let list_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "ports",
+            "list",
+            "--json",
+        ])
+        .output()
+        .expect("Failed to run fed ports list");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    let ports_before: std::collections::HashMap<String, u16> =
+        serde_json::from_str(&list_stdout).expect("Failed to parse ports JSON");
+
+    // Capture initial isolation ID from status output
+    let status_before = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "isolate",
+            "status",
+        ])
+        .output()
+        .expect("Failed to run fed isolate status");
+    let status_before_stdout = String::from_utf8_lossy(&status_before.stdout);
+
+    // Rotate
+    let rotate_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "isolate",
+            "rotate",
+            "-f",
+        ])
+        .output()
+        .expect("Failed to run fed");
+
+    let stdout = String::from_utf8_lossy(&rotate_output.stdout);
+    let stderr = String::from_utf8_lossy(&rotate_output.stderr);
+    assert!(
+        rotate_output.status.success(),
+        "isolate rotate failed.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Capture new ports
+    let list_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "ports",
+            "list",
+            "--json",
+        ])
+        .output()
+        .expect("Failed to run fed ports list");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    let ports_after: std::collections::HashMap<String, u16> =
+        serde_json::from_str(&list_stdout).expect("Failed to parse ports JSON");
+
+    // Capture new isolation ID
+    let status_after = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "isolate",
+            "status",
+        ])
+        .output()
+        .expect("Failed to run fed isolate status");
+    let status_after_stdout = String::from_utf8_lossy(&status_after.stdout);
+
+    // At least the isolation ID should change (ports may coincidentally match)
+    assert_ne!(
+        status_before_stdout.to_string(),
+        status_after_stdout.to_string(),
+        "Isolation ID should change after rotate"
+    );
+
+    // Verify ports are still allocated
+    assert!(
+        !ports_after.is_empty(),
+        "Ports should still be allocated after rotate"
+    );
+
+    // Check at least one port or the ID changed
+    let api_before = ports_before.get("TEST_API_PORT");
+    let api_after = ports_after.get("TEST_API_PORT");
+    let db_before = ports_before.get("TEST_DB_PORT");
+    let db_after = ports_after.get("TEST_DB_PORT");
+
+    let ports_changed = api_before != api_after || db_before != db_after;
+    let id_changed = status_before_stdout.to_string() != status_after_stdout.to_string();
+
+    assert!(
+        ports_changed || id_changed,
+        "After rotate, at least ports or isolation ID should have changed.\n\
+         Before: {:?}\nAfter: {:?}",
+        ports_before,
+        ports_after
+    );
+}
+
+#[test]
+fn test_start_isolate_flag_parses() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = create_port_test_config(&temp_dir, 18980, 16332);
+
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "start",
+            "--isolate",
+            "--dry-run",
+        ])
+        .output()
+        .expect("Failed to run fed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "start --isolate --dry-run should parse and succeed.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    let api_port = parse_resolved_param(&stdout, "TEST_API_PORT");
+    let db_port = parse_resolved_param(&stdout, "TEST_DB_PORT");
+
+    // --isolate should allocate ports different from defaults
+    assert_ne!(
+        api_port, 18980,
+        "With --isolate, API port should differ from default 18980"
+    );
+    assert_ne!(
+        db_port, 16332,
+        "With --isolate, DB port should differ from default 16332"
+    );
+    assert!(api_port > 1024, "API port {} out of valid range", api_port);
+    assert!(db_port > 1024, "DB port {} out of valid range", db_port);
+    assert_ne!(api_port, db_port, "Ports should differ from each other");
+}
+
+#[test]
+fn test_deprecated_randomize_still_works() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = create_port_test_config(&temp_dir, 19080, 16432);
+
+    // Occupy port 19080 so randomize is forced to allocate a different port
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", 19080)).expect("Failed to bind port 19080");
+
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "ports",
+            "randomize",
+            "-f",
+        ])
+        .output()
+        .expect("Failed to run fed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "ports randomize failed.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Verify deprecation warning on stderr
+    assert!(
+        stderr.contains("deprecated"),
+        "stderr should contain deprecation warning, got:\n{}",
+        stderr
+    );
+
+    // Verify ports were allocated
+    let list_output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "ports",
+            "list",
+            "--json",
+        ])
+        .output()
+        .expect("Failed to run fed ports list");
+
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    let ports: std::collections::HashMap<String, u16> =
+        serde_json::from_str(&list_stdout).expect("Failed to parse ports JSON");
+
+    let api_port = ports
+        .get("TEST_API_PORT")
+        .expect("TEST_API_PORT not in ports");
+    assert_ne!(
+        *api_port, 19080,
+        "API port should differ from occupied default 19080"
+    );
+    assert!(*api_port > 1024, "API port {} out of valid range", api_port);
+
+    drop(listener);
+}
+
+#[test]
+fn test_deprecated_start_randomize_warns() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = create_port_test_config(&temp_dir, 19180, 16532);
+
+    let output = Command::new(fed_binary())
+        .args([
+            "-c",
+            &config_path,
+            "-w",
+            temp_dir.path().to_str().unwrap(),
+            "start",
+            "--randomize",
+            "--dry-run",
+        ])
+        .output()
+        .expect("Failed to run fed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "start --randomize --dry-run failed.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Verify deprecation warning on stderr
+    assert!(
+        stderr.contains("deprecated"),
+        "stderr should contain deprecation warning for --randomize, got:\n{}",
+        stderr
+    );
+}

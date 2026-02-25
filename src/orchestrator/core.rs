@@ -615,6 +615,21 @@ impl Orchestrator {
         // - No session → SqlitePortStore (reads/writes persisted_ports table)
         self.configure_port_store(false).await;
 
+        // If project-level isolation is enabled, apply the persisted isolation_id
+        // so Docker containers get unique names matching the isolation session.
+        {
+            let tracker = self.state_tracker.read().await;
+            let (isolated, isolation_id) = tracker.get_isolation_mode().await;
+            if isolated {
+                if let Some(id) = isolation_id {
+                    if self.isolation_id.is_none() {
+                        tracing::debug!("Applying persisted isolation_id: {}", id);
+                        self.isolation_id = Some(id);
+                    }
+                }
+            }
+        }
+
         // First pass: resolve parent parameters only (not services yet)
         // This allows us to use resolved parameter values when expanding external services
         self.resolver.resolve_parameters(&mut self.config)?;
