@@ -1892,7 +1892,7 @@ fn test_isolate_rotate_rerolls_ports() {
     let db_after = ports_after.get("TEST_DB_PORT");
 
     let ports_changed = api_before != api_after || db_before != db_after;
-    let id_changed = status_before_stdout.to_string() != status_after_stdout.to_string();
+    let id_changed = status_before_stdout != status_after_stdout;
 
     assert!(
         ports_changed || id_changed,
