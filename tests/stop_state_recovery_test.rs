@@ -272,8 +272,16 @@ fn test_stop_from_state_kills_child_processes() {
         .parse()
         .expect("Failed to parse child pid");
 
-    assert!(is_pid_alive(tracked_pid), "Expected tracked PID {} alive", tracked_pid);
-    assert!(is_pid_alive(child_pid), "Expected child PID {} alive", child_pid);
+    assert!(
+        is_pid_alive(tracked_pid),
+        "Expected tracked PID {} alive",
+        tracked_pid
+    );
+    assert!(
+        is_pid_alive(child_pid),
+        "Expected child PID {} alive",
+        child_pid
+    );
 
     // Make config invalid to force state-based stop path
     overwrite_config(&config_path, INVALID_CONFIG);
@@ -343,8 +351,16 @@ fn test_orchestrator_stop_kills_child_processes() {
         .parse()
         .expect("Failed to parse child pid");
 
-    assert!(is_pid_alive(tracked_pid), "Expected tracked PID {} alive", tracked_pid);
-    assert!(is_pid_alive(child_pid), "Expected child PID {} alive", child_pid);
+    assert!(
+        is_pid_alive(tracked_pid),
+        "Expected tracked PID {} alive",
+        tracked_pid
+    );
+    assert!(
+        is_pid_alive(child_pid),
+        "Expected child PID {} alive",
+        child_pid
+    );
 
     // Config stays valid — this uses the orchestrator (killpg) path
     let stop = run_fed(&[

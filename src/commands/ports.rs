@@ -16,11 +16,15 @@ pub async fn run_ports(
     match cmd {
         PortsCommands::List { json } => list_ports(&work_dir, *json, out).await,
         PortsCommands::Randomize { force } => {
-            eprintln!("Warning: `fed ports randomize` is deprecated. Use `fed isolate enable` instead.");
+            eprintln!(
+                "Warning: `fed ports randomize` is deprecated. Use `fed isolate enable` instead."
+            );
             randomize_ports(&work_dir, config_path, *force, out).await
         }
         PortsCommands::Reset { force } => {
-            eprintln!("Warning: `fed ports reset` is deprecated. Use `fed isolate disable` instead.");
+            eprintln!(
+                "Warning: `fed ports reset` is deprecated. Use `fed isolate disable` instead."
+            );
             reset_ports(&work_dir, *force, out).await
         }
     }

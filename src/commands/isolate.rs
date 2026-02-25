@@ -118,7 +118,9 @@ async fn disable(
     // Clear isolation mode
     tracker.clear_isolation_mode().await?;
 
-    out.success("Isolation mode disabled. Next `fed start` will use default ports and shared containers.\n");
+    out.success(
+        "Isolation mode disabled. Next `fed start` will use default ports and shared containers.\n",
+    );
 
     Ok(())
 }
@@ -168,9 +170,7 @@ async fn rotate(
     let tracker = StateTracker::new(work_dir.to_path_buf()).await?;
     let (enabled, _) = tracker.get_isolation_mode().await;
     if !enabled {
-        anyhow::bail!(
-            "Isolation mode is not enabled. Run `fed isolate enable` first."
-        );
+        anyhow::bail!("Isolation mode is not enabled. Run `fed isolate enable` first.");
     }
     drop(tracker);
 

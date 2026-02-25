@@ -137,8 +137,13 @@ async fn run() -> anyhow::Result<()> {
             return commands::run_workspace(ws_cmd, &out).await;
         }
         Commands::Isolate(ref isolate_cmd) => {
-            return commands::run_isolate(isolate_cmd, cli.workdir.clone(), cli.config.clone(), &out)
-                .await;
+            return commands::run_isolate(
+                isolate_cmd,
+                cli.workdir.clone(),
+                cli.config.clone(),
+                &out,
+            )
+            .await;
         }
         _ => {} // fall through to config-loading path
     }
@@ -289,13 +294,7 @@ async fn run() -> anyhow::Result<()> {
     );
 
     // --isolate enables isolation mode (randomize ports + unique container names)
-    let isolate = matches!(
-        &cli.command,
-        Commands::Start {
-            isolate: true,
-            ..
-        }
-    );
+    let isolate = matches!(&cli.command, Commands::Start { isolate: true, .. });
 
     // --randomize is deprecated, treat as --isolate
     let deprecated_randomize = matches!(
@@ -343,9 +342,7 @@ async fn run() -> anyhow::Result<()> {
         let (already_isolated, _) = tracker.get_isolation_mode().await;
         if !already_isolated {
             let isolation_id = format!("iso-{:08x}", rand::random::<u32>());
-            tracker
-                .set_isolation_mode(true, Some(isolation_id))
-                .await?;
+            tracker.set_isolation_mode(true, Some(isolation_id)).await?;
         }
     }
 
