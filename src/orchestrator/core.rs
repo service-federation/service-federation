@@ -909,7 +909,7 @@ impl Orchestrator {
         // IMPORTANT: We check cancellation inside the lock to prevent TOCTOU race
         // where cancellation happens between check and acquiring the lock
         {
-            let manager = manager_arc.lock().await;
+            let mut manager = manager_arc.lock().await;
 
             // Check cancellation while holding the lock - this is the critical fix for TOCTOU
             if self.cancellation_token.is_cancelled() {
@@ -922,7 +922,19 @@ impl Orchestrator {
 
             let status = manager.status();
             if status == Status::Running || status == Status::Healthy {
-                return Ok(());
+                // Verify the service is actually alive — its process/container may
+                // have died since we last checked (e.g. OOM kill, Docker restart).
+                if self.verify_service_alive(&**manager) {
+                    return Ok(());
+                }
+                tracing::warn!(
+                    "Service '{}' reports {} but is no longer alive, restarting",
+                    name,
+                    status
+                );
+                // Reset status so the start path below proceeds normally.
+                // stop() handles already-dead services gracefully.
+                let _ = manager.stop().await;
             }
         }
 
@@ -1480,6 +1492,21 @@ impl Orchestrator {
     /// 5. Releases port listeners
     /// 6. Clears the lock file if all services are stopped
     ///
+    /// Check whether a service's process or container is actually alive.
+    ///
+    /// Used before skipping a start for a service that claims to be Running/Healthy,
+    /// to catch cases where the process was killed or container died externally.
+    fn verify_service_alive(&self, manager: &dyn ServiceManager) -> bool {
+        if let Some(pid) = manager.get_pid() {
+            return is_pid_alive(pid);
+        }
+        if let Some(container_id) = manager.get_container_id() {
+            return crate::docker::is_container_running_sync(&container_id);
+        }
+        // No PID or container ID — can't verify, assume alive
+        true
+    }
+
     /// Can be called with `&self` for concurrent access patterns.
     /// Multiple concurrent calls are safe - only the first will execute.
     pub async fn cleanup(&self) {
@@ -1691,5 +1718,58 @@ mod tests {
 
         // After cleanup, cancellation should be set
         assert!(orch.is_cancelled());
+    }
+
+    /// Test that verify_service_alive returns false for dead PIDs
+    #[tokio::test]
+    async fn test_verify_service_alive_dead_pid() {
+        use crate::service::ProcessService;
+        use std::collections::HashMap;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        // Create a process service with a PID that doesn't exist
+        let service_config = crate::config::Service {
+            process: Some("echo hello".to_string()),
+            ..Default::default()
+        };
+        let service =
+            ProcessService::new("test".into(), service_config, HashMap::new(), "/tmp".into(), OutputMode::Captured, None);
+        service.set_pid(999_999); // PID that almost certainly doesn't exist
+
+        assert!(
+            !orchestrator.verify_service_alive(&service),
+            "Dead PID should not be considered alive"
+        );
+    }
+
+    /// Test that verify_service_alive returns true when no PID or container
+    #[tokio::test]
+    async fn test_verify_service_alive_no_tracking_info() {
+        use crate::service::ProcessService;
+        use std::collections::HashMap;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        let orchestrator = Orchestrator::new(config, temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        // Fresh service with no PID set
+        let service_config = crate::config::Service {
+            process: Some("echo hello".to_string()),
+            ..Default::default()
+        };
+        let service =
+            ProcessService::new("test".into(), service_config, HashMap::new(), "/tmp".into(), OutputMode::Captured, None);
+
+        assert!(
+            orchestrator.verify_service_alive(&service),
+            "Service with no PID/container should be assumed alive"
+        );
     }
 }
