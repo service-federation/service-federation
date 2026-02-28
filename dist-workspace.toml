@@ -17,3 +17,5 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+# Allow modified CI files (we remove the pull_request trigger)
+allow-dirty = ["ci"]
