@@ -60,6 +60,11 @@ pub struct Service {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install: Option<String>,
 
+    /// Command to run after dependencies are healthy but before the service starts.
+    /// Runs once per session (like install). Use for database migrations, schema setup, etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub migrate: Option<String>,
+
     /// Command to clean up service artifacts (e.g., "rm -rf node_modules")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clean: Option<String>,
@@ -409,5 +414,39 @@ environment:
     #[test]
     fn test_service_type_from_str_unknown() {
         assert!("bogus".parse::<ServiceType>().is_err());
+    }
+
+    #[test]
+    fn test_service_migrate_field_deserializes() {
+        let yaml = r#"
+process: npm start
+install: npm ci
+migrate: npx prisma migrate deploy
+"#;
+        let svc: Service = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(svc.install.as_deref(), Some("npm ci"));
+        assert_eq!(svc.migrate.as_deref(), Some("npx prisma migrate deploy"));
+    }
+
+    #[test]
+    fn test_service_migrate_field_optional() {
+        let yaml = r#"
+process: npm start
+install: npm ci
+"#;
+        let svc: Service = serde_yaml::from_str(yaml).unwrap();
+        assert!(svc.migrate.is_none());
+    }
+
+    #[test]
+    fn test_service_migrate_field_roundtrip() {
+        let yaml = r#"
+process: npm start
+migrate: ./migrate.sh
+"#;
+        let svc: Service = serde_yaml::from_str(yaml).unwrap();
+        let serialized = serde_yaml::to_string(&svc).unwrap();
+        let deserialized: Service = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.migrate.as_deref(), Some("./migrate.sh"));
     }
 }

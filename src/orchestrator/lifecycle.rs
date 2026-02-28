@@ -183,6 +183,104 @@ impl<'a> ServiceLifecycleCommands<'a> {
         Ok(())
     }
 
+    /// Force run migrate command for a service (clears migrate state first).
+    ///
+    /// This method will:
+    /// 1. Clear any existing migrate state
+    /// 2. Run the migrate command unconditionally
+    pub async fn run_migrate(&self, service_name: &str) -> Result<()> {
+        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
+        ctx.clear_migrated(service_name)?;
+        self.run_migrate_if_needed(service_name).await
+    }
+
+    /// Run migrate command for a service if needed.
+    ///
+    /// This checks if the service has already been migrated in the current session
+    /// or globally (depending on mode). If already migrated, it skips the migrate step.
+    ///
+    /// The migrate command runs after dependencies are healthy but before the service
+    /// starts. Use it for database migrations, schema setup, or anything that needs
+    /// a running dependency.
+    pub async fn run_migrate_if_needed(&self, service_name: &str) -> Result<()> {
+        let service_config = self
+            .config
+            .services
+            .get(service_name)
+            .ok_or_else(|| Error::ServiceNotFound(service_name.to_string()))?;
+
+        let migrate_cmd = match &service_config.migrate {
+            Some(cmd) => cmd,
+            None => return Ok(()),
+        };
+
+        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
+        let is_migrated = ctx.is_migrated(service_name)?;
+
+        if is_migrated {
+            tracing::debug!(
+                "Service '{}' already migrated, skipping migrate step",
+                service_name
+            );
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Running migrate command for service '{}': {}",
+            service_name,
+            migrate_cmd
+        );
+
+        let cwd = if let Some(ref service_cwd) = service_config.cwd {
+            let cwd_path = std::path::Path::new(service_cwd);
+            if cwd_path.is_absolute() {
+                cwd_path.to_path_buf()
+            } else {
+                self.work_dir.join(service_cwd)
+            }
+        } else {
+            self.work_dir.to_path_buf()
+        };
+
+        let mut env_vars = std::collections::HashMap::new();
+        for (key, value) in &service_config.environment {
+            env_vars.insert(key.clone(), value.clone());
+        }
+
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(migrate_cmd)
+            .current_dir(cwd)
+            .envs(&env_vars)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .await
+            .map_err(|e| {
+                Error::Process(format!(
+                    "Failed to execute migrate command for '{}': {}",
+                    service_name, e
+                ))
+            })?;
+
+        if !status.success() {
+            return Err(Error::Process(format!(
+                "Migrate command failed for '{}'",
+                service_name
+            )));
+        }
+
+        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
+        ctx.mark_migrated(service_name)?;
+
+        tracing::info!(
+            "Successfully completed migrate for service '{}'",
+            service_name
+        );
+        Ok(())
+    }
+
     /// Run build command for a service.
     ///
     /// Handles two build types:
@@ -463,9 +561,10 @@ impl<'a> ServiceLifecycleCommands<'a> {
                 .await?;
         }
 
-        // Clear install state since we cleaned up
+        // Clear install and migrate state since we cleaned up
         let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
         ctx.clear_installed(service_name)?;
+        ctx.clear_migrated(service_name)?;
 
         tracing::info!(
             "Successfully completed clean for service '{}'",

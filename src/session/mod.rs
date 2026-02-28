@@ -488,6 +488,51 @@ impl Session {
         }
     }
 
+    /// Check if a service has been migrated
+    pub fn is_migrated(&self, service_name: &str) -> bool {
+        let migrated_dir = self.session_dir.join("migrated");
+        let sanitized =
+            sanitize_service_name_for_path(service_name).unwrap_or_else(|_| "invalid".to_string());
+        let marker_file = migrated_dir.join(sanitized);
+        marker_file.exists()
+    }
+
+    /// Mark a service as migrated
+    pub fn mark_migrated(&self, service_name: &str) -> Result<()> {
+        let migrated_dir = self.session_dir.join("migrated");
+        fs::create_dir_all(&migrated_dir).map_err(|e| {
+            Error::Filesystem(format!("Failed to create migrated directory: {}", e))
+        })?;
+
+        let sanitized = sanitize_service_name_for_path(service_name)?;
+        let marker_file = migrated_dir.join(sanitized);
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+            .as_secs();
+
+        fs::write(&marker_file, timestamp.to_string())
+            .map_err(|e| Error::Filesystem(format!("Failed to create migrate marker: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Clear migrate state for a service
+    pub fn clear_migrated(&self, service_name: &str) -> Result<()> {
+        let migrated_dir = self.session_dir.join("migrated");
+        let sanitized = sanitize_service_name_for_path(service_name)?;
+        let marker_file = migrated_dir.join(sanitized);
+
+        match fs::remove_file(&marker_file) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::Filesystem(format!(
+                "Failed to remove migrate marker: {}",
+                e
+            ))),
+        }
+    }
+
     /// Check if parent shell process is still alive
     pub fn is_shell_alive(&self) -> bool {
         if let Some(pid) = self.metadata.shell_pid {
@@ -702,6 +747,57 @@ pub fn clear_installed_global(service_name: &str, work_dir: &Path) -> Result<()>
     }
 }
 
+/// Get the global migrated directory (for non-session mode), scoped by work_dir hash.
+fn global_migrated_dir(work_dir: &Path) -> Result<PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| Error::Config("Could not determine home directory".to_string()))?;
+    let hash = crate::service::hash_work_dir(work_dir);
+    Ok(home.join(".fed").join("migrated").join(hash))
+}
+
+/// Check if a service has been migrated (global, non-session mode)
+pub fn is_migrated_global(service_name: &str, work_dir: &Path) -> Result<bool> {
+    let migrated_dir = global_migrated_dir(work_dir)?;
+    let sanitized = sanitize_service_name_for_path(service_name)?;
+    let marker_file = migrated_dir.join(sanitized);
+    Ok(marker_file.exists())
+}
+
+/// Mark a service as migrated (global, non-session mode)
+pub fn mark_migrated_global(service_name: &str, work_dir: &Path) -> Result<()> {
+    let migrated_dir = global_migrated_dir(work_dir)?;
+    fs::create_dir_all(&migrated_dir)
+        .map_err(|e| Error::Filesystem(format!("Failed to create migrated directory: {}", e)))?;
+
+    let sanitized = sanitize_service_name_for_path(service_name)?;
+    let marker_file = migrated_dir.join(sanitized);
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+        .as_secs();
+
+    fs::write(&marker_file, timestamp.to_string())
+        .map_err(|e| Error::Filesystem(format!("Failed to create migrate marker: {}", e)))?;
+
+    Ok(())
+}
+
+/// Clear migrate state for a service (global, non-session mode)
+pub fn clear_migrated_global(service_name: &str, work_dir: &Path) -> Result<()> {
+    let migrated_dir = global_migrated_dir(work_dir)?;
+    let sanitized = sanitize_service_name_for_path(service_name)?;
+    let marker_file = migrated_dir.join(sanitized);
+
+    match fs::remove_file(&marker_file) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Filesystem(format!(
+            "Failed to remove migrate marker: {}",
+            e
+        ))),
+    }
+}
+
 /// A context wrapper that abstracts away the session vs. global install state logic.
 ///
 /// This struct encapsulates the common pattern of checking if we're in session mode
@@ -772,6 +868,39 @@ impl SessionContext {
             session.clear_installed(service_name)
         } else {
             clear_installed_global(service_name, &self.work_dir)
+        }
+    }
+
+    /// Check if a service has been migrated.
+    ///
+    /// Uses session-scoped tracking if in a session, otherwise uses global tracking.
+    pub fn is_migrated(&self, service_name: &str) -> Result<bool> {
+        if let Some(ref session) = self.session {
+            Ok(session.is_migrated(service_name))
+        } else {
+            is_migrated_global(service_name, &self.work_dir)
+        }
+    }
+
+    /// Mark a service as migrated.
+    ///
+    /// Uses session-scoped tracking if in a session, otherwise uses global tracking.
+    pub fn mark_migrated(&self, service_name: &str) -> Result<()> {
+        if let Some(ref session) = self.session {
+            session.mark_migrated(service_name)
+        } else {
+            mark_migrated_global(service_name, &self.work_dir)
+        }
+    }
+
+    /// Clear migrate state for a service.
+    ///
+    /// Uses session-scoped tracking if in a session, otherwise uses global tracking.
+    pub fn clear_migrated(&self, service_name: &str) -> Result<()> {
+        if let Some(ref session) = self.session {
+            session.clear_migrated(service_name)
+        } else {
+            clear_migrated_global(service_name, &self.work_dir)
         }
     }
 }
@@ -878,5 +1007,64 @@ mod tests {
 
         // Clean up
         let _ = ctx_a.clear_installed(service_name);
+    }
+
+    #[test]
+    fn test_session_context_global_migrate_tracking() {
+        // When no session exists, SessionContext should use global mode for migrate
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let ctx = SessionContext::current(temp_dir.path().to_path_buf())
+            .expect("Failed to create context");
+
+        let service_name = "test-service-migrate";
+
+        // Clear any existing state
+        let _ = ctx.clear_migrated(service_name);
+
+        // Initially not migrated
+        assert!(!ctx.is_migrated(service_name).expect("is_migrated failed"));
+
+        // Mark as migrated
+        ctx.mark_migrated(service_name)
+            .expect("mark_migrated failed");
+
+        // Now should be migrated
+        assert!(ctx.is_migrated(service_name).expect("is_migrated failed"));
+
+        // Clear migration state
+        ctx.clear_migrated(service_name)
+            .expect("clear_migrated failed");
+
+        // Should not be migrated anymore
+        assert!(!ctx.is_migrated(service_name).expect("is_migrated failed"));
+    }
+
+    #[test]
+    fn test_global_migrate_markers_isolated_by_work_dir() {
+        let dir_a = tempfile::tempdir().expect("Failed to create temp dir A");
+        let dir_b = tempfile::tempdir().expect("Failed to create temp dir B");
+
+        let ctx_a = SessionContext::current(dir_a.path().to_path_buf())
+            .expect("Failed to create context A");
+        let ctx_b = SessionContext::current(dir_b.path().to_path_buf())
+            .expect("Failed to create context B");
+
+        let service_name = "test-isolated-migrate";
+
+        // Clean up
+        let _ = ctx_a.clear_migrated(service_name);
+        let _ = ctx_b.clear_migrated(service_name);
+
+        // Mark migrated only in dir_a
+        ctx_a
+            .mark_migrated(service_name)
+            .expect("mark_migrated failed");
+
+        // dir_a sees it as migrated, dir_b does not
+        assert!(ctx_a.is_migrated(service_name).expect("is_migrated failed"));
+        assert!(!ctx_b.is_migrated(service_name).expect("is_migrated failed"));
+
+        // Clean up
+        let _ = ctx_a.clear_migrated(service_name);
     }
 }
