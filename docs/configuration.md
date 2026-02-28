@@ -50,6 +50,113 @@ services:
     cwd: ./backend
 ```
 
+### Volumes
+
+Docker services can mount named volumes and bind mounts:
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    volumes:
+      - postgres_data:/var/lib/postgresql/data    # Named volume
+      - ./init-scripts:/docker-entrypoint-initdb.d  # Bind mount
+```
+
+Named volumes with a `fed-` prefix are automatically cleaned up by `fed clean`.
+
+### Tags
+
+Flexible grouping for service selectors. Reference with `@tag`:
+
+```yaml
+services:
+  api:
+    process: npm start
+    tags: [backend, critical]
+
+  worker:
+    process: npm run worker
+    tags: [backend, async]
+```
+
+```bash
+fed start @backend        # Start all services tagged "backend"
+fed stop @async           # Stop all services tagged "async"
+fed install @critical     # Install only critical services
+```
+
+### Watch
+
+File paths for auto-restart when used with `fed start --watch`:
+
+```yaml
+services:
+  api:
+    process: npm start
+    watch:
+      - ./src/**/*.ts
+      - ./package.json
+```
+
+### Restart Policy
+
+```yaml
+services:
+  worker:
+    process: npm run worker
+    restart: always           # Always restart on failure
+
+  api:
+    process: npm start
+    restart:
+      on_failure:
+        max_retries: 3        # Restart up to 3 times on failure
+```
+
+Values: `no` (default), `always`, `on_failure` (with optional `max_retries`).
+
+### Grace Period
+
+Graceful shutdown timeout before SIGKILL:
+
+```yaml
+services:
+  api:
+    process: npm start
+    grace_period: "30s"       # Default: 10s
+```
+
+Accepts duration strings: `"10s"`, `"1m"`, `"500ms"`.
+
+### Circuit Breaker
+
+Crash loop detection. Requires `restart: always` or `on_failure`:
+
+```yaml
+services:
+  api:
+    process: npm start
+    restart: always
+    circuit_breaker:
+      restart_threshold: 5    # Trips after 5 restarts... (default: 5)
+      window_secs: 60         # ...within 60 seconds (default: 60)
+      cooldown_secs: 300      # Wait 5 minutes before retrying (default: 300)
+```
+
+States: **closed** (normal, restarts allowed), **open** (tripped, restarts blocked), **half-open** (after cooldown, one retry allowed).
+
+### Expose
+
+Mark a service for external consumption:
+
+```yaml
+services:
+  api:
+    process: npm start
+    expose: true
+```
+
 ## Parameters
 
 Values referenced throughout your config with `{{PARAM}}`:
@@ -67,11 +174,72 @@ parameters:
     default: "dev-key"  # String parameter
 ```
 
-Parameters can also be set via environment variables or `.env` files. Priority: explicit `value` field > `env_file` > `default`.
+### Environment-specific values
+
+```yaml
+parameters:
+  API_URL:
+    default: "http://localhost:8080"
+    development: "http://localhost:8080"     # Used with -e development (default)
+    staging: "https://staging.example.com"   # Used with -e staging
+    production: "https://api.example.com"    # Used with -e production
+```
+
+`develop` is accepted as an alias for `development`.
+
+### Resolution priority
+
+1. Explicit `value` field (set programmatically)
+2. Environment variable from the shell
+3. `env_file` entry
+4. Environment-specific field (`development`, `staging`, `production`)
+5. `default`
+
+### Validation with `either`
+
+```yaml
+parameters:
+  LOG_LEVEL:
+    default: "info"
+    either: [debug, info, warn, error]    # Validated at parse time
+```
+
+### `variables` vs `parameters`
+
+Both keys are accepted at the top level. `variables` takes precedence if both are present. `parameters` is the original key and remains supported.
 
 ## Dependencies & Health Checks
 
-Services declare dependencies with `depends_on`. A service waits for its dependencies to become healthy before starting:
+Services declare dependencies with `depends_on`. A service waits for its dependencies to become healthy before starting.
+
+### Simple form
+
+```yaml
+services:
+  api:
+    process: npm start
+    depends_on: [database, cache]
+```
+
+### Structured form
+
+Control behavior when a dependency fails:
+
+```yaml
+services:
+  api:
+    process: npm start
+    depends_on:
+      - database                           # Simple: stop if database fails
+      - service: cache
+        on_failure: ignore                 # Keep running if cache fails
+      - service: worker
+        on_failure: restart                # Restart if worker fails
+```
+
+`on_failure` values: `stop` (default), `restart`, `ignore`.
+
+### Health check types
 
 ```yaml
 services:
@@ -83,16 +251,19 @@ services:
 
   api:
     process: npm start
-    depends_on: [database]
     healthcheck:
       httpGet: 'http://localhost:{{API_PORT}}/health'
-      timeout: 5s  # Optional, default 30s
+      timeout: 5s  # Optional, default 5s
 ```
-
-### Health check types
 
 - `httpGet` — HTTP request from the host.
 - `command` — For Docker services, runs inside the container via `docker exec`. For process services, runs on the host.
+
+Simple string form (uses default 5s timeout):
+
+```yaml
+healthcheck: "curl -f http://localhost:8080/health"
+```
 
 ## Environment Files
 
@@ -218,6 +389,28 @@ services:
 
 `fed clean` also removes Docker volumes with `fed-` prefix and clears both install and migrate state.
 
+## Resource Limits
+
+```yaml
+services:
+  api:
+    process: npm start
+    resources:
+      memory: "512m"              # Hard memory limit
+      memory_reservation: "256m"  # Soft limit (Docker only)
+      cpus: "0.5"                 # CPU limit (0.5 = 50% of one core)
+      cpu_shares: 512             # Relative CPU weight (default: 1024)
+      pids: 100                   # Max processes/threads
+      nofile: 65536               # Max open file descriptors
+      strict_limits: false        # Fail startup if limits can't be set (default: false)
+```
+
+For Docker services, these map to `docker run` flags (`--memory`, `--cpus`, etc.). For process services, they map to system resource limits (rlimit/cgroups).
+
+`strict_limits` controls whether failing to set a limit is fatal. Default `false` logs a warning and continues — useful on platforms where `setrlimit` is restricted (Docker containers, macOS with SIP).
+
+See [`examples/resource-limits-example.yaml`](../examples/resource-limits-example.yaml).
+
 ## Docker Image Builds
 
 ```yaml
@@ -246,11 +439,43 @@ fed docker push --tag v1.0.0       # Push specific tag
 
 ## Entrypoint
 
-Declare the main service — affects startup order display and `startup_message` sorting:
+Declare the main service(s) — affects startup order display and `startup_message` sorting:
 
 ```yaml
-entrypoint: backend
+entrypoint: backend           # Single entrypoint
+
+# Or multiple:
+entrypoints: [frontend, backend]
 ```
+
+Cannot specify both `entrypoint` and `entrypoints`.
+
+## Scripts
+
+Custom commands with dependencies and environment:
+
+```yaml
+scripts:
+  test:
+    script: npm test
+    cwd: ./api
+    depends_on: [database]
+    environment:
+      NODE_ENV: test
+    timeout: "5m"             # Default: 5 minutes
+
+  integration:
+    script: npm run test:integration
+    depends_on: [database, redis]
+    isolated: true            # Fresh ports, scoped volumes, full cleanup
+```
+
+```bash
+fed run test                  # Start deps, run script, stop deps
+fed run integration           # Runs in complete isolation
+```
+
+`isolated: true` allocates fresh random ports, scopes Docker volumes, and cleans up after completion.
 
 ## Sessions
 

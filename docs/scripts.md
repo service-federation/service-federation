@@ -12,6 +12,8 @@ scripts:
 
   test:integration:
     depends_on: [db:migrate, api]
+    cwd: ./tests                      # Working directory (optional)
+    timeout: "5m"                     # Timeout for non-interactive execution (optional)
     script: npm run test:e2e -- "$@"  # "$@" passes arguments from CLI
 ```
 
@@ -62,6 +64,31 @@ scripts:
       TEST_MODE: "true"
     script: npm run test:e2e
 ```
+
+## Working Directory
+
+Scripts run in the project root by default. Use `cwd` to change this:
+
+```yaml
+scripts:
+  test:e2e:
+    cwd: ./tests/e2e
+    script: npx playwright test
+```
+
+## Timeout
+
+Non-interactive scripts default to a 5-minute timeout. Override with `timeout`:
+
+```yaml
+scripts:
+  long-migration:
+    depends_on: [database]
+    timeout: "30m"
+    script: ./run-heavy-migration.sh
+```
+
+Supports duration strings: `"30s"`, `"5m"`, `"1h"`.
 
 ## Script Dependencies
 

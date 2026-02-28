@@ -86,7 +86,7 @@ Git worktrees are first-class. Each worktree gets its own ports, containers, and
 
 Cursor's parallel agents create worktrees under the hood — `fed install && fed start --isolate` just works in each one. No plugin needed.
 
-`fed ws` manages worktrees directly: `fed ws new -b feature`, `fed ws list`, `fed ws cd main`. See [docs/isolation.md](docs/isolation.md).
+`fed ws` manages worktrees directly: `fed ws new feature -b`, `fed ws list`, `fed ws cd main`. See [docs/isolation.md](docs/isolation.md).
 
 ## Commands
 
@@ -95,17 +95,19 @@ fed start [--isolate|--replace|--dry-run|-w]  # Start services
 fed stop / restart                               # Stop / restart
 fed status [--json]                              # Service status
 fed logs <svc> [--follow]                        # View logs
+fed tui / top                                    # Dashboard / resource usage
 fed isolate enable / disable / status / rotate  # Isolation mode
 fed ports list [--json]                         # Port allocations
 fed run <script> [-- args]                       # Run a script
 fed install / build / clean                      # Lifecycle hooks
+fed validate                                     # Validate config
 fed docker build [--json] / push                 # Docker images
 fed ws new / list / cd / rm                      # Worktrees (beta)
 fed doctor                                       # Check requirements
 fed init                                         # Create starter config
 ```
 
-Global flags: `--verbose` / `-v`, `--version`, `--offline`. Full reference: [docs/commands.md](docs/commands.md).
+Global flags: `-v`, `-c <config>`, `-e <env>`, `-p <profile>`, `--offline`. Full reference: [docs/commands.md](docs/commands.md).
 
 ## Configuration
 
@@ -121,6 +123,8 @@ See [`examples/`](./examples):
 - [`scripts-example.yaml`](./examples/scripts-example.yaml) — Scripts with dependencies
 - [`env-file/`](./examples/env-file) — Environment files
 - [`templates-example.yaml`](./examples/templates-example.yaml) — Service templates
+- [`variables-example.yaml`](./examples/variables-example.yaml) — Environment-specific variables
+- [`resource-limits-example.yaml`](./examples/resource-limits-example.yaml) — Memory, CPU, file descriptor limits
 - [`docker-compose-example/`](./examples/docker-compose-example) — Docker Compose integration
 - [`gradle-grouping.yaml`](./examples/gradle-grouping.yaml) — Gradle task batching
 - [`profiles-example.yaml`](./examples/profiles-example.yaml) — Profiles
@@ -146,10 +150,10 @@ fed session cleanup
 
 ## Documentation
 
-- [Configuration Reference](docs/configuration.md) — Services, parameters, health checks, templates, profiles, packages
+- [Configuration Reference](docs/configuration.md) — Services, parameters, health checks, templates, profiles, packages, resource limits, restart policies
 - [Scripts](docs/scripts.md) — Scripts, isolated scripts, argument passing
 - [Isolation](docs/isolation.md) — Directory scoping, worktrees, sessions, Cursor agents
-- [Command Reference](docs/commands.md) — All commands and flags
+- [Command Reference](docs/commands.md) — All commands, flags, and subcommands
 
 ## Contributing
 
