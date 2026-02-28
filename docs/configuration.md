@@ -204,12 +204,19 @@ services:
   backend:
     process: npm start
     cwd: ./backend
-    install: npm ci                   # Runs before first start, re-run with `fed install`
-    build: npm run build              # Runs with `fed build`
-    clean: rm -rf node_modules dist   # Runs with `fed clean`
+    install: npm ci                       # Before first start (offline prep)
+    migrate: npx prisma migrate deploy    # After deps healthy, before start
+    build: npm run build                  # Runs with `fed build`
+    clean: rm -rf node_modules dist       # Runs with `fed clean`
 ```
 
-`fed clean` also removes Docker volumes with `fed-` prefix.
+**`install`** runs once per session before the service starts. Use it for dependency installation (e.g., `npm ci`). Re-run with `fed install`.
+
+**`migrate`** runs once per session after the service's dependencies are healthy but before the service itself starts. Use it for database migrations, schema setup, or anything that needs a running dependency. The service's full resolved environment is available. Dependents wait for `migrate` to complete before they start.
+
+**`build`** runs with `fed build`. **`clean`** runs with `fed clean`.
+
+`fed clean` also removes Docker volumes with `fed-` prefix and clears both install and migrate state.
 
 ## Docker Image Builds
 

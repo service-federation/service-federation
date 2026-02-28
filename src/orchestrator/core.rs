@@ -779,6 +779,20 @@ impl Orchestrator {
         lifecycle.run_install_if_needed(service_name).await
     }
 
+    /// Force run migrate command for a service (clears migrate state first).
+    pub async fn run_migrate(&self, service_name: &str) -> Result<()> {
+        let lifecycle =
+            crate::orchestrator::ServiceLifecycleCommands::new(&self.config, &self.work_dir);
+        lifecycle.run_migrate(service_name).await
+    }
+
+    /// Run migrate command for a service if needed.
+    async fn run_migrate_if_needed(&self, service_name: &str) -> Result<()> {
+        let lifecycle =
+            crate::orchestrator::ServiceLifecycleCommands::new(&self.config, &self.work_dir);
+        lifecycle.run_migrate_if_needed(service_name).await
+    }
+
     /// Run clean command for a service.
     ///
     /// This will:
@@ -938,6 +952,11 @@ impl Orchestrator {
 
         self.run_install_if_needed(name)
             .instrument(tracing::info_span!("install_if_needed"))
+            .await?;
+
+        // Run migrate after install (deps are already healthy at this point)
+        self.run_migrate_if_needed(name)
+            .instrument(tracing::info_span!("migrate_if_needed"))
             .await?;
 
         if self.cancellation_token.is_cancelled() {

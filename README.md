@@ -109,7 +109,7 @@ Global flags: `--verbose` / `-v`, `--version`, `--offline`. Full reference: [doc
 
 ## Configuration
 
-Services can be processes, Docker images, Compose services, or Gradle tasks. Config supports parameters with port allocation, `.env` files, templates, profiles, cross-project packages, lifecycle hooks, and startup messages.
+Services can be processes, Docker images, Compose services, or Gradle tasks. Config supports parameters with port allocation, `.env` files, templates, profiles, cross-project packages, lifecycle hooks (`install`, `migrate`, `build`, `clean`), and startup messages.
 
 Full reference: [docs/configuration.md](docs/configuration.md).
 
