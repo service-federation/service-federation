@@ -1,6 +1,6 @@
 [package]
 name = "service-federation"
-version = "2.6.0"
+version = "3.0.0"
 edition = "2021"
 authors = ["Adrian Helvik"]
 description = "Service federation orchestrator for managing complex service dependencies"
@@ -101,3 +101,8 @@ assert_cmd = "2.0"
 predicates = "3.1"
 proptest = "1.5"
 rexpect = "0.5"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

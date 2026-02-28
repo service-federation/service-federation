@@ -5,6 +5,10 @@ Orchestrate your local dev stack from one config file. Docker containers and nat
 ## Quick Start
 
 ```bash
+# Prebuilt binary (recommended)
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/service-federation/service-federation/releases/latest/download/service-federation-installer.sh | sh
+
+# From source
 cargo install service-federation
 ```
 
