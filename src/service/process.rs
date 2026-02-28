@@ -207,7 +207,7 @@ impl ProcessService {
             format!("exec {}", process_cmd)
         };
 
-        cmd.arg("-c")
+        cmd.arg("-ec")
             .arg(&final_cmd)
             .current_dir(&work_dir)
             .envs(&environment)

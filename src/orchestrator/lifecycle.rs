@@ -149,7 +149,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
 
         // Run the install command with streaming output
         let status = tokio::process::Command::new("sh")
-            .arg("-c")
+            .arg("-ec")
             .arg(install_cmd)
             .current_dir(cwd)
             .envs(&env_vars)
@@ -248,7 +248,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
         }
 
         let status = tokio::process::Command::new("sh")
-            .arg("-c")
+            .arg("-ec")
             .arg(migrate_cmd)
             .current_dir(cwd)
             .envs(&env_vars)
@@ -354,7 +354,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
                 );
 
                 let status = tokio::process::Command::new("sh")
-                    .arg("-c")
+                    .arg("-ec")
                     .arg(cmd)
                     .current_dir(&cwd)
                     .envs(&env_vars)
@@ -531,7 +531,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
 
             // Run the clean command with streaming output
             let status = tokio::process::Command::new("sh")
-                .arg("-c")
+                .arg("-ec")
                 .arg(clean_cmd)
                 .current_dir(cwd)
                 .envs(&env_vars)

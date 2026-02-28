@@ -92,7 +92,7 @@ impl<'a> ScriptRunner<'a> {
             cmd
         } else {
             let mut cmd = tokio::process::Command::new("sh");
-            cmd.args(["-c", &resolved_script_cmd]);
+            cmd.args(["-ec", &resolved_script_cmd]);
             cmd
         };
 
@@ -398,7 +398,7 @@ pub(super) async fn execute_script_command(
         cmd
     } else {
         let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c");
+        cmd.arg("-ec");
 
         if extra_args.is_empty() {
             // No arguments - just run the script
