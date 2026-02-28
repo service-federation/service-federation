@@ -1737,8 +1737,14 @@ mod tests {
             process: Some("echo hello".to_string()),
             ..Default::default()
         };
-        let service =
-            ProcessService::new("test".into(), service_config, HashMap::new(), "/tmp".into(), OutputMode::Captured, None);
+        let service = ProcessService::new(
+            "test".into(),
+            service_config,
+            HashMap::new(),
+            "/tmp".into(),
+            OutputMode::Captured,
+            None,
+        );
         service.set_pid(999_999); // PID that almost certainly doesn't exist
 
         assert!(
@@ -1764,8 +1770,14 @@ mod tests {
             process: Some("echo hello".to_string()),
             ..Default::default()
         };
-        let service =
-            ProcessService::new("test".into(), service_config, HashMap::new(), "/tmp".into(), OutputMode::Captured, None);
+        let service = ProcessService::new(
+            "test".into(),
+            service_config,
+            HashMap::new(),
+            "/tmp".into(),
+            OutputMode::Captured,
+            None,
+        );
 
         assert!(
             orchestrator.verify_service_alive(&service),
