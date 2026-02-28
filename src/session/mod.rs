@@ -1061,12 +1061,8 @@ mod tests {
             .expect("mark_migrated failed");
 
         // dir_a sees it as migrated, dir_b does not
-        assert!(ctx_a
-            .is_migrated(service_name)
-            .expect("is_migrated failed"));
-        assert!(!ctx_b
-            .is_migrated(service_name)
-            .expect("is_migrated failed"));
+        assert!(ctx_a.is_migrated(service_name).expect("is_migrated failed"));
+        assert!(!ctx_b.is_migrated(service_name).expect("is_migrated failed"));
 
         // Clean up
         let _ = ctx_a.clear_migrated(service_name);
