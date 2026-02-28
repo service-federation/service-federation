@@ -322,16 +322,21 @@ impl Session {
 
     /// Auto-cleanup orphaned sessions (silent)
     /// Returns the number of sessions cleaned up
+    ///
+    /// Only cleans up sessions that have been explicitly ended.
+    /// We do NOT use shell PID liveness as a cleanup signal because the parent
+    /// process may be ephemeral (e.g. `bash -c "fed start"` from CI or editor
+    /// tool integrations), making the PID die immediately after `fed` exits
+    /// even though services are still running.
     pub fn auto_cleanup_orphaned() -> Result<usize> {
         let sessions = Self::list_all()?;
         let mut cleaned_count = 0;
 
         for metadata in sessions {
-            if let Ok(session) = Self::load(&metadata.id) {
-                if !session.is_shell_alive() {
-                    // Clean up orphaned session
+            if metadata.status == SessionStatus::Ended {
+                if let Ok(session) = Self::load(&metadata.id) {
                     if let Err(e) = session.delete() {
-                        tracing::warn!("Failed to delete orphaned session {}: {}", metadata.id, e);
+                        tracing::warn!("Failed to delete ended session {}: {}", metadata.id, e);
                     }
                     cleaned_count += 1;
                 }
@@ -531,6 +536,11 @@ impl Session {
                 e
             ))),
         }
+    }
+
+    /// Get the session status
+    pub fn status(&self) -> SessionStatus {
+        self.metadata.status
     }
 
     /// Check if parent shell process is still alive

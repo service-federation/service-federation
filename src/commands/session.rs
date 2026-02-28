@@ -161,7 +161,9 @@ pub async fn run_session(
 
             for metadata in sessions {
                 if let Ok(session) = Session::load(&metadata.id) {
-                    if !session.is_shell_alive() {
+                    if session.status() == service_federation::session::SessionStatus::Ended
+                        || !session.is_shell_alive()
+                    {
                         orphaned.push(session);
                     }
                 }

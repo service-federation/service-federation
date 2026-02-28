@@ -254,9 +254,12 @@ impl DockerService {
         Some(source.to_string())
     }
 
-    /// Cleanup orphaned containers from dead sessions
-    /// Removes all containers with com.service-federation.managed label that belong to sessions
-    /// whose shell processes are no longer running
+    /// Cleanup orphaned containers from ended sessions
+    /// Removes containers with com.service-federation.managed label that belong to sessions
+    /// which have been explicitly ended (status = Ended) or whose session directory no longer exists.
+    ///
+    /// We do NOT use shell PID liveness to determine orphan status because the parent process
+    /// may be ephemeral (e.g. `bash -c "fed start"` exits immediately while containers keep running).
     pub async fn cleanup_orphaned_containers() -> Result<usize> {
         use tracing::{debug, info};
 
@@ -288,41 +291,32 @@ impl DockerService {
                 continue;
             }
 
-            // Check if session's shell process is still alive
-            let session = match crate::session::Session::load(session_id) {
-                Ok(sess) => sess,
+            let should_remove = match crate::session::Session::load(session_id) {
+                Ok(sess) => {
+                    // Only remove if session was explicitly ended
+                    sess.status() == crate::session::SessionStatus::Ended
+                }
                 Err(_) => {
-                    // Session doesn't exist or can't be loaded, container is orphaned
+                    // Session directory is gone — container is truly orphaned
                     debug!(
                         "Session {} not found, removing container {}",
                         session_id, container_id
                     );
-                    match client.rm_force(container_id, DOCKER_REMOVE_TIMEOUT).await {
-                        Ok(()) => removed += 1,
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to remove orphaned container {}: {}",
-                                container_id,
-                                e
-                            );
-                        }
-                    }
-                    continue;
+                    true
                 }
             };
 
-            if !session.is_shell_alive() {
+            if should_remove {
                 info!(
-                    "Session {} shell is dead, removing container {}",
-                    session_id, container_id
+                    "Removing orphaned container {} (session {})",
+                    container_id, session_id
                 );
                 match client.rm_force(container_id, DOCKER_REMOVE_TIMEOUT).await {
                     Ok(()) => removed += 1,
                     Err(e) => {
                         tracing::warn!(
-                            "Failed to remove container {} for dead session {}: {}",
+                            "Failed to remove orphaned container {}: {}",
                             container_id,
-                            session_id,
                             e
                         );
                     }
