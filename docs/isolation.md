@@ -86,24 +86,6 @@ fed install && fed start --isolate
 
 No plugin or integration needed. Directory-scoped isolation means it works the same whether Cursor created the worktree or you did.
 
-## Sessions
-
-For cases where you want explicit named isolation rather than relying on directory scoping:
-
-```bash
-fed session start --id my-project
-fed start                            # Ports remembered under this session
-fed session end
-```
-
-Cross-directory session: `export FED_SESSION=my-project`. Add `.fed/` to `.gitignore`.
-
-Sessions are useful when multiple directories need to share a single set of port allocations, or when you want a named handle for cleanup:
-
-```bash
-fed session cleanup    # Clean up stuck sessions
-```
-
 ## Isolated Scripts
 
 Scripts can opt into full isolation with `isolated: true` — fresh ports, scoped containers and volumes, automatic cleanup. See [Scripts](./scripts.md#isolated-scripts) for details.

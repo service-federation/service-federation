@@ -10,7 +10,7 @@
 //! - **Multiple Service Types**: Support for process-based, Docker, Docker Compose, and Gradle services
 //! - **Template Resolution**: Dynamic variable substitution in configuration using `{{variable}}` syntax
 //! - **Port Allocation**: Automatic port allocation with TOCTOU race prevention
-//! - **Session Management**: Isolated sessions with stable port allocation across restarts
+//! - **Isolation**: Directory-scoped isolation with stable port allocation across restarts
 //! - **Cancellation Support**: Graceful cancellation of in-progress operations via `CancellationToken`
 //! - **Configurable Timeouts**: Per-operation timeouts for startup and stop operations
 //! - **TUI Interface**: Interactive terminal UI for monitoring and control
@@ -53,12 +53,12 @@ pub mod docker;
 pub mod error;
 pub mod healthcheck;
 pub mod lock_order;
+pub mod markers;
 pub mod orchestrator;
 pub mod package;
 pub mod parameter;
 pub mod port;
 pub mod service;
-pub mod session;
 pub mod state;
 pub mod tui;
 pub mod watch;

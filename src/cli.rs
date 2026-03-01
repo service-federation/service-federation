@@ -136,9 +136,6 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Manage sessions
-    #[command(subcommand)]
-    Session(SessionCommands),
     /// Manage package cache
     #[command(subcommand)]
     Package(PackageCommands),
@@ -238,26 +235,6 @@ pub enum DockerCommands {
         /// Tag to push (default: git short hash)
         #[arg(long)]
         tag: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum SessionCommands {
-    /// Start a new session
-    Start {
-        /// Custom session ID (optional)
-        #[arg(long)]
-        id: Option<String>,
-    },
-    /// End the current session
-    End,
-    /// List all sessions
-    List,
-    /// Cleanup orphaned sessions
-    Cleanup {
-        /// Skip confirmation prompt
-        #[arg(long, short)]
-        force: bool,
     },
 }
 

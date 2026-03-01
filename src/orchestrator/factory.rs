@@ -211,33 +211,23 @@ impl Orchestrator {
         env: HashMap<String, String>,
         work_dir: String,
     ) -> Box<dyn ServiceManager> {
-        // Get log file path for File mode
-        // Always capture logs - never send to /dev/null
         let log_file_path = if self.output_mode.is_file() {
-            // Try session first for organized logs, fall back to workspace .fed/logs/
-            if let Ok(Some(session)) = crate::session::Session::current() {
-                let _ = session.ensure_logs_dir();
-                Some(session.log_file_path(name))
+            let logs_dir = self.work_dir().join(".fed").join("logs");
+            if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+                tracing::warn!("Failed to create logs directory {:?}: {}", logs_dir, e);
+                None
             } else {
-                // No session - still capture logs to workspace .fed/logs/
-                let logs_dir = self.work_dir().join(".fed").join("logs");
-                if let Err(e) = std::fs::create_dir_all(&logs_dir) {
-                    tracing::warn!("Failed to create logs directory {:?}: {}", logs_dir, e);
-                    None
-                } else {
-                    // Sanitize service name for filesystem safety
-                    let sanitized_name = name
-                        .chars()
-                        .map(|c| {
-                            if c.is_alphanumeric() || c == '-' || c == '_' {
-                                c
-                            } else {
-                                '_'
-                            }
-                        })
-                        .collect::<String>();
-                    Some(logs_dir.join(format!("{}.log", sanitized_name)))
-                }
+                let sanitized_name = name
+                    .chars()
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == '-' || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect::<String>();
+                Some(logs_dir.join(format!("{}.log", sanitized_name)))
             }
         } else {
             None
@@ -261,14 +251,7 @@ impl Orchestrator {
         env: HashMap<String, String>,
         work_dir: String,
     ) -> Box<dyn ServiceManager> {
-        // Use isolation_id if set (isolated script execution), otherwise global session
-        let session_id = if let Some(ref iso_id) = self.isolation_id {
-            Some(iso_id.clone())
-        } else if let Ok(Some(session)) = crate::session::Session::current() {
-            Some(session.id().to_string())
-        } else {
-            None
-        };
+        let session_id = self.isolation_id.clone();
 
         Box::new(DockerService::new(
             name.to_string(),

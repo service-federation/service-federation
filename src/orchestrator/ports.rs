@@ -17,7 +17,6 @@ use crate::parameter::Resolver;
 use crate::service::Status;
 use crate::state::StateTracker;
 use std::collections::HashSet;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -28,14 +27,12 @@ use tokio::sync::RwLock;
 /// Sources checked (in order):
 /// 1. Per-service `port_allocations` from state DB
 /// 2. Global port resolutions persisted by previous `fed start`
-/// 3. Session port cache (`ports.json`) — fallback for older sessions
 ///
-/// If ANY service is alive, all session-cached ports are trusted as managed.
+/// If ANY service is alive, all globally persisted ports are trusted as managed.
 /// This handles process services which don't write to `port_allocations`.
 pub(super) async fn collect_managed_ports(
     resolver: &mut Resolver,
     state_tracker: &Arc<RwLock<StateTracker>>,
-    work_dir: &Path,
 ) {
     let state = state_tracker.read().await;
     let services = state.get_services().await;
@@ -72,17 +69,6 @@ pub(super) async fn collect_managed_ports(
         let global_ports = state.get_global_port_allocations().await;
         for port in global_ports.values() {
             managed_ports.insert(*port);
-        }
-
-        // Fallback: also check session port cache for backwards compatibility
-        // with sessions that predate global port persistence.
-        if global_ports.is_empty() {
-            if let Ok(Some(session)) = crate::session::Session::current_for_workdir(Some(work_dir))
-            {
-                for &port in session.get_all_ports().values() {
-                    managed_ports.insert(port);
-                }
-            }
         }
     }
 

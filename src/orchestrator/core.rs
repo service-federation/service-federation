@@ -106,7 +106,7 @@ pub struct Orchestrator {
     cleanup_started: AtomicBool,
     /// When true, skip port cache and allocate fresh random ports
     randomize_ports: bool,
-    /// When set, Docker containers use this ID instead of the global session ID.
+    /// When set, Docker containers use this ID instead of the work-dir hash.
     /// Used by isolated script execution to give child orchestrators their own
     /// container namespace, preventing collisions with parent containers.
     pub(super) isolation_id: Option<String>,
@@ -313,7 +313,7 @@ impl Orchestrator {
 
     /// Enable randomized port allocation.
     ///
-    /// Skips the session port cache and allocates fresh random ports for all
+    /// Skips persisted ports and allocates fresh random ports for all
     /// port-type parameters. Also enables auto-resolve to avoid interactive
     /// conflict prompts. Useful for running a second instance of the same
     /// project in a different worktree.
@@ -326,7 +326,7 @@ impl Orchestrator {
     /// Set an isolation ID for this orchestrator's Docker containers.
     ///
     /// When set, Docker containers are named using this ID instead of the
-    /// global session ID, giving isolated scripts their own container namespace
+    /// work-dir hash, giving isolated scripts their own container namespace
     /// and preventing collisions with the parent orchestrator's containers.
     pub fn set_isolation_id(&mut self, id: String) {
         self.isolation_id = Some(id);
@@ -357,41 +357,20 @@ impl Orchestrator {
     /// marked as `stale` (not deleted) — their port_allocations remain readable.
     /// Call `purge_stale_services()` after this method to clean up.
     ///
-    /// Uses two sources:
-    /// 1. State tracker `port_allocations` table (per-service, populated for Docker)
-    /// 2. Session port cache (`ports.json`) — global port→parameter mapping
-    ///
     /// Collect ports owned by running managed services so the resolver can
     /// avoid re-allocating them.
     async fn collect_managed_ports(&mut self) {
-        super::ports::collect_managed_ports(
-            &mut self.resolver,
-            &self.state_tracker,
-            &self.work_dir,
-        )
-        .await;
+        super::ports::collect_managed_ports(&mut self.resolver, &self.state_tracker).await;
     }
 
     /// Configure resolver port store for the current mode.
     ///
     /// When `read_only` is true, the resolver receives an in-memory snapshot so
-    /// `resolve_parameters()` cannot mutate session/SQLite state.
+    /// `resolve_parameters()` cannot mutate SQLite state.
     async fn configure_port_store(&mut self, read_only: bool) {
         let port_store: Box<dyn crate::port::PortStore> = if self.randomize_ports {
             tracing::debug!("Randomize mode: using NoopPortStore for fresh allocation");
             Box::new(crate::port::NoopPortStore)
-        } else if let Ok(Some(session)) =
-            crate::session::Session::current_for_workdir(Some(&self.work_dir))
-        {
-            if read_only {
-                tracing::debug!("Read-only mode: using in-memory snapshot of session port cache");
-                Box::new(crate::port::SqlitePortStore::new(
-                    session.get_all_ports().clone(),
-                ))
-            } else {
-                tracing::debug!("Session active: using SessionPortStore");
-                Box::new(crate::port::SessionPortStore::new(session))
-            }
         } else {
             let persisted_ports = if read_only {
                 Self::load_persisted_ports_read_only(&self.work_dir)
@@ -404,7 +383,7 @@ impl Orchestrator {
             };
             if !persisted_ports.is_empty() {
                 tracing::debug!(
-                    "No session: using SqlitePortStore with {} persisted port(s)",
+                    "Using SqlitePortStore with {} persisted port(s)",
                     persisted_ports.len()
                 );
             }
@@ -503,7 +482,7 @@ impl Orchestrator {
     ///
     /// This resolves parameters and builds dependency ordering, but intentionally
     /// avoids mutating persistent state (no service registration, no port
-    /// persistence, no session cache writes, no Docker cleanup).
+    /// persistence, no Docker cleanup).
     pub async fn initialize_dry_run(&mut self) -> Result<()> {
         // Work dir is required for resolving global env_file paths.
         self.resolver.set_work_dir(&self.work_dir);
@@ -542,12 +521,11 @@ impl Orchestrator {
     /// Initialization performs the following steps:
     ///
     /// 1. Load any existing state from the lock file
-    /// 2. Clean up orphaned Docker containers from previous sessions
-    /// 3. Resolve configuration parameters (including port allocation)
-    /// 4. Expand external service dependencies
-    /// 5. Apply service profiles filtering
-    /// 6. Build the dependency graph
-    /// 7. Create service managers for all configured services
+    /// 2. Resolve configuration parameters (including port allocation)
+    /// 3. Expand external service dependencies
+    /// 4. Apply service profiles filtering
+    /// 5. Build the dependency graph
+    /// 6. Create service managers for all configured services
     ///
     /// # Errors
     ///
@@ -572,18 +550,6 @@ impl Orchestrator {
             .await
             .purge_stale_services()
             .await?;
-
-        // Cleanup orphaned Docker containers from dead sessions
-        match crate::service::DockerService::cleanup_orphaned_containers().await {
-            Ok(removed) if removed > 0 => {
-                tracing::info!("Cleaned up {} orphaned container(s) on startup", removed);
-            }
-            Ok(_) => {} // No orphaned containers
-            Err(e) => {
-                tracing::warn!("Failed to cleanup orphaned containers: {}", e);
-                // Continue initialization even if cleanup fails
-            }
-        }
 
         // Detect containers for this project that aren't tracked in state DB
         // (Conservative approach: warn but don't auto-remove)
@@ -611,12 +577,11 @@ impl Orchestrator {
 
         // Build the port store based on mode:
         // - Randomize mode → NoopPortStore (forces fresh random allocation)
-        // - Session active → SessionPortStore (reads/writes ports.json)
-        // - No session → SqlitePortStore (reads/writes persisted_ports table)
+        // - Otherwise → SqlitePortStore (reads/writes persisted_ports table)
         self.configure_port_store(false).await;
 
         // If project-level isolation is enabled, apply the persisted isolation_id
-        // so Docker containers get unique names matching the isolation session.
+        // so Docker containers get unique names matching the isolation ID.
         {
             let tracker = self.state_tracker.read().await;
             let (isolated, isolation_id) = tracker.get_isolation_mode().await;
@@ -653,7 +618,7 @@ impl Orchestrator {
 
         // Persist resolved port parameters globally so that on next `fed start`,
         // collect_managed_ports can detect ports owned by process/Gradle services
-        // (not just Docker). This eliminates the need for session cache fallback.
+        // (not just Docker).
         let port_resolutions: Vec<(String, u16)> = self
             .resolver
             .get_port_resolutions()

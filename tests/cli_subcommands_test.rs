@@ -723,46 +723,6 @@ fn test_clean_runs() {
 }
 
 // ============================================================================
-// session subcommand
-// ============================================================================
-
-#[test]
-fn test_session_help() {
-    let output = Command::new(fed_binary())
-        .args(["session", "--help"])
-        .output()
-        .expect("Failed to run fed");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("session") || stdout.contains("Session"));
-}
-
-#[test]
-fn test_session_list() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = create_test_config(&temp_dir);
-
-    let output = Command::new(fed_binary())
-        .args([
-            "-c",
-            &config_path,
-            "-w",
-            temp_dir.path().to_str().unwrap(),
-            "session",
-            "list",
-        ])
-        .output()
-        .expect("Failed to run fed");
-
-    assert!(
-        output.status.success(),
-        "session list failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-// ============================================================================
 // init subcommand
 // ============================================================================
 

@@ -70,7 +70,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
     /// - Session context is unavailable
     pub async fn run_install(&self, service_name: &str) -> Result<()> {
         // Clear install state first
-        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
+        let ctx = crate::markers::LifecycleMarkers::new(self.work_dir.to_path_buf());
         ctx.clear_installed(service_name)?;
 
         // Run install
@@ -111,7 +111,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
         };
 
         // Check if already installed
-        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
+        let ctx = crate::markers::LifecycleMarkers::new(self.work_dir.to_path_buf());
         let is_installed = ctx.is_installed(service_name)?;
 
         if is_installed {
@@ -173,7 +173,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
         }
 
         // Mark as installed
-        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
+        let ctx = crate::markers::LifecycleMarkers::new(self.work_dir.to_path_buf());
         ctx.mark_installed(service_name)?;
 
         tracing::info!(
@@ -189,7 +189,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
     /// 1. Clear any existing migrate state
     /// 2. Run the migrate command unconditionally
     pub async fn run_migrate(&self, service_name: &str) -> Result<()> {
-        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
+        let ctx = crate::markers::LifecycleMarkers::new(self.work_dir.to_path_buf());
         ctx.clear_migrated(service_name)?;
         self.run_migrate_if_needed(service_name).await
     }
@@ -214,7 +214,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
             None => return Ok(()),
         };
 
-        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
+        let ctx = crate::markers::LifecycleMarkers::new(self.work_dir.to_path_buf());
         let is_migrated = ctx.is_migrated(service_name)?;
 
         if is_migrated {
@@ -271,7 +271,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
             )));
         }
 
-        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
+        let ctx = crate::markers::LifecycleMarkers::new(self.work_dir.to_path_buf());
         ctx.mark_migrated(service_name)?;
 
         tracing::info!(
@@ -562,7 +562,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
         }
 
         // Clear install and migrate state since we cleaned up
-        let ctx = crate::session::SessionContext::current(self.work_dir.to_path_buf())?;
+        let ctx = crate::markers::LifecycleMarkers::new(self.work_dir.to_path_buf());
         ctx.clear_installed(service_name)?;
         ctx.clear_migrated(service_name)?;
 
@@ -605,13 +605,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
             return Ok(());
         }
 
-        // Scope volumes the same way docker.rs does at startup:
-        // session ID if active, otherwise work_dir hash
-        let scope_id = if let Some(session) = crate::session::Session::current()? {
-            session.id().to_string()
-        } else {
-            crate::service::hash_work_dir(self.work_dir)
-        };
+        let scope_id = crate::service::hash_work_dir(self.work_dir);
 
         let fed_volumes: Vec<String> = all_named_volumes
             .iter()

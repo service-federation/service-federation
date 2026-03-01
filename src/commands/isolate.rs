@@ -106,15 +106,6 @@ async fn disable(
     tracker.initialize().await?;
     tracker.clear_port_resolutions().await?;
 
-    // Clear session port cache (same pattern as reset_ports)
-    if let Ok(Some(mut session)) =
-        service_federation::session::Session::current_for_workdir(Some(work_dir))
-    {
-        if let Err(e) = session.clear_ports() {
-            tracing::warn!("Failed to clear session port cache: {}", e);
-        }
-    }
-
     // Clear isolation mode
     tracker.clear_isolation_mode().await?;
 

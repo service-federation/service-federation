@@ -4,14 +4,11 @@ use std::collections::HashMap;
 /// Unified port storage abstraction.
 ///
 /// The resolver uses this trait to read/write port allocations without
-/// knowing whether it's backed by a session (`ports.json`) or SQLite
-/// (`persisted_ports` table). This eliminates the dual-cache priority
-/// chain that previously caused ports to survive a `fed ports reset`
-/// (SF-00143).
+/// knowing the backend. This eliminates the dual-cache priority chain
+/// that previously caused ports to survive a `fed ports reset`.
 ///
 /// # Implementations
 ///
-/// - [`SessionPortStore`] — wraps an active `Session`
 /// - [`SqlitePortStore`] — wraps ports loaded from the `persisted_ports` table
 /// - [`NoopPortStore`] — for isolated mode (test scripts); discards everything
 pub trait PortStore: Send + Sync {
@@ -24,34 +21,6 @@ pub trait PortStore: Send + Sync {
 
     /// Get all stored port allocations.
     fn get_all_ports(&self) -> HashMap<String, u16>;
-}
-
-/// Port store backed by a `Session` (file-based `ports.json`).
-///
-/// Delegates to the session's existing `get_port`/`save_port` methods.
-/// Writes are immediately persisted to disk via atomic rename.
-pub struct SessionPortStore {
-    session: crate::session::Session,
-}
-
-impl SessionPortStore {
-    pub fn new(session: crate::session::Session) -> Self {
-        Self { session }
-    }
-}
-
-impl PortStore for SessionPortStore {
-    fn get_port(&self, param_name: &str) -> Option<u16> {
-        self.session.get_port(param_name)
-    }
-
-    fn save_port(&mut self, param_name: &str, port: u16) -> Result<()> {
-        self.session.save_port(param_name.to_string(), port)
-    }
-
-    fn get_all_ports(&self) -> HashMap<String, u16> {
-        self.session.get_all_ports().clone()
-    }
 }
 
 /// Port store backed by ports loaded from SQLite `persisted_ports` table.

@@ -94,12 +94,6 @@ async fn run() -> anyhow::Result<()> {
     init_tracing(is_tui, cli.verbose, is_tty)?;
     let out = output::CliOutput::new(is_tty);
 
-    // Auto-cleanup orphaned sessions on startup
-    use service_federation::session::Session;
-    if let Err(e) = Session::auto_cleanup_orphaned() {
-        tracing::warn!("Failed to cleanup orphaned sessions: {}", e);
-    }
-
     // ── Tier 1: Commands that need NO config ──────────────────────────
     match &cli.command {
         Commands::Init { output, force } => {
@@ -116,15 +110,6 @@ async fn run() -> anyhow::Result<()> {
         }
         Commands::Doctor => {
             return commands::run_doctor(&out).await;
-        }
-        Commands::Session(session_cmd) => {
-            return commands::run_session(
-                session_cmd,
-                cli.workdir.clone(),
-                cli.profile.clone(),
-                &out,
-            )
-            .await;
         }
         Commands::Package(package_cmd) => {
             return commands::run_package(package_cmd, &out).await;
@@ -471,7 +456,6 @@ async fn run() -> anyhow::Result<()> {
         | Commands::Validate
         | Commands::Completions { .. }
         | Commands::Doctor
-        | Commands::Session(_)
         | Commands::Package(_)
         | Commands::Ports(_)
         | Commands::Docker(_)

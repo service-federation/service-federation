@@ -183,15 +183,6 @@ pub enum Error {
     #[error("Invalid PID {pid}: {reason}")]
     InvalidPid { pid: u32, reason: String },
 
-    #[error("Session error: {0}")]
-    #[diagnostic(
-        code(fed::session::error),
-        help(
-            "List sessions with `fed session list` or start a new session with `fed session start`"
-        )
-    )]
-    Session(String),
-
     #[error("Docker Compose error: {0}")]
     #[diagnostic(
         code(fed::docker::compose),
@@ -248,9 +239,6 @@ impl Error {
                 "Check the service logs with: fed logs {}\nAlso verify the healthcheck URL/command is correct in your config.",
                 service
             )),
-            Error::Session(msg) if msg.contains("not found") => Some(
-                "Start a session with: fed session start --id <name>".to_string()
-            ),
             Error::Config(msg) if msg.contains("Could not find") => None,
             Error::Config(_) | Error::Validation(_) => Some(
                 "Validate your config with: fed validate".to_string()
