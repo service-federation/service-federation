@@ -64,6 +64,11 @@ async fn enable(
         .set_isolation_mode(true, Some(isolation_id.clone()))
         .await?;
 
+    // Clear lifecycle markers so install/migrate re-run against the isolated containers
+    let markers = fed::markers::LifecycleMarkers::new(work_dir.to_path_buf());
+    markers.clear_all_installed()?;
+    markers.clear_all_migrated()?;
+
     // Display allocated ports
     let ports = tracker.get_global_port_allocations().await;
     drop(tracker);
@@ -108,6 +113,11 @@ async fn disable(
 
     // Clear isolation mode
     tracker.clear_isolation_mode().await?;
+
+    // Clear lifecycle markers so install/migrate re-run against the now-active containers
+    let markers = fed::markers::LifecycleMarkers::new(work_dir.to_path_buf());
+    markers.clear_all_installed()?;
+    markers.clear_all_migrated()?;
 
     out.success(
         "Isolation mode disabled. Next `fed start` will use default ports and shared containers.\n",
@@ -189,6 +199,11 @@ async fn rotate(
     tracker
         .set_isolation_mode(true, Some(isolation_id.clone()))
         .await?;
+
+    // Clear lifecycle markers so install/migrate re-run against the rotated containers
+    let markers = fed::markers::LifecycleMarkers::new(work_dir.to_path_buf());
+    markers.clear_all_installed()?;
+    markers.clear_all_migrated()?;
 
     // Display new ports
     let ports = tracker.get_global_port_allocations().await;

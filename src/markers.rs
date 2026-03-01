@@ -142,6 +142,32 @@ pub fn clear_migrated_global(service_name: &str, work_dir: &Path) -> Result<()> 
     }
 }
 
+/// Clear all install markers for a work_dir (removes the entire directory).
+pub fn clear_all_installed_global(work_dir: &Path) -> Result<()> {
+    let installed_dir = global_installed_dir(work_dir)?;
+    match fs::remove_dir_all(&installed_dir) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Filesystem(format!(
+            "Failed to remove install markers: {}",
+            e
+        ))),
+    }
+}
+
+/// Clear all migrate markers for a work_dir (removes the entire directory).
+pub fn clear_all_migrated_global(work_dir: &Path) -> Result<()> {
+    let migrated_dir = global_migrated_dir(work_dir)?;
+    match fs::remove_dir_all(&migrated_dir) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Filesystem(format!(
+            "Failed to remove migrate markers: {}",
+            e
+        ))),
+    }
+}
+
 /// Lifecycle markers for install/migrate state tracking.
 ///
 /// Always uses global (work_dir-scoped) marker files.
@@ -183,6 +209,16 @@ impl LifecycleMarkers {
     /// Clear migrate state for a service.
     pub fn clear_migrated(&self, service_name: &str) -> Result<()> {
         clear_migrated_global(service_name, &self.work_dir)
+    }
+
+    /// Clear all install markers for this work directory.
+    pub fn clear_all_installed(&self) -> Result<()> {
+        clear_all_installed_global(&self.work_dir)
+    }
+
+    /// Clear all migrate markers for this work directory.
+    pub fn clear_all_migrated(&self) -> Result<()> {
+        clear_all_migrated_global(&self.work_dir)
     }
 }
 
@@ -282,5 +318,58 @@ mod tests {
         assert!(!ctx_b.is_migrated(service_name).expect("is_migrated failed"));
 
         let _ = ctx_a.clear_migrated(service_name);
+    }
+
+    #[test]
+    fn test_clear_all_installed_removes_all_markers() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let ctx = LifecycleMarkers::new(temp_dir.path().to_path_buf());
+
+        ctx.mark_installed("svc-a").expect("mark_installed failed");
+        ctx.mark_installed("svc-b").expect("mark_installed failed");
+        ctx.mark_installed("svc-c").expect("mark_installed failed");
+
+        assert!(ctx.is_installed("svc-a").unwrap());
+        assert!(ctx.is_installed("svc-b").unwrap());
+        assert!(ctx.is_installed("svc-c").unwrap());
+
+        ctx.clear_all_installed()
+            .expect("clear_all_installed failed");
+
+        assert!(!ctx.is_installed("svc-a").unwrap());
+        assert!(!ctx.is_installed("svc-b").unwrap());
+        assert!(!ctx.is_installed("svc-c").unwrap());
+    }
+
+    #[test]
+    fn test_clear_all_migrated_removes_all_markers() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let ctx = LifecycleMarkers::new(temp_dir.path().to_path_buf());
+
+        ctx.mark_migrated("svc-a").expect("mark_migrated failed");
+        ctx.mark_migrated("svc-b").expect("mark_migrated failed");
+        ctx.mark_migrated("svc-c").expect("mark_migrated failed");
+
+        assert!(ctx.is_migrated("svc-a").unwrap());
+        assert!(ctx.is_migrated("svc-b").unwrap());
+        assert!(ctx.is_migrated("svc-c").unwrap());
+
+        ctx.clear_all_migrated().expect("clear_all_migrated failed");
+
+        assert!(!ctx.is_migrated("svc-a").unwrap());
+        assert!(!ctx.is_migrated("svc-b").unwrap());
+        assert!(!ctx.is_migrated("svc-c").unwrap());
+    }
+
+    #[test]
+    fn test_clear_all_is_idempotent_on_empty() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let ctx = LifecycleMarkers::new(temp_dir.path().to_path_buf());
+
+        // Should succeed even with no markers
+        ctx.clear_all_installed()
+            .expect("clear_all_installed on empty failed");
+        ctx.clear_all_migrated()
+            .expect("clear_all_migrated on empty failed");
     }
 }
