@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use service_federation::StateTracker;
+//! use fed::StateTracker;
 //!
 //! let tracker = StateTracker::new(work_dir).await?;
 //! tracker.initialize().await?;

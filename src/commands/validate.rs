@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::Parser as ConfigParser;
+use fed::Parser as ConfigParser;
 use std::path::PathBuf;
 
 pub fn run_validate(config_path: Option<PathBuf>, out: &dyn UserOutput) -> anyhow::Result<()> {

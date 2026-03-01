@@ -1,13 +1,13 @@
 [package]
-name = "service-federation"
-version = "3.1.0"
+name = "fed"
+version = "3.2.0"
 edition = "2021"
 authors = ["Adrian Helvik"]
-description = "Service federation orchestrator for managing complex service dependencies"
+description = "Orchestrate your local dev stack from one config file"
 license = "MIT"
-repository = "https://github.com/service-federation/service-federation"
-homepage = "https://github.com/service-federation/service-federation"
-documentation = "https://github.com/service-federation/service-federation#readme"
+repository = "https://github.com/service-federation/fed"
+homepage = "https://github.com/service-federation/fed"
+documentation = "https://github.com/service-federation/fed#readme"
 readme = "README.md"
 keywords = ["docker", "orchestration", "development", "microservices", "devtools"]
 categories = ["development-tools", "command-line-utilities"]

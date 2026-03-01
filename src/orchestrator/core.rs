@@ -56,9 +56,9 @@ pub(super) type SharedServiceRegistry = Arc<tokio::sync::RwLock<ServiceRegistry>
 /// # Example
 ///
 /// ```no_run
-/// use service_federation::{Config, Orchestrator};
+/// use fed::{Config, Orchestrator};
 ///
-/// # async fn example() -> Result<(), service_federation::Error> {
+/// # async fn example() -> Result<(), fed::Error> {
 /// let config = Config::default(); // Load from YAML in practice
 /// let mut orchestrator = Orchestrator::new(config, std::path::PathBuf::from(".")).await?;
 /// orchestrator.initialize().await?;
@@ -121,10 +121,10 @@ impl Orchestrator {
     /// # Example
     ///
     /// ```no_run
-    /// use service_federation::{Config, Orchestrator};
-    /// use service_federation::service::OutputMode;
+    /// use fed::{Config, Orchestrator};
+    /// use fed::service::OutputMode;
     ///
-    /// # async fn example() -> Result<(), service_federation::Error> {
+    /// # async fn example() -> Result<(), fed::Error> {
     /// let config = Config::default();
     /// let orchestrator = Orchestrator::builder()
     ///     .config(config)

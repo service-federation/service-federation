@@ -1,5 +1,5 @@
-use service_federation::config::{BranchStrategy, Config, DependsOn};
-use service_federation::dependency::ExternalDependencyResolver;
+use fed::config::{BranchStrategy, Config, DependsOn};
+use fed::dependency::ExternalDependencyResolver;
 use std::collections::HashMap;
 
 #[test]

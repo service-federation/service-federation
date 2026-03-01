@@ -604,6 +604,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
+name = "fed"
+version = "3.2.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "async-trait",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "cli-clipboard",
+ "crossterm",
+ "dirs",
+ "dotenvy",
+ "fs2",
+ "futures",
+ "git2",
+ "miette",
+ "nix 0.29.0",
+ "notify",
+ "notify-debouncer-full",
+ "parking_lot",
+ "predicates",
+ "proptest",
+ "rand 0.8.5",
+ "ratatui",
+ "regex",
+ "reqwest",
+ "rexpect",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "shell-escape",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rusqlite",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "tui-textarea",
+ "unicode-width 0.1.14",
+ "url",
+ "walkdir",
+ "which",
+]
+
+[[package]]
 name = "file-id"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2376,54 +2424,6 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
-]
-
-[[package]]
-name = "service-federation"
-version = "3.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "async-trait",
- "chrono",
- "clap",
- "clap_complete",
- "cli-clipboard",
- "crossterm",
- "dirs",
- "dotenvy",
- "fs2",
- "futures",
- "git2",
- "miette",
- "nix 0.29.0",
- "notify",
- "notify-debouncer-full",
- "parking_lot",
- "predicates",
- "proptest",
- "rand 0.8.5",
- "ratatui",
- "regex",
- "reqwest",
- "rexpect",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_yaml",
- "shell-escape",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-rusqlite",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "tui-textarea",
- "unicode-width 0.1.14",
- "url",
- "walkdir",
- "which",
 ]
 
 [[package]]

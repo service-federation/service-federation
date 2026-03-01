@@ -1,4 +1,4 @@
-# Service Federation (fed)
+# fed
 
 Orchestrate your local dev stack from one config file. Docker containers and native processes with dependency-aware startup, healthchecks, and directory-scoped isolation.
 
@@ -9,10 +9,10 @@ Orchestrate your local dev stack from one config file. Docker containers and nat
 brew install service-federation/tap/fed
 
 # Prebuilt binary
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/service-federation/service-federation/releases/latest/download/service-federation-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/service-federation/fed/releases/latest/download/fed-installer.sh | sh
 
 # From source
-cargo install service-federation
+cargo install fed
 ```
 
 Create `service-federation.yaml`:

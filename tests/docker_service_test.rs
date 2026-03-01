@@ -2,8 +2,8 @@
 // These tests require Docker daemon to be running
 // Run with: cargo test --test docker_service_test -- --ignored
 
-use service_federation::config::Service as ServiceConfig;
-use service_federation::service::{DockerService, ServiceManager, Status};
+use fed::config::Service as ServiceConfig;
+use fed::service::{DockerService, ServiceManager, Status};
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 

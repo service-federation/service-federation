@@ -1,4 +1,4 @@
-use service_federation::{Orchestrator, Parser};
+use fed::{Orchestrator, Parser};
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::sleep;

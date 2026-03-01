@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::{config::Config, Orchestrator};
+use fed::{config::Config, Orchestrator};
 
 pub async fn run_restart(
     orchestrator: &mut Orchestrator,

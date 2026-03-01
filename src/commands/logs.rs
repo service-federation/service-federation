@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::{Error as FedError, Orchestrator};
+use fed::{Error as FedError, Orchestrator};
 
 pub async fn run_logs(
     orchestrator: &Orchestrator,

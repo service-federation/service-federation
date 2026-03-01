@@ -4,7 +4,7 @@
 //! keeping TcpListeners alive until services are started, preventing other processes
 //! from stealing allocated ports.
 
-use service_federation::parameter::PortAllocator;
+use fed::parameter::PortAllocator;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -467,7 +467,7 @@ fn test_is_port_available_doesnt_hold_port() {
 
     // Check availability (static method)
     assert!(
-        service_federation::port::PortConflict::is_port_available(port),
+        fed::port::PortConflict::is_port_available(port),
         "Port should be available"
     );
 

@@ -1,7 +1,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
-use service_federation::config::{Service, ServiceType};
-use service_federation::{Config, Orchestrator};
+use fed::config::{Service, ServiceType};
+use fed::{Config, Orchestrator};
 
 /// Helper to create a test config with gradle services
 fn create_test_config() -> Config {
@@ -101,7 +101,7 @@ async fn test_gradle_services_with_dependencies_are_grouped() {
 
     // Add dependency: service2 depends on service1
     config.services.get_mut("service2").unwrap().depends_on =
-        vec![service_federation::config::DependsOn::Simple(
+        vec![fed::config::DependsOn::Simple(
             "service1".to_string(),
         )];
     config.entrypoint = Some("service2".to_string());
@@ -239,7 +239,7 @@ async fn test_complex_dependency_chain_grouping() {
 
     let mut service2 = Service::default();
     service2.gradle_task = Some(":service2:bootRun".to_string());
-    service2.depends_on = vec![service_federation::config::DependsOn::Simple(
+    service2.depends_on = vec![fed::config::DependsOn::Simple(
         "service1".to_string(),
     )];
 
@@ -249,7 +249,7 @@ async fn test_complex_dependency_chain_grouping() {
 
     let mut service4 = Service::default();
     service4.gradle_task = Some(":service4:bootRun".to_string());
-    service4.depends_on = vec![service_federation::config::DependsOn::Simple(
+    service4.depends_on = vec![fed::config::DependsOn::Simple(
         "service2".to_string(),
     )];
     // Same CWD as service2

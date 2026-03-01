@@ -14,7 +14,7 @@ pub enum StopResult {
 /// and `run_stop_from_state`: given a `ServiceState`, stop whatever is running.
 pub async fn stop_service_by_state(
     name: &str,
-    state: &service_federation::state::ServiceState,
+    state: &fed::state::ServiceState,
 ) -> StopResult {
     if let Some(container_id) = state.container_id.as_deref() {
         if graceful_docker_stop(container_id).await {
@@ -41,8 +41,8 @@ pub async fn stop_service_by_state(
 /// derived from `work_dir`) and force-removes them. Returns the number of
 /// containers successfully removed.
 pub async fn remove_orphan_containers_for_workdir(work_dir: &std::path::Path) -> usize {
-    use service_federation::docker::DockerClient;
-    use service_federation::service::hash_work_dir;
+    use fed::docker::DockerClient;
+    use fed::service::hash_work_dir;
     use std::time::Duration;
 
     let client = DockerClient::new();
@@ -69,7 +69,7 @@ pub async fn remove_orphan_containers_for_workdir(work_dir: &std::path::Path) ->
 ///
 /// Tries `docker stop` first (sends SIGTERM, waits), then `docker rm -f`.
 pub async fn graceful_docker_stop(container_id: &str) -> bool {
-    use service_federation::docker::DockerClient;
+    use fed::docker::DockerClient;
     use std::time::Duration;
 
     let client = DockerClient::new();
@@ -83,7 +83,7 @@ pub async fn graceful_docker_stop(container_id: &str) -> bool {
 }
 
 /// Re-export from error module for backwards compatibility with command imports.
-pub use service_federation::error::validate_pid_start_time;
+pub use fed::error::validate_pid_start_time;
 
 /// Gracefully kill a process and its process group.
 ///

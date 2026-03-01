@@ -1,4 +1,4 @@
-use service_federation::{PackageResolver, Parser};
+use fed::{PackageResolver, Parser};
 use std::fs;
 use tempfile::TempDir;
 

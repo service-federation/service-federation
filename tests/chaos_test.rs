@@ -13,7 +13,7 @@
 /// 1. Sanity checks that basic concurrent operations don't panic
 /// 2. Quick verification that the orchestrator handles interleaved operations
 /// 3. Documentation of expected behavior under concurrent access
-use service_federation::{Orchestrator, Parser};
+use fed::{Orchestrator, Parser};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -233,7 +233,7 @@ entrypoint: slow_service
 
     // Should be cancelled
     match result {
-        Err(service_federation::Error::Cancelled(_)) => {
+        Err(fed::Error::Cancelled(_)) => {
             println!("Correctly received cancellation error");
         }
         Ok(()) => {
@@ -337,7 +337,7 @@ entrypoint: hanging_service
 
     // Accept either timeout, success, or start failure (process may die due to cleanup)
     match &result {
-        Err(service_federation::Error::Timeout(name)) => {
+        Err(fed::Error::Timeout(name)) => {
             assert_eq!(name, "hanging_service");
             println!("Correctly received timeout error");
         }

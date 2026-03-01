@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::{
+use fed::{
     config::{Config, ServiceType},
     parameter::PortResolutionReason,
     port::PortConflict,
@@ -573,7 +573,7 @@ async fn run_watch_mode(
                 if let Some(ref mut wm) = watch_mode {
                     wm.next_event().await
                 } else {
-                    std::future::pending::<Option<service_federation::watch::FileChangeEvent>>().await
+                    std::future::pending::<Option<fed::watch::FileChangeEvent>>().await
                 }
             } => {
                 if let Some(event) = event {
@@ -894,7 +894,7 @@ fn mask_sensitive_value(key: &str, value: &str) -> String {
 ///
 /// Returns the number of services stopped.
 async fn stop_stale_services(orchestrator: &Orchestrator, out: &dyn UserOutput) -> usize {
-    use service_federation::state::SqliteStateTracker;
+    use fed::state::SqliteStateTracker;
 
     // Clone the database connection while briefly holding the read lock.
     // This avoids holding the RwLock across the async database query,

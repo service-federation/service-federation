@@ -20,10 +20,10 @@ use std::process::Stdio;
 /// # Example
 ///
 /// ```ignore
-/// use service_federation::{Config, orchestrator::ServiceLifecycleCommands};
+/// use fed::{Config, orchestrator::ServiceLifecycleCommands};
 /// use std::path::Path;
 ///
-/// # async fn example() -> Result<(), service_federation::Error> {
+/// # async fn example() -> Result<(), fed::Error> {
 /// let config = Config::default();
 /// let work_dir = Path::new(".");
 /// let lifecycle = ServiceLifecycleCommands::new(&config, work_dir);
@@ -690,7 +690,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
     /// # Examples
     ///
     /// ```
-    /// use service_federation::orchestrator::ServiceLifecycleCommands;
+    /// use fed::orchestrator::ServiceLifecycleCommands;
     ///
     /// // Named volumes
     /// assert_eq!(

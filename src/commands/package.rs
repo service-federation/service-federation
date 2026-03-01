@@ -1,7 +1,7 @@
 use crate::cli::PackageCommands;
 use crate::output::UserOutput;
 use anyhow::Result;
-use service_federation::package::PackageResolver;
+use fed::package::PackageResolver;
 use std::path::PathBuf;
 
 /// Run package commands

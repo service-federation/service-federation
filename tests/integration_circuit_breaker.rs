@@ -5,8 +5,8 @@
 /// - Circuit stays open for cooldown period
 /// - Circuit closes after successful health check
 /// - Restart history is cleaned up after 24h
-use service_federation::config::ServiceType;
-use service_federation::state::StateTracker;
+use fed::config::ServiceType;
+use fed::state::StateTracker;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::sleep;
@@ -25,7 +25,7 @@ async fn test_circuit_breaker_opens_after_threshold() {
     tracker.initialize().await.expect("Failed to initialize");
 
     // Register a service
-    let service_state = service_federation::state::ServiceState::new(
+    let service_state = fed::state::ServiceState::new(
         "crash-service".to_string(),
         ServiceType::Process,
         "default".to_string(),
@@ -81,7 +81,7 @@ async fn test_circuit_breaker_cooldown_period() {
     tracker.initialize().await.expect("Failed to initialize");
 
     // Register a service
-    let service_state = service_federation::state::ServiceState::new(
+    let service_state = fed::state::ServiceState::new(
         "cooldown-service".to_string(),
         ServiceType::Process,
         "default".to_string(),
@@ -129,7 +129,7 @@ async fn test_circuit_breaker_window_sliding() {
     tracker.initialize().await.expect("Failed to initialize");
 
     // Register a service
-    let service_state = service_federation::state::ServiceState::new(
+    let service_state = fed::state::ServiceState::new(
         "window-service".to_string(),
         ServiceType::Process,
         "default".to_string(),
@@ -189,7 +189,7 @@ async fn test_restart_history_retrieval() {
     tracker.initialize().await.expect("Failed to initialize");
 
     // Register a service
-    let service_state = service_federation::state::ServiceState::new(
+    let service_state = fed::state::ServiceState::new(
         "history-service".to_string(),
         ServiceType::Process,
         "default".to_string(),
@@ -239,7 +239,7 @@ async fn test_circuit_breaker_multiple_services() {
 
     // Register multiple services
     for i in 1..=3 {
-        let service_state = service_federation::state::ServiceState::new(
+        let service_state = fed::state::ServiceState::new(
             format!("service-{}", i),
             ServiceType::Process,
             "default".to_string(),
@@ -298,7 +298,7 @@ async fn test_circuit_breaker_reset_on_unregister() {
     tracker.initialize().await.expect("Failed to initialize");
 
     // Register a service
-    let service_state = service_federation::state::ServiceState::new(
+    let service_state = fed::state::ServiceState::new(
         "reset-service".to_string(),
         ServiceType::Process,
         "default".to_string(),
@@ -327,7 +327,7 @@ async fn test_circuit_breaker_reset_on_unregister() {
     tracker.unregister_service("reset-service").await.unwrap();
 
     // Register the same service again (simulates service being started fresh)
-    let service_state = service_federation::state::ServiceState::new(
+    let service_state = fed::state::ServiceState::new(
         "reset-service".to_string(),
         ServiceType::Process,
         "default".to_string(),
@@ -360,7 +360,7 @@ async fn test_consecutive_failures_increment_and_reset() {
     tracker.initialize().await.expect("Failed to initialize");
 
     // Register a service
-    let service_state = service_federation::state::ServiceState::new(
+    let service_state = fed::state::ServiceState::new(
         "failure-service".to_string(),
         ServiceType::Process,
         "default".to_string(),
@@ -403,7 +403,7 @@ async fn test_circuit_breaker_time_remaining() {
     tracker.initialize().await.expect("Failed to initialize");
 
     // Register a service
-    let service_state = service_federation::state::ServiceState::new(
+    let service_state = fed::state::ServiceState::new(
         "timer-service".to_string(),
         ServiceType::Process,
         "default".to_string(),

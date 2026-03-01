@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::docker::DockerClient;
+use fed::docker::DockerClient;
 
 pub async fn run_doctor(out: &dyn UserOutput) -> anyhow::Result<()> {
     out.status("Checking system requirements...\n");

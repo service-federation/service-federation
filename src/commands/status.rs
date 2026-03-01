@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::{config::Config, Orchestrator};
+use fed::{config::Config, Orchestrator};
 
 pub async fn run_status(
     orchestrator: &Orchestrator,
@@ -23,12 +23,12 @@ pub async fn run_status(
             .into_iter()
             .map(|(name, stat)| {
                 let status_str = match stat {
-                    service_federation::Status::Running => "running",
-                    service_federation::Status::Healthy => "healthy",
-                    service_federation::Status::Stopped => "stopped",
-                    service_federation::Status::Starting => "starting",
-                    service_federation::Status::Failing => "failing",
-                    service_federation::Status::Stopping => "stopping",
+                    fed::Status::Running => "running",
+                    fed::Status::Healthy => "healthy",
+                    fed::Status::Stopped => "stopped",
+                    fed::Status::Starting => "starting",
+                    fed::Status::Failing => "failing",
+                    fed::Status::Stopping => "stopping",
                 };
                 (
                     name,
@@ -49,13 +49,13 @@ pub async fn run_status(
         } else {
             for (name, stat) in status {
                 let status_icon = match stat {
-                    service_federation::Status::Running | service_federation::Status::Healthy => {
+                    fed::Status::Running | fed::Status::Healthy => {
                         "+"
                     }
-                    service_federation::Status::Stopped => "o",
-                    service_federation::Status::Starting => ".",
-                    service_federation::Status::Failing => "x",
-                    service_federation::Status::Stopping => ".",
+                    fed::Status::Stopped => "o",
+                    fed::Status::Starting => ".",
+                    fed::Status::Failing => "x",
+                    fed::Status::Stopping => ".",
                 };
                 out.status(&format!("  {} {:<30} {:?}", status_icon, name, stat));
             }

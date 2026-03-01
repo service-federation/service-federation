@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::{
+use fed::{
     config::{BuildConfig, Config, DockerBuildResult},
     Orchestrator,
 };

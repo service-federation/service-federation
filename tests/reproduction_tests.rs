@@ -6,8 +6,8 @@
 /// 1. TOCTOU race condition in monitoring loop (service removed during health check)
 /// 2. Race condition in state tracker (concurrent failure increments)
 /// 3. Lock ordering deadlock (inconsistent lock acquisition order)
-use service_federation::config::ServiceType;
-use service_federation::{Orchestrator, Parser};
+use fed::config::ServiceType;
+use fed::{Orchestrator, Parser};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -90,7 +90,7 @@ services:
 /// Current Bug: Counter might be < N due to lost updates
 #[tokio::test]
 async fn repro_state_tracker_concurrent_failure_increments() {
-    use service_federation::state::{ServiceState, StateTracker};
+    use fed::state::{ServiceState, StateTracker};
     use tempfile::tempdir;
 
     let temp_dir = tempdir().expect("Failed to create temp dir");
@@ -319,7 +319,7 @@ async fn repro_unbounded_health_check_task_spawning() {
 /// With non-atomic operations, concurrent updates could be lost.
 #[tokio::test]
 async fn repro_concurrent_health_failures_race() {
-    use service_federation::state::{ServiceState, StateTracker};
+    use fed::state::{ServiceState, StateTracker};
     use tempfile::tempdir;
 
     let temp_dir = tempdir().expect("Failed to create temp dir");
@@ -423,7 +423,7 @@ async fn repro_concurrent_health_failures_race() {
 /// This test simulates concurrent processes modifying the state file.
 #[tokio::test]
 async fn ACTUAL_BUG_file_lock_race_condition() {
-    use service_federation::state::{ServiceState, StateTracker};
+    use fed::state::{ServiceState, StateTracker};
     use tempfile::tempdir;
 
     let temp_dir = tempdir().expect("Failed to create temp dir");
@@ -528,7 +528,7 @@ async fn ACTUAL_BUG_file_lock_race_condition() {
 /// Same bug but with more concurrent writers to increase likelihood
 #[tokio::test]
 async fn ACTUAL_BUG_multiple_concurrent_increments() {
-    use service_federation::state::{ServiceState, StateTracker};
+    use fed::state::{ServiceState, StateTracker};
     use tempfile::tempdir;
 
     let temp_dir = tempdir().expect("Failed to create temp dir");
@@ -685,7 +685,7 @@ services:
 /// seeing stale state.
 #[tokio::test]
 async fn FIXED_atomic_increment_prevents_lost_updates() {
-    use service_federation::state::{ServiceState, StateTracker};
+    use fed::state::{ServiceState, StateTracker};
     use tempfile::tempdir;
 
     let temp_dir = tempdir().expect("Failed to create temp dir");
@@ -759,7 +759,7 @@ async fn FIXED_atomic_increment_prevents_lost_updates() {
 /// Simpler test with just 2 concurrent increments
 #[tokio::test]
 async fn FIXED_atomic_two_concurrent_increments() {
-    use service_federation::state::{ServiceState, StateTracker};
+    use fed::state::{ServiceState, StateTracker};
     use tempfile::tempdir;
 
     let temp_dir = tempdir().expect("Failed to create temp dir");

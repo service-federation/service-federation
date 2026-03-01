@@ -1,6 +1,6 @@
-use service_federation::config::ServiceType;
-use service_federation::service::Status;
-use service_federation::state::{ServiceState, StateTracker};
+use fed::config::ServiceType;
+use fed::service::Status;
+use fed::state::{ServiceState, StateTracker};
 use tempfile::TempDir;
 
 /// Helper to create a temp directory for tests

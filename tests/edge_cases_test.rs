@@ -1,10 +1,10 @@
-use service_federation::config::{HealthCheck, Parameter, Service};
-use service_federation::dependency::Graph;
-use service_federation::error::Error;
-use service_federation::parameter::Resolver;
+use fed::config::{HealthCheck, Parameter, Service};
+use fed::dependency::Graph;
+use fed::error::Error;
+use fed::parameter::Resolver;
 /// Edge case tests for service-federation
 /// This file tests boundary conditions, error handling, and unusual inputs
-use service_federation::{Config, Orchestrator, Parser};
+use fed::{Config, Orchestrator, Parser};
 
 // ==================== Parser Edge Cases ====================
 
@@ -246,7 +246,7 @@ fn test_template_with_special_characters() {
 
 #[test]
 fn test_port_zero() {
-    use service_federation::config::validate_parameter_value;
+    use fed::config::validate_parameter_value;
 
     let result = validate_parameter_value("PORT", "0", Some("port"), &[]);
     assert!(result.is_err(), "Port 0 should be invalid");
@@ -254,7 +254,7 @@ fn test_port_zero() {
 
 #[test]
 fn test_port_out_of_range() {
-    use service_federation::config::validate_parameter_value;
+    use fed::config::validate_parameter_value;
 
     let result = validate_parameter_value("PORT", "65536", Some("port"), &[]);
     assert!(result.is_err(), "Port 65536 should be invalid");
@@ -262,7 +262,7 @@ fn test_port_out_of_range() {
 
 #[test]
 fn test_negative_port() {
-    use service_federation::config::validate_parameter_value;
+    use fed::config::validate_parameter_value;
 
     let result = validate_parameter_value("PORT", "-1", Some("port"), &[]);
     assert!(result.is_err(), "Negative port should be invalid");
@@ -270,7 +270,7 @@ fn test_negative_port() {
 
 #[test]
 fn test_port_non_numeric() {
-    use service_federation::config::validate_parameter_value;
+    use fed::config::validate_parameter_value;
 
     let result = validate_parameter_value("PORT", "abc", Some("port"), &[]);
     assert!(result.is_err(), "Non-numeric port should be invalid");
@@ -278,7 +278,7 @@ fn test_port_non_numeric() {
 
 #[test]
 fn test_parameter_either_constraint_valid() {
-    use service_federation::config::validate_parameter_value;
+    use fed::config::validate_parameter_value;
 
     let either = vec!["dev".to_string(), "prod".to_string()];
     let result = validate_parameter_value("ENV", "dev", None, &either);
@@ -287,7 +287,7 @@ fn test_parameter_either_constraint_valid() {
 
 #[test]
 fn test_parameter_either_constraint_invalid() {
-    use service_federation::config::validate_parameter_value;
+    use fed::config::validate_parameter_value;
 
     let either = vec!["dev".to_string(), "prod".to_string()];
     let result = validate_parameter_value("ENV", "staging", None, &either);
@@ -446,7 +446,7 @@ fn test_service_with_multiple_type_fields() {
     // Should return first matched type in priority order
     let svc_type = service.service_type();
     // Process should take precedence
-    use service_federation::config::ServiceType;
+    use fed::config::ServiceType;
     assert_eq!(svc_type, ServiceType::Process);
 }
 
@@ -454,7 +454,7 @@ fn test_service_with_multiple_type_fields() {
 fn test_empty_service_definition() {
     let service = Service::default();
 
-    use service_federation::config::ServiceType;
+    use fed::config::ServiceType;
     assert_eq!(service.service_type(), ServiceType::Undefined);
 }
 
@@ -466,7 +466,7 @@ fn test_compose_service_missing_file() {
         ..Default::default()
     };
 
-    use service_federation::config::ServiceType;
+    use fed::config::ServiceType;
     assert_ne!(service.service_type(), ServiceType::DockerCompose);
 }
 
@@ -478,7 +478,7 @@ fn test_compose_service_missing_service() {
         ..Default::default()
     };
 
-    use service_federation::config::ServiceType;
+    use fed::config::ServiceType;
     assert_ne!(service.service_type(), ServiceType::DockerCompose);
 }
 
@@ -490,7 +490,7 @@ fn test_external_service_missing_dependency() {
         ..Default::default()
     };
 
-    use service_federation::config::ServiceType;
+    use fed::config::ServiceType;
     assert_ne!(service.service_type(), ServiceType::External);
 }
 
@@ -535,7 +535,7 @@ fn test_validation_service_depends_on_itself() {
 
     let service = Service {
         process: Some("echo test".to_string()),
-        depends_on: vec![service_federation::config::DependsOn::Simple(
+        depends_on: vec![fed::config::DependsOn::Simple(
             "self".to_string(),
         )],
         ..Default::default()
@@ -554,7 +554,7 @@ fn test_validation_nonexistent_dependency() {
 
     let service = Service {
         process: Some("echo test".to_string()),
-        depends_on: vec![service_federation::config::DependsOn::Simple(
+        depends_on: vec![fed::config::DependsOn::Simple(
             "nonexistent".to_string(),
         )],
         ..Default::default()
@@ -591,7 +591,7 @@ fn test_validation_complex_circular_dependency() {
     // Create: A -> B -> C -> D -> B (cycle at B)
     let service_a = Service {
         process: Some("echo a".to_string()),
-        depends_on: vec![service_federation::config::DependsOn::Simple(
+        depends_on: vec![fed::config::DependsOn::Simple(
             "b".to_string(),
         )],
         ..Default::default()
@@ -599,7 +599,7 @@ fn test_validation_complex_circular_dependency() {
 
     let service_b = Service {
         process: Some("echo b".to_string()),
-        depends_on: vec![service_federation::config::DependsOn::Simple(
+        depends_on: vec![fed::config::DependsOn::Simple(
             "c".to_string(),
         )],
         ..Default::default()
@@ -607,7 +607,7 @@ fn test_validation_complex_circular_dependency() {
 
     let service_c = Service {
         process: Some("echo c".to_string()),
-        depends_on: vec![service_federation::config::DependsOn::Simple(
+        depends_on: vec![fed::config::DependsOn::Simple(
             "d".to_string(),
         )],
         ..Default::default()
@@ -615,7 +615,7 @@ fn test_validation_complex_circular_dependency() {
 
     let service_d = Service {
         process: Some("echo d".to_string()),
-        depends_on: vec![service_federation::config::DependsOn::Simple(
+        depends_on: vec![fed::config::DependsOn::Simple(
             "b".to_string(),
         )],
         ..Default::default()
@@ -722,7 +722,7 @@ fn test_healthcheck_invalid_url() {
         timeout: None,
     };
 
-    use service_federation::config::HealthCheckType;
+    use fed::config::HealthCheckType;
     assert_eq!(hc.health_check_type(), HealthCheckType::Http);
     assert_eq!(hc.get_http_url().unwrap(), "not-a-url");
 }
@@ -731,7 +731,7 @@ fn test_healthcheck_invalid_url() {
 fn test_healthcheck_empty_command() {
     let hc = HealthCheck::Command("".to_string());
 
-    use service_federation::config::HealthCheckType;
+    use fed::config::HealthCheckType;
     assert_eq!(hc.health_check_type(), HealthCheckType::Command);
     assert_eq!(hc.get_command().unwrap(), "");
 }
@@ -743,7 +743,7 @@ fn test_healthcheck_command_map_format() {
         timeout: None,
     };
 
-    use service_federation::config::HealthCheckType;
+    use fed::config::HealthCheckType;
     assert_eq!(hc.health_check_type(), HealthCheckType::Command);
     assert_eq!(hc.get_command().unwrap(), "curl localhost");
 }
@@ -752,7 +752,7 @@ fn test_healthcheck_command_map_format() {
 fn test_healthcheck_command_string_format() {
     let hc = HealthCheck::Command("curl localhost".to_string());
 
-    use service_federation::config::HealthCheckType;
+    use fed::config::HealthCheckType;
     assert_eq!(hc.health_check_type(), HealthCheckType::Command);
     assert_eq!(hc.get_command().unwrap(), "curl localhost");
 }

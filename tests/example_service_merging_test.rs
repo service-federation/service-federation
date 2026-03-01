@@ -1,4 +1,4 @@
-use service_federation::Parser;
+use fed::Parser;
 
 #[tokio::test]
 async fn test_service_merging_example() {
@@ -60,7 +60,7 @@ async fn test_service_merging_example() {
     // Restart policy from package
     assert!(matches!(
         database.restart,
-        Some(service_federation::RestartPolicy::Always)
+        Some(fed::RestartPolicy::Always)
     ));
 
     // Extends field should be cleared after merging

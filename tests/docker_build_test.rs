@@ -1,4 +1,4 @@
-use service_federation::config::{BuildConfig, DockerBuildConfig, DockerBuildResult};
+use fed::config::{BuildConfig, DockerBuildConfig, DockerBuildResult};
 use std::collections::HashMap;
 
 /// Test that `fed build --help` mentions the --tag and --build-arg options.
@@ -36,7 +36,7 @@ services:
 entrypoint: web
 "#;
 
-    let config: service_federation::config::Config = serde_yaml::from_str(yaml).unwrap();
+    let config: fed::config::Config = serde_yaml::from_str(yaml).unwrap();
 
     // Check Docker build service
     let web = config.services.get("web").unwrap();
@@ -77,7 +77,7 @@ services:
   web:
     process: "npm start"
 "#;
-    let config: service_federation::config::Config = serde_yaml::from_str(yaml).unwrap();
+    let config: fed::config::Config = serde_yaml::from_str(yaml).unwrap();
     let web = config.services.get("web").unwrap();
     assert!(web.build.is_none());
 }
@@ -99,7 +99,7 @@ services:
     process: "node worker.js"
 "#;
 
-    let config: service_federation::config::Config = serde_yaml::from_str(yaml).unwrap();
+    let config: fed::config::Config = serde_yaml::from_str(yaml).unwrap();
 
     // frontend has DockerBuild
     assert!(matches!(
@@ -166,7 +166,7 @@ services:
   worker:
     process: "node worker.js"
 "#;
-    let config: service_federation::config::Config = serde_yaml::from_str(yaml).unwrap();
+    let config: fed::config::Config = serde_yaml::from_str(yaml).unwrap();
     let docker_services: Vec<_> = config
         .services
         .iter()

@@ -1,4 +1,4 @@
-use service_federation::Parser;
+use fed::Parser;
 
 #[test]
 fn test_parse_simple_example() {

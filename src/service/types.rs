@@ -77,7 +77,7 @@ impl Status {
     /// # Examples
     ///
     /// ```
-    /// use service_federation::service::Status;
+    /// use fed::service::Status;
     ///
     /// assert!(Status::Stopped.is_valid_transition(Status::Starting));
     /// assert!(Status::Starting.is_valid_transition(Status::Running));

@@ -1,5 +1,5 @@
-use service_federation::config::ServiceType;
-use service_federation::Parser;
+use fed::config::ServiceType;
+use fed::Parser;
 
 #[test]
 fn test_parse_gradle_example() {
@@ -70,7 +70,7 @@ fn test_gradle_task_environment_resolution() {
     config.validate().expect("Config validation failed");
 
     // Create resolver and resolve parameters
-    let mut resolver = service_federation::parameter::Resolver::new();
+    let mut resolver = fed::parameter::Resolver::new();
     resolver
         .resolve_parameters(&mut config)
         .expect("Failed to resolve parameters");

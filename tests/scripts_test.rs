@@ -1,4 +1,4 @@
-use service_federation::{Orchestrator, Parser};
+use fed::{Orchestrator, Parser};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -878,7 +878,7 @@ scripts:
 
 #[tokio::test]
 async fn test_isolated_cleanup_after_script() {
-    use service_federation::service::Status;
+    use fed::service::Status;
     let temp_dir = tempdir().expect("Failed to create temp dir");
 
     let yaml = r#"
@@ -1160,7 +1160,7 @@ scripts:
 /// bypassed Drop impls and left orphaned processes.
 #[tokio::test]
 async fn test_isolated_script_failure_cleans_up_dependencies() {
-    use service_federation::service::Status;
+    use fed::service::Status;
     let temp_dir = tempdir().expect("Failed to create temp dir");
 
     let yaml = r#"

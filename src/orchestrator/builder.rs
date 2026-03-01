@@ -15,11 +15,11 @@ use std::time::Duration;
 /// # Example
 ///
 /// ```no_run
-/// use service_federation::{Config, Orchestrator};
-/// use service_federation::service::OutputMode;
+/// use fed::{Config, Orchestrator};
+/// use fed::service::OutputMode;
 /// use std::path::PathBuf;
 ///
-/// # async fn example() -> Result<(), service_federation::Error> {
+/// # async fn example() -> Result<(), fed::Error> {
 /// let config = Config::default();
 /// let orchestrator = Orchestrator::builder()
 ///     .config(config)

@@ -6,9 +6,9 @@
 /// - PID is always cleared when status is "Stopped"
 /// - No services leak (state tracker matches reality)
 use proptest::prelude::*;
-use service_federation::config::ServiceType;
-use service_federation::service::Status;
-use service_federation::state::{ServiceState, StateTracker};
+use fed::config::ServiceType;
+use fed::service::Status;
+use fed::state::{ServiceState, StateTracker};
 use tempfile::TempDir;
 
 /// Helper to create a temp directory for tests
@@ -380,7 +380,7 @@ proptest! {
 /// Unit test: Verify state machine transition validation
 #[test]
 fn test_status_transitions() {
-    use service_federation::service::Status;
+    use fed::service::Status;
 
     // Valid transitions
     assert!(Status::Stopped.is_valid_transition(Status::Starting));

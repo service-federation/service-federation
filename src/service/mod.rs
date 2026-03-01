@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use service_federation::service::{ServiceManager, Status};
+//! use fed::service::{ServiceManager, Status};
 //!
 //! async fn check_service(service: &dyn ServiceManager) {
 //!     if service.status() == Status::Running {

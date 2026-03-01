@@ -1,4 +1,4 @@
-use service_federation::Parser;
+use fed::Parser;
 use std::fs;
 use tempfile::TempDir;
 
@@ -702,13 +702,13 @@ services:
     let no_override = config.services.get("no-override").unwrap();
     assert!(matches!(
         no_override.restart,
-        Some(service_federation::RestartPolicy::Always)
+        Some(fed::RestartPolicy::Always)
     ));
 
     let with_override = config.services.get("with-override").unwrap();
     assert!(matches!(
         with_override.restart,
-        Some(service_federation::RestartPolicy::No)
+        Some(fed::RestartPolicy::No)
     ));
 }
 
@@ -828,7 +828,7 @@ services:
     // Restart from base (not overridden)
     assert!(matches!(
         service.restart,
-        Some(service_federation::RestartPolicy::Always)
+        Some(fed::RestartPolicy::Always)
     ));
 
     // Extends cleared

@@ -19,9 +19,9 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use service_federation::{Orchestrator, Parser};
+//! use fed::{Orchestrator, Parser};
 //!
-//! # async fn example() -> Result<(), service_federation::Error> {
+//! # async fn example() -> Result<(), fed::Error> {
 //! // Load and parse configuration
 //! let parser = Parser::new();
 //! let config = parser.load_config("service-federation.yaml")?;

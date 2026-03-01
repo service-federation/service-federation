@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::Orchestrator;
+use fed::Orchestrator;
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 
@@ -47,11 +47,11 @@ pub async fn run_top(
 
                 for (name, stat) in &status {
                     let status_str = match stat {
-                        service_federation::Status::Running | service_federation::Status::Healthy => "running",
-                        service_federation::Status::Stopped => "stopped",
-                        service_federation::Status::Starting => "starting",
-                        service_federation::Status::Failing => "failing",
-                        service_federation::Status::Stopping => "stopping",
+                        fed::Status::Running | fed::Status::Healthy => "running",
+                        fed::Status::Stopped => "stopped",
+                        fed::Status::Starting => "starting",
+                        fed::Status::Failing => "failing",
+                        fed::Status::Stopping => "stopping",
                     };
 
                     let (cpu, mem, pid) = match orchestrator.get_service_pid(name).await {

@@ -6,7 +6,7 @@ use std::io::IsTerminal;
 
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands};
-use service_federation::{Error as FedError, Orchestrator, OutputMode, Parser as ConfigParser};
+use fed::{Error as FedError, Orchestrator, OutputMode, Parser as ConfigParser};
 
 #[tokio::main]
 async fn main() {
@@ -323,7 +323,7 @@ async fn run() -> anyhow::Result<()> {
     if isolate && !dry_run {
         let work_dir_for_isolation = resolve_work_dir(cli.workdir.clone(), &config_path)?;
         let mut tracker =
-            service_federation::state::StateTracker::new(work_dir_for_isolation).await?;
+            fed::state::StateTracker::new(work_dir_for_isolation).await?;
         tracker.initialize().await?;
         let (already_isolated, _) = tracker.get_isolation_mode().await;
         if !already_isolated {

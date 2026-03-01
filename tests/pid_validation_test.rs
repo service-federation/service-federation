@@ -3,9 +3,9 @@
 //! These tests verify that PIDs are properly validated before storage and use,
 //! preventing potential signal misdirection bugs when PIDs exceed i32::MAX.
 
-use service_federation::config::ServiceType;
-use service_federation::service::Status;
-use service_federation::state::{ServiceState, StateTracker};
+use fed::config::ServiceType;
+use fed::service::Status;
+use fed::state::{ServiceState, StateTracker};
 use tempfile::TempDir;
 
 /// Helper to create a temp directory for tests

@@ -1,4 +1,4 @@
-use service_federation::{Orchestrator, Parser};
+use fed::{Orchestrator, Parser};
 
 #[test]
 fn test_profiles_parsing() {

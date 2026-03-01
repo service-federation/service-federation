@@ -1,6 +1,6 @@
 use serde_yaml::Value;
-use service_federation::config::{Config, Environment, Parameter};
-use service_federation::parameter::Resolver;
+use fed::config::{Config, Environment, Parameter};
+use fed::parameter::Resolver;
 
 #[test]
 fn test_environment_specific_values() {

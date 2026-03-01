@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use service_federation::{WatchMode, Config};
+//! use fed::{WatchMode, Config};
 //!
 //! let watch = WatchMode::new(&config, &work_dir)?;
 //! while let Some(event) = watch.next_event().await {

@@ -1,7 +1,7 @@
 use crate::cli::IsolateCommands;
 use crate::output::UserOutput;
-use service_federation::state::StateTracker;
-use service_federation::{Orchestrator, Parser as ConfigParser};
+use fed::state::StateTracker;
+use fed::{Orchestrator, Parser as ConfigParser};
 use std::path::PathBuf;
 
 pub async fn run_isolate(

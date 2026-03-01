@@ -18,7 +18,7 @@ use std::time::Duration;
 /// # Examples
 ///
 /// ```
-/// use service_federation::config::parse_duration_string;
+/// use fed::config::parse_duration_string;
 /// use std::time::Duration;
 ///
 /// assert_eq!(parse_duration_string("5s"), Some(Duration::from_secs(5)));

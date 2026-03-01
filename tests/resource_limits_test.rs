@@ -60,7 +60,7 @@ services:
 
     // Parse config and verify resource limits are recognized
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     // Verify memory limit is parsed
@@ -97,7 +97,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     let service = config
@@ -133,7 +133,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     let service = config
@@ -168,7 +168,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     let service = config
@@ -199,7 +199,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     // Config should validate without errors
@@ -222,7 +222,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     let result = config.validate();
@@ -245,7 +245,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     let result = config.validate();
@@ -265,7 +265,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     let result = config.validate();
@@ -285,7 +285,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     assert!(
@@ -317,7 +317,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     assert!(config.validate().is_ok(), "Decimal memory should be valid");
@@ -336,7 +336,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     assert!(config.validate().is_ok(), "Fractional CPU should be valid");
@@ -365,7 +365,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     assert!(
@@ -385,7 +385,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     assert!(
@@ -413,7 +413,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     assert!(config.validate().is_ok(), "Partial limits should be valid");
@@ -455,7 +455,7 @@ services:
     let (_temp_dir, config_path) = create_test_config(config);
 
     let config_content = fs::read_to_string(&config_path).expect("Failed to read config");
-    let config: service_federation::config::Config =
+    let config: fed::config::Config =
         serde_yaml::from_str(&config_content).expect("Failed to parse config");
 
     assert!(

@@ -1,5 +1,5 @@
 use crate::output::UserOutput;
-use service_federation::{config::Config, service::Status, state::StateTracker, Orchestrator};
+use fed::{config::Config, service::Status, state::StateTracker, Orchestrator};
 use std::path::Path;
 
 use super::lifecycle::{remove_orphan_containers_for_workdir, stop_service_by_state, StopResult};
@@ -76,7 +76,7 @@ fn state_status_is_active(status: Status) -> bool {
 /// This catches cases where services are running but no longer appear in the
 /// current config (e.g., services renamed/removed).
 async fn stop_remaining_state_services(orchestrator: &Orchestrator, out: &dyn UserOutput) -> usize {
-    use service_federation::state::SqliteStateTracker;
+    use fed::state::SqliteStateTracker;
 
     // Avoid holding the outer RwLock across await by cloning the DB connection.
     let conn = orchestrator.state_tracker.read().await.clone_connection();
