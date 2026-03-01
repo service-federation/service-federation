@@ -143,6 +143,52 @@ impl Config {
             }
         }
 
+        // Validate secret parameter constraints
+        for (name, param) in self.get_effective_parameters() {
+            if !param.is_secret_type() {
+                continue;
+            }
+
+            // Secrets must not have a default value (they are generated or manually provided)
+            if param.default.is_some() {
+                return Err(Error::Validation(format!(
+                    "Secret parameter '{}' must not have a default value — secrets are generated or provided via .env",
+                    name
+                )));
+            }
+
+            // Secrets must not have environment-specific values
+            if param.development.is_some()
+                || param.develop.is_some()
+                || param.staging.is_some()
+                || param.production.is_some()
+            {
+                return Err(Error::Validation(format!(
+                    "Secret parameter '{}' must not have environment-specific values — secrets are generated or provided via .env",
+                    name
+                )));
+            }
+
+            // Only known source values are allowed
+            if let Some(ref source) = param.source {
+                if source != "manual" {
+                    return Err(Error::Validation(format!(
+                        "Secret parameter '{}' has unknown source '{}' — only 'manual' is currently supported",
+                        name, source
+                    )));
+                }
+            }
+
+            // Auto-generated secrets require generated_secrets_file
+            if !param.is_manual_secret() && self.generated_secrets_file.is_none() {
+                return Err(Error::Validation(format!(
+                    "Parameter '{}' is type: secret but no generated_secrets_file is configured. \
+                     Either set generated_secrets_file or add source: manual",
+                    name
+                )));
+            }
+        }
+
         // Validate external service dependencies
         for (name, service) in &self.services {
             if service.service_type() == ServiceType::External {
@@ -589,7 +635,7 @@ fn validate_cpus_string(cpus: &str) -> std::result::Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Service;
+    use crate::config::{Parameter, Service};
     use std::collections::HashMap;
 
     #[test]
@@ -1419,6 +1465,113 @@ mod tests {
             },
         );
 
+        assert!(config.validate().is_ok());
+    }
+
+    // ========================================================================
+    // Secret parameter validation
+    // ========================================================================
+
+    #[test]
+    fn secret_with_default_is_rejected() {
+        let mut config = Config::default();
+        config.parameters.insert(
+            "DB_SECRET".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                default: Some(serde_yaml::Value::String("oops".to_string())),
+                ..Default::default()
+            },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("must not have a default"));
+    }
+
+    #[test]
+    fn secret_with_env_specific_value_is_rejected() {
+        let mut config = Config::default();
+        config.parameters.insert(
+            "DB_SECRET".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                production: Some(serde_yaml::Value::String("prod-secret".to_string())),
+                ..Default::default()
+            },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("must not have environment-specific"));
+    }
+
+    #[test]
+    fn secret_with_unknown_source_is_rejected() {
+        let mut config = Config::default();
+        config.parameters.insert(
+            "DB_SECRET".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                source: Some("1password".to_string()),
+                ..Default::default()
+            },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("unknown source '1password'"));
+    }
+
+    #[test]
+    fn secret_with_manual_source_is_valid() {
+        let mut config = Config::default();
+        config.parameters.insert(
+            "GITHUB_SECRET".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                source: Some("manual".to_string()),
+                description: Some("GitHub OAuth secret".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn generated_secret_with_generated_secrets_file_is_valid() {
+        let mut config = Config::default();
+        config.generated_secrets_file = Some(".env.secrets".to_string());
+        config.parameters.insert(
+            "SESSION_KEY".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn generated_secret_without_generated_secrets_file_is_rejected() {
+        let mut config = Config::default();
+        config.parameters.insert(
+            "SESSION_KEY".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                ..Default::default()
+            },
+        );
+        let err = config.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("generated_secrets_file"), "Error should mention generated_secrets_file: {}", msg);
+    }
+
+    #[test]
+    fn manual_secret_without_generated_secrets_file_is_valid() {
+        let mut config = Config::default();
+        config.parameters.insert(
+            "API_KEY".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                source: Some("manual".to_string()),
+                ..Default::default()
+            },
+        );
         assert!(config.validate().is_ok());
     }
 }

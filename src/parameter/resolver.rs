@@ -141,6 +141,8 @@ pub struct Resolver {
     port_store: Box<dyn crate::port::PortStore>,
     /// When true, ignore configured default ports and allocate fresh random ports.
     force_random_ports: bool,
+    /// Whether stdin is a TTY (for interactive secret generation prompts).
+    is_tty: bool,
 }
 
 impl Resolver {
@@ -157,6 +159,7 @@ impl Resolver {
             managed_ports: HashSet::new(),
             port_store: Box::new(crate::port::NoopPortStore),
             force_random_ports: false,
+            is_tty: false,
         }
     }
 
@@ -174,6 +177,7 @@ impl Resolver {
             managed_ports: HashSet::new(),
             port_store: Box::new(crate::port::NoopPortStore),
             force_random_ports: false,
+            is_tty: false,
         }
     }
 
@@ -203,6 +207,11 @@ impl Resolver {
     /// Use this for `--replace` flag behavior.
     pub fn set_replace_mode(&mut self, replace: bool) {
         self.replace_mode = replace;
+    }
+
+    /// Set whether stdin is a TTY (for interactive secret generation prompts).
+    pub fn set_is_tty(&mut self, is_tty: bool) {
+        self.is_tty = is_tty;
     }
 
     /// Register ports owned by already-running managed services.
@@ -300,6 +309,104 @@ impl Resolver {
         Ok(resolved)
     }
 
+    /// Resolve secret parameters: generate missing auto-secrets, fail on missing manual secrets.
+    ///
+    /// This runs before `.env` loading so that newly-generated values are picked up
+    /// by the normal `apply_env_file_to_parameters` path.
+    fn resolve_secrets(&self, config: &mut Config) -> Result<()> {
+        let work_dir = match self.work_dir.as_ref() {
+            Some(dir) => dir.clone(),
+            None => return Ok(()), // No work dir → skip (unit tests, etc.)
+        };
+
+        // Compute secrets file path from config. If not configured, only manual secrets
+        // can exist (validation enforces this), so use a sentinel that won't be written to.
+        let secrets_file_path = match config.generated_secrets_file {
+            Some(ref gsf) => work_dir.join(gsf),
+            None => work_dir.join(".generated-secrets-sentinel"),
+        };
+
+        let analysis = match super::secret::analyze_secrets(config, &work_dir, &secrets_file_path)? {
+            Some(a) => a,
+            None => return Ok(()), // No secret parameters at all
+        };
+
+        // Fail on missing manual secrets — user must provide these
+        if !analysis.missing_manual.is_empty() {
+            let details: Vec<String> = analysis
+                .missing_manual
+                .iter()
+                .map(|(name, desc)| match desc {
+                    Some(d) => format!("  - {} ({})", name, d),
+                    None => format!("  - {}", name),
+                })
+                .collect();
+            let env_files_hint = if config.env_file.is_empty() {
+                "your env_file".to_string()
+            } else {
+                config.env_file.join(", ")
+            };
+            return Err(Error::Validation(format!(
+                "Missing secret values — add them to your env_file ({}):\n{}\n\nThese secrets have source: manual, so fed won't generate them.",
+                env_files_hint,
+                details.join("\n")
+            )));
+        }
+
+        // Nothing to generate? We're done.
+        if analysis.needs_generation.is_empty() {
+            return Ok(());
+        }
+
+        let gsf = config.generated_secrets_file.as_ref().expect(
+            "generated_secrets_file must be set when auto-generated secrets exist (validation ensures this)"
+        );
+
+        // Gitignore gate: if we're in a git repo and the secrets file isn't ignored, refuse
+        if analysis.in_git_repo && !analysis.is_gitignored {
+            return Err(Error::Validation(format!(
+                "Refusing to generate secrets: '{}' is not in .gitignore.\n\nAdd '{}' to your .gitignore to prevent committing secrets.",
+                gsf, gsf
+            )));
+        }
+
+        // Interactive confirmation when running in a TTY
+        if self.is_tty {
+            eprint!(
+                "Secret parameters need values. Generate and write to {}? [Y/n] ",
+                analysis.env_path.display()
+            );
+            let mut input = String::new();
+            if std::io::stdin().read_line(&mut input).is_ok() {
+                let trimmed = input.trim().to_lowercase();
+                if !trimmed.is_empty() && trimmed != "y" && trimmed != "yes" {
+                    return Err(Error::Aborted);
+                }
+            }
+        } else {
+            tracing::info!(
+                "Generating secret values → {}",
+                analysis.env_path.display()
+            );
+        }
+
+        // Generate values
+        let generated: Vec<(String, String)> = analysis
+            .needs_generation
+            .iter()
+            .map(|name| (name.clone(), super::secret::generate_secret()))
+            .collect();
+
+        super::secret::write_env_file(&analysis.env_path, &generated)?;
+
+        // Prepend generated_secrets_file to env_file so it's loaded first (lowest priority)
+        if !config.env_file.contains(gsf) {
+            config.env_file.insert(0, gsf.clone());
+        }
+
+        Ok(())
+    }
+
     /// Load .env files and apply values to parameters.
     /// Returns error if .env file sets a variable that isn't declared as a parameter.
     ///
@@ -364,7 +471,10 @@ impl Resolver {
         // Clear any stale resolutions from a previous call (e.g. dry-run then real start)
         self.port_resolutions.clear();
 
-        // First, apply .env file values to parameters (strict mode: must be declared)
+        // Resolve secrets first — may generate .env entries and add ".env" to config.env_file
+        self.resolve_secrets(config)?;
+
+        // Apply .env file values to parameters (strict mode: must be declared)
         self.apply_env_file_to_parameters(config)?;
 
         // Build parameters map - first pass for direct values and port allocation
@@ -974,6 +1084,8 @@ mod tests {
             param_type: Some("port".to_string()),
             default: Some(serde_yaml::Value::Number(default_port.into())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1018,6 +1130,8 @@ mod tests {
             param_type: Some("port".to_string()),
             default: Some(serde_yaml::Value::Number(occupied_port.into())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1052,6 +1166,8 @@ mod tests {
             param_type: Some("port".to_string()),
             default: None,
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1085,6 +1201,8 @@ mod tests {
                 param_type: Some("port".to_string()),
                 default: Some(serde_yaml::Value::Number(18380.into())),
                 either: vec![],
+                source: None,
+                description: None,
                 value: None,
             },
         );
@@ -1098,6 +1216,8 @@ mod tests {
                 param_type: Some("port".to_string()),
                 default: Some(serde_yaml::Value::Number(15732.into())),
                 either: vec![],
+                source: None,
+                description: None,
                 value: None,
             },
         );
@@ -1128,6 +1248,8 @@ mod tests {
             param_type: Some("port".to_string()),
             default: Some(serde_yaml::Value::String("not-a-port".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1168,6 +1290,8 @@ mod tests {
             param_type: Some("port".to_string()),
             default: Some(serde_yaml::Value::Number(port1.into())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1179,6 +1303,8 @@ mod tests {
             param_type: Some("port".to_string()),
             default: Some(serde_yaml::Value::Number(port2.into())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1213,6 +1339,8 @@ mod tests {
             param_type: Some("port".to_string()),
             default: None,
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
         param.value = Some("8080".to_string());
@@ -1241,6 +1369,8 @@ mod tests {
             param_type: Some("port".to_string()),
             default: None,
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
         param.value = Some("invalid".to_string());
@@ -1271,6 +1401,8 @@ mod tests {
             param_type: Some("port".to_string()),
             default: None,
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
         param.value = Some("0".to_string());
@@ -1301,6 +1433,8 @@ mod tests {
             param_type: Some("port".to_string()),
             default: None,
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
         param.value = Some("99999".to_string());
@@ -1331,6 +1465,8 @@ mod tests {
             param_type: Some("string".to_string()),
             default: None,
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
         param.value = Some("invalid".to_string());
@@ -1359,6 +1495,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("{{B}}".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1370,6 +1508,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("{{A}}".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1401,6 +1541,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("{{B}}".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1412,6 +1554,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("{{C}}".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1423,6 +1567,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("{{A}}".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1455,6 +1601,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("value_c".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1466,6 +1614,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("{{C}}".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1477,6 +1627,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("{{B}}".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1508,6 +1660,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("{{MISSING}}".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1535,6 +1689,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("dev".to_string())),
             either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1562,6 +1718,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("invalid".to_string())),
             either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1590,6 +1748,8 @@ mod tests {
             param_type: None,
             default: None,
             either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
+            source: None,
+            description: None,
             value: None,
         };
         param.value = Some("prod".to_string());
@@ -1618,6 +1778,8 @@ mod tests {
             param_type: None,
             default: None,
             either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
+            source: None,
+            description: None,
             value: None,
         };
         param.value = Some("test".to_string());
@@ -1647,6 +1809,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("staging".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1659,6 +1823,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("{{BASE}}".to_string())),
             either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1739,6 +1905,8 @@ mod tests {
             param_type: None,
             default: None,
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
         param.value = Some("; rm -rf /".to_string());
@@ -1790,6 +1958,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("default_value".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1827,6 +1997,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("default_value".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: Some("explicit_value".to_string()), // Explicit value takes precedence
         };
 
@@ -1889,6 +2061,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -1964,6 +2138,8 @@ mod tests {
             param_type: None,
             default: Some(serde_yaml::Value::String("default".to_string())),
             either: vec![],
+            source: None,
+            description: None,
             value: None,
         };
 
@@ -2003,5 +2179,132 @@ mod tests {
         assert!(err_str.contains("UNDECLARED"));
         // Error should reference the source file
         assert!(err_str.contains(".env.test"));
+    }
+
+    // ========================================================================
+    // Secret resolution tests
+    // ========================================================================
+
+    #[test]
+    fn secret_resolved_from_existing_env() {
+        use crate::config::{Config, Parameter};
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let env_path = temp_dir.path().join(".env");
+        fs::write(&env_path, "SESSION_KEY=existing_secret\n").unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+        config.generated_secrets_file = Some(".env.secrets".to_string());
+        config.parameters.insert(
+            "SESSION_KEY".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                ..Default::default()
+            },
+        );
+        config.env_file = vec![".env".to_string()];
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        assert_eq!(resolved.get("SESSION_KEY").unwrap(), "existing_secret");
+    }
+
+    #[test]
+    fn missing_manual_secret_errors_with_description() {
+        use crate::config::{Config, Parameter};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+        config.parameters.insert(
+            "GITHUB_SECRET".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                source: Some("manual".to_string()),
+                description: Some("GitHub OAuth client secret".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let err = resolver.resolve_parameters(&mut config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("GITHUB_SECRET"), "Error should name the param: {}", msg);
+        assert!(msg.contains("GitHub OAuth client secret"), "Error should include description: {}", msg);
+    }
+
+    #[test]
+    fn gitignore_gate_fires() {
+        use crate::config::{Config, Parameter};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        // Init a git repo WITHOUT .gitignore
+        git2::Repository::init(temp_dir.path()).unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+        config.generated_secrets_file = Some(".env.secrets".to_string());
+        config.parameters.insert(
+            "SESSION_KEY".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let err = resolver.resolve_parameters(&mut config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(".gitignore"), "Should mention .gitignore: {}", msg);
+    }
+
+    #[test]
+    fn secret_auto_generated_when_gitignored() {
+        use crate::config::{Config, Parameter};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        // Init repo with .env.secrets in .gitignore
+        git2::Repository::init(temp_dir.path()).unwrap();
+        std::fs::write(temp_dir.path().join(".gitignore"), ".env.secrets\n").unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+        config.generated_secrets_file = Some(".env.secrets".to_string());
+        config.parameters.insert(
+            "SESSION_KEY".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                ..Default::default()
+            },
+        );
+
+        // Non-TTY mode → should auto-generate without prompting
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        let value = resolved.get("SESSION_KEY").unwrap();
+        assert_eq!(value.len(), 32, "Generated secret should be 32 chars");
+        assert!(value.chars().all(|c| c.is_ascii_alphanumeric()));
+
+        // secrets file should exist
+        let env_content = std::fs::read_to_string(temp_dir.path().join(".env.secrets")).unwrap();
+        assert!(env_content.contains("SESSION_KEY="));
+
+        // generated_secrets_file should be prepended to env_file
+        assert_eq!(config.env_file[0], ".env.secrets");
     }
 }

@@ -16,6 +16,8 @@ fn test_environment_specific_values() {
         develop: None,
         staging: Some(Value::String("staging-value".to_string())),
         production: Some(Value::String("prod-value".to_string())),
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -41,6 +43,8 @@ fn test_environment_fallback_to_default() {
         develop: None,
         staging: None,
         production: Some(Value::String("prod-value".to_string())),
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -66,6 +70,8 @@ fn test_development_alias() {
         develop: Some(Value::String("develop-value".to_string())),
         staging: None,
         production: None,
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -91,6 +97,8 @@ fn test_development_precedence() {
         develop: Some(Value::String("develop-value".to_string())),
         staging: None,
         production: None,
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -116,6 +124,8 @@ fn test_variables_take_precedence_over_parameters() {
         develop: None,
         staging: None,
         production: None,
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -127,6 +137,8 @@ fn test_variables_take_precedence_over_parameters() {
         develop: None,
         staging: None,
         production: Some(Value::String("var-prod-value".to_string())),
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -156,6 +168,8 @@ fn test_backward_compatibility_with_parameters() {
         develop: None,
         staging: None,
         production: None,
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -186,6 +200,8 @@ fn test_port_type_with_environment() {
         develop: None,
         staging: None,
         production: Some(Value::Number(available_port.into())),
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -214,6 +230,8 @@ fn test_template_resolution_with_environment() {
         develop: None,
         staging: Some(Value::String("staging-db".to_string())),
         production: Some(Value::String("prod-db".to_string())),
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -226,6 +244,8 @@ fn test_template_resolution_with_environment() {
         develop: None,
         staging: None,
         production: None,
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -253,6 +273,8 @@ fn test_complex_multi_environment_config() {
         develop: None,
         staging: None,
         production: Some(Value::String("false".to_string())),
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -265,6 +287,8 @@ fn test_complex_multi_environment_config() {
         develop: None,
         staging: Some(Value::Number(2.into())),
         production: Some(Value::Number(5.into())),
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -277,6 +301,8 @@ fn test_complex_multi_environment_config() {
         develop: None,
         staging: None,
         production: Some(Value::String("prod-secret-from-vault".to_string())),
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -314,6 +340,8 @@ fn test_get_effective_parameters() {
         develop: None,
         staging: None,
         production: None,
+        source: None,
+        description: None,
         value: None,
     };
     config.parameters.insert("PARAM1".to_string(), param1);
@@ -327,6 +355,8 @@ fn test_get_effective_parameters() {
         develop: None,
         staging: None,
         production: None,
+        source: None,
+        description: None,
         value: None,
     };
     config.variables.insert("VAR1".to_string(), var1);

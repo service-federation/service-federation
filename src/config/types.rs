@@ -57,6 +57,12 @@ pub struct Config {
     /// for environment-specific defaults instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_file: Vec<String>,
+
+    /// Path to the file where auto-generated secrets are written.
+    /// Required when using `type: secret` without `source: manual`.
+    /// Prepended to `env_file` at runtime so user env_files can override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_secrets_file: Option<String>,
 }
 
 impl Config {

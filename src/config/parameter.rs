@@ -36,6 +36,15 @@ pub struct Parameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub production: Option<serde_yaml::Value>,
 
+    /// Secret source — `"manual"` for user-provided secrets, absent for auto-generated.
+    /// Extension point for future providers (1password, doppler, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+
+    /// Human-readable description shown in error messages for missing manual secrets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
     #[serde(skip)]
     pub value: Option<String>,
 }
@@ -44,6 +53,16 @@ impl Parameter {
     /// Check if this parameter is a port type (for automatic allocation).
     pub fn is_port_type(&self) -> bool {
         self.param_type.as_deref() == Some("port")
+    }
+
+    /// Check if this parameter is a secret type (for auto-generation or manual entry).
+    pub fn is_secret_type(&self) -> bool {
+        self.param_type.as_deref() == Some("secret")
+    }
+
+    /// Check if this parameter is a manual secret (requires user-provided value).
+    pub fn is_manual_secret(&self) -> bool {
+        self.is_secret_type() && self.source.as_deref() == Some("manual")
     }
 
     /// Get the value for a specific environment.
@@ -89,6 +108,8 @@ mod tests {
             develop: None,
             staging: None,
             production: None,
+            source: None,
+            description: None,
             value: None,
         }
     }
@@ -103,6 +124,8 @@ mod tests {
             develop: None,
             staging: None,
             production: None,
+            source: None,
+            description: None,
             value: None,
         }
     }
@@ -280,5 +303,85 @@ mod tests {
     fn is_port_type_false_when_none() {
         let param = param_empty();
         assert!(!param.is_port_type());
+    }
+
+    // ========================================================================
+    // is_secret_type / is_manual_secret tests
+    // ========================================================================
+
+    #[test]
+    fn is_secret_type_true() {
+        let param = Parameter {
+            param_type: Some("secret".to_string()),
+            ..param_empty()
+        };
+        assert!(param.is_secret_type());
+    }
+
+    #[test]
+    fn is_secret_type_false_for_other_type() {
+        let param = Parameter {
+            param_type: Some("port".to_string()),
+            ..param_empty()
+        };
+        assert!(!param.is_secret_type());
+    }
+
+    #[test]
+    fn is_secret_type_false_when_none() {
+        assert!(!param_empty().is_secret_type());
+    }
+
+    #[test]
+    fn is_manual_secret_true() {
+        let param = Parameter {
+            param_type: Some("secret".to_string()),
+            source: Some("manual".to_string()),
+            ..param_empty()
+        };
+        assert!(param.is_manual_secret());
+    }
+
+    #[test]
+    fn is_manual_secret_false_without_source() {
+        let param = Parameter {
+            param_type: Some("secret".to_string()),
+            ..param_empty()
+        };
+        assert!(!param.is_manual_secret());
+    }
+
+    #[test]
+    fn is_manual_secret_false_for_non_secret() {
+        let param = Parameter {
+            param_type: Some("port".to_string()),
+            source: Some("manual".to_string()),
+            ..param_empty()
+        };
+        assert!(!param.is_manual_secret());
+    }
+
+    #[test]
+    fn deserialize_secret_with_source_and_description() {
+        let yaml = r#"
+type: secret
+source: manual
+description: "GitHub OAuth client secret"
+"#;
+        let param: Parameter = serde_yaml::from_str(yaml).unwrap();
+        assert!(param.is_secret_type());
+        assert!(param.is_manual_secret());
+        assert_eq!(param.description.as_deref(), Some("GitHub OAuth client secret"));
+    }
+
+    #[test]
+    fn deserialize_secret_without_source() {
+        let yaml = r#"
+type: secret
+"#;
+        let param: Parameter = serde_yaml::from_str(yaml).unwrap();
+        assert!(param.is_secret_type());
+        assert!(!param.is_manual_secret());
+        assert!(param.source.is_none());
     }
 }

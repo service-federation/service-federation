@@ -41,6 +41,7 @@ pub struct OrchestratorBuilder {
     replace_mode: bool,
     dry_run: bool,
     readonly: bool,
+    is_tty: bool,
     profiles: Vec<String>,
     startup_timeout: Option<Duration>,
     stop_timeout: Option<Duration>,
@@ -58,6 +59,7 @@ impl OrchestratorBuilder {
             replace_mode: false,
             dry_run: false,
             readonly: false,
+            is_tty: false,
             profiles: Vec::new(),
             startup_timeout: None,
             stop_timeout: None,
@@ -151,6 +153,12 @@ impl OrchestratorBuilder {
         self
     }
 
+    /// Set whether stdin is a TTY (for interactive prompts like secret generation).
+    pub fn is_tty(mut self, is_tty: bool) -> Self {
+        self.is_tty = is_tty;
+        self
+    }
+
     /// Enable readonly initialization.
     ///
     /// When enabled, `build()` calls `initialize_readonly()` instead of
@@ -206,6 +214,9 @@ impl OrchestratorBuilder {
         }
         if self.replace_mode {
             orchestrator.set_replace_mode(true);
+        }
+        if self.is_tty {
+            orchestrator.set_is_tty(true);
         }
 
         if let Some(timeout) = self.startup_timeout {

@@ -162,6 +162,8 @@ fn test_circular_template_references() {
         param_type: None,
         default: Some(serde_yaml::Value::String("{{B}}".to_string())),
         either: vec![],
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -173,6 +175,8 @@ fn test_circular_template_references() {
         param_type: None,
         default: Some(serde_yaml::Value::String("{{A}}".to_string())),
         either: vec![],
+        source: None,
+        description: None,
         value: None,
     };
 
@@ -875,6 +879,8 @@ fn test_parameter_with_value_override() {
         param_type: None,
         default: Some(serde_yaml::Value::String("default".to_string())),
         either: vec![],
+        source: None,
+        description: None,
         value: Some("override".to_string()),
     };
 

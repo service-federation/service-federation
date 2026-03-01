@@ -342,6 +342,7 @@ async fn run() -> anyhow::Result<()> {
         .dry_run(dry_run)
         .auto_resolve_conflicts(auto_resolve)
         .readonly(readonly)
+        .is_tty(is_tty)
         .build()
         .await?;
 

@@ -311,6 +311,11 @@ impl Orchestrator {
         self.resolver.set_replace_mode(replace);
     }
 
+    /// Set whether stdin is a TTY (for interactive prompts).
+    pub fn set_is_tty(&mut self, is_tty: bool) {
+        self.resolver.set_is_tty(is_tty);
+    }
+
     /// Enable randomized port allocation.
     ///
     /// Skips persisted ports and allocates fresh random ports for all
