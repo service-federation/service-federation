@@ -4,7 +4,7 @@ use crate::error::{Error, Result};
 use crate::port::{handle_port_conflict, PortConflict, PortConflictAction};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Global template regex compiled once
@@ -319,10 +319,14 @@ impl Resolver {
             None => return Ok(()), // No work dir → skip (unit tests, etc.)
         };
 
-        let secrets_file_path = config
-            .generated_secrets_file
-            .as_ref()
-            .map(|gsf| work_dir.join(gsf));
+        let secrets_file_path = config.generated_secrets_file.as_ref().map(|gsf| {
+            let expanded = super::expand_tilde(Path::new(gsf));
+            if expanded.is_absolute() {
+                expanded
+            } else {
+                work_dir.join(expanded)
+            }
+        });
 
         let analysis = match super::secret::analyze_secrets(
             config,
@@ -439,7 +443,12 @@ impl Resolver {
         let mut all_env_vars: HashMap<String, (String, String)> = HashMap::new();
 
         for env_file_path in &config.env_file {
-            let full_path = config_dir.join(env_file_path);
+            let full_path = super::expand_tilde(Path::new(env_file_path));
+            let full_path = if full_path.is_absolute() {
+                full_path
+            } else {
+                config_dir.join(full_path)
+            };
             let env_vars = crate::config::env_loader::load_env_file(&full_path).map_err(|e| {
                 Error::TemplateResolution(format!(
                     "Failed to load environment file '{}' (resolved to '{}'): {}",

@@ -68,7 +68,12 @@ pub fn analyze_secrets(
         HashMap::new()
     };
     for env_file in &config.env_file {
-        let ef_path = work_dir.join(env_file);
+        let expanded = super::expand_tilde(Path::new(env_file));
+        let ef_path = if expanded.is_absolute() {
+            expanded
+        } else {
+            work_dir.join(expanded)
+        };
         for (k, v) in load_existing_env(&ef_path) {
             existing_values.insert(k, v);
         }
