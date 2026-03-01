@@ -1,38 +1,28 @@
 use service_federation::{Orchestrator, Parser};
-use std::sync::Mutex;
+use std::path::Path;
 use std::time::Duration;
 use tokio::time::sleep;
 
-// Global mutex to serialize compose tests
-// Required because FED_SESSION is a process-wide environment variable
-// and tests running in parallel would interfere with each other
-static COMPOSE_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-/// Helper to set up test session and return cleanup guard
-/// This ensures each test gets an isolated compose project
-/// Also acquires the global test lock to prevent parallel test interference
-fn setup_test_session(session_id: &str) -> impl Drop {
-    // Acquire lock to serialize compose tests (FED_SESSION is process-wide)
-    let lock = COMPOSE_TEST_LOCK.lock().unwrap();
-    std::env::set_var("FED_SESSION", session_id);
-
-    // Return a guard that cleans up on drop
-    struct SessionGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
-    impl Drop for SessionGuard {
-        fn drop(&mut self) {
-            std::env::remove_var("FED_SESSION");
-            // MutexGuard (self.0) will be dropped here, releasing the lock
-        }
+/// Compute the compose project name from a compose file path (same logic as DockerComposeService).
+fn compose_project_name(compose_file: &Path) -> String {
+    let canonical =
+        std::fs::canonicalize(compose_file).unwrap_or_else(|_| compose_file.to_path_buf());
+    let bytes = canonical.as_os_str().as_encoded_bytes();
+    // FNV-1a 32-bit hash (matches service::fnv1a_32)
+    const FNV_OFFSET: u32 = 2_166_136_261;
+    const FNV_PRIME: u32 = 16_777_619;
+    let mut hash = FNV_OFFSET;
+    for &byte in bytes {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(FNV_PRIME);
     }
-    SessionGuard(lock)
+    format!("fed-{:04x}", hash & 0xFFFF)
 }
 
 /// Helper to clean up compose projects after tests
-async fn cleanup_compose_project(session_id: &str) {
-    let project_name = format!("fed-{}", session_id);
+async fn cleanup_compose_project_by_path(compose_file: &Path) {
+    let project_name = compose_project_name(compose_file);
 
-    // Try both docker compose v2 and docker-compose v1
-    // Add timeout and force stop
     let _ = tokio::process::Command::new("docker")
         .args([
             "compose",
@@ -60,7 +50,6 @@ async fn cleanup_compose_project(session_id: &str) {
         .output()
         .await;
 
-    // Give docker time to cleanup
     sleep(Duration::from_millis(500)).await;
 }
 
@@ -168,9 +157,8 @@ async fn test_compose_basic_lifecycle() {
         return;
     }
 
-    let session_id = "test-lifecycle";
-    let _guard = setup_test_session(session_id);
-    cleanup_compose_project(session_id).await;
+    let compose_file = Path::new("tests/fixtures/compose/test-services.yml");
+    cleanup_compose_project_by_path(compose_file).await;
 
     let yaml = r#"
 services:
@@ -216,7 +204,7 @@ services:
         .expect("Get status failed");
     assert_eq!(status.to_string(), "stopped");
 
-    cleanup_compose_project(session_id).await;
+    cleanup_compose_project_by_path(compose_file).await;
 }
 
 #[tokio::test]
@@ -227,9 +215,8 @@ async fn test_compose_environment_override() {
         return;
     }
 
-    let session_id = "test-env";
-    let _guard = setup_test_session(session_id);
-    cleanup_compose_project(session_id).await;
+    let compose_file = Path::new("tests/fixtures/compose/test-services.yml");
+    cleanup_compose_project_by_path(compose_file).await;
 
     let yaml = r#"
 parameters:
@@ -272,7 +259,7 @@ services:
     );
 
     orchestrator.stop("busybox").await.expect("Stop failed");
-    cleanup_compose_project(session_id).await;
+    cleanup_compose_project_by_path(compose_file).await;
 }
 
 #[tokio::test]
@@ -283,9 +270,8 @@ async fn test_compose_with_process_dependency() {
         return;
     }
 
-    let session_id = "test-mixed";
-    let _guard = setup_test_session(session_id);
-    cleanup_compose_project(session_id).await;
+    let compose_file = Path::new("tests/fixtures/compose/test-services.yml");
+    cleanup_compose_project_by_path(compose_file).await;
 
     let yaml = r#"
 services:
@@ -338,20 +324,16 @@ services:
     );
 
     orchestrator.stop_all().await.expect("Stop all failed");
-    cleanup_compose_project(session_id).await;
+    cleanup_compose_project_by_path(compose_file).await;
 }
 
 #[tokio::test]
 #[ignore] // Run with --ignored flag, requires Docker
-#[allow(clippy::await_holding_lock)] // Intentional: serialize compose tests
 async fn test_compose_project_isolation() {
     if !docker_available().await || !docker_compose_available().await {
         eprintln!("Skipping test - Docker or Docker Compose not available");
         return;
     }
-
-    // Acquire lock to prevent interference from parallel tests
-    let _lock = COMPOSE_TEST_LOCK.lock().unwrap();
 
     // Create two separate compose files in temp locations
     let temp_dir1 = tempfile::tempdir().unwrap();
@@ -394,8 +376,6 @@ services:
 
     let parser = Parser::new();
 
-    // Use different sessions for each orchestrator to test isolation
-    std::env::set_var("FED_SESSION", "test-isolation-1");
     let config1 = parser.parse_config(&yaml1).expect("Failed to parse 1");
     let orch1_temp = tempfile::tempdir().unwrap();
     let mut orch1 = Orchestrator::new(config1, orch1_temp.path().to_path_buf())
@@ -405,8 +385,7 @@ services:
     orch1.initialize().await.expect("Init 1 failed");
     orch1.start("nginx1").await.expect("Start 1 failed");
 
-    // Switch to second session for second orchestrator
-    std::env::set_var("FED_SESSION", "test-isolation-2");
+    // Different compose file path → different project name → isolated
     let config2 = parser.parse_config(&yaml2).expect("Failed to parse 2");
     let orch2_temp = tempfile::tempdir().unwrap();
     let mut orch2 = Orchestrator::new(config2, orch2_temp.path().to_path_buf())
@@ -436,11 +415,8 @@ services:
     orch2.stop_all().await.expect("Stop 2 failed");
 
     // Clean up both projects
-    cleanup_compose_project("test-isolation-1").await;
-    cleanup_compose_project("test-isolation-2").await;
-
-    // Clean up environment
-    std::env::remove_var("FED_SESSION");
+    cleanup_compose_project_by_path(&compose1_path).await;
+    cleanup_compose_project_by_path(&compose2_path).await;
 }
 
 #[tokio::test]
@@ -451,9 +427,8 @@ async fn test_compose_idempotent_start() {
         return;
     }
 
-    let session_id = "test-idempotent";
-    let _guard = setup_test_session(session_id);
-    cleanup_compose_project(session_id).await;
+    let compose_file = Path::new("tests/fixtures/compose/test-services.yml");
+    cleanup_compose_project_by_path(compose_file).await;
 
     let yaml = r#"
 services:
@@ -484,7 +459,7 @@ services:
     assert!(result.is_ok(), "Second start should succeed");
 
     orchestrator.stop("nginx").await.expect("Stop failed");
-    cleanup_compose_project(session_id).await;
+    cleanup_compose_project_by_path(compose_file).await;
 }
 
 #[tokio::test]
@@ -495,9 +470,8 @@ async fn test_compose_health_check() {
         return;
     }
 
-    let session_id = "test-health";
-    let _guard = setup_test_session(session_id);
-    cleanup_compose_project(session_id).await;
+    let compose_file = Path::new("tests/fixtures/compose/test-services.yml");
+    cleanup_compose_project_by_path(compose_file).await;
 
     let yaml = r#"
 services:
@@ -534,7 +508,7 @@ services:
     );
 
     orchestrator.stop("nginx").await.expect("Stop failed");
-    cleanup_compose_project(session_id).await;
+    cleanup_compose_project_by_path(compose_file).await;
 }
 
 #[tokio::test]
@@ -545,9 +519,8 @@ async fn test_compose_port_conflict() {
         return;
     }
 
-    let session_id = "test-port";
-    let _guard = setup_test_session(session_id);
-    cleanup_compose_project(session_id).await;
+    let compose_file = Path::new("tests/fixtures/compose/test-services.yml");
+    cleanup_compose_project_by_path(compose_file).await;
 
     // Start a service on port 18080
     let yaml1 = r#"
@@ -593,7 +566,7 @@ services:
     }
 
     orch1.stop_all().await.expect("Stop failed");
-    cleanup_compose_project(session_id).await;
+    cleanup_compose_project_by_path(compose_file).await;
 }
 
 #[tokio::test]

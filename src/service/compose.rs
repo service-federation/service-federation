@@ -130,7 +130,7 @@ impl DockerComposeService {
             )));
         }
 
-        // Generate project name based on compose file path and session
+        // Generate project name based on compose file path
         // This ensures services from the same compose file share a project
         let project_name = Self::get_project_name(&compose_file_path);
 
@@ -160,18 +160,11 @@ impl DockerComposeService {
         format!("{:04x}", hash & 0xFFFF) // 4 hex chars
     }
 
-    /// Get project name with session scoping if FED_SESSION is set.
+    /// Get project name from hash of compose file path.
     ///
-    /// Format: `fed-{hash}` or `fed-{session-id}` (if in session)
+    /// Format: `fed-{hash}`
     fn get_project_name(compose_file_path: &Path) -> String {
-        if let Ok(session_id) = std::env::var("FED_SESSION") {
-            // In session mode: use session ID as project name
-            // All compose services in same session share same project
-            format!("fed-{}", session_id)
-        } else {
-            // Legacy mode: use hash of compose file path
-            format!("fed-{}", Self::hash_path(compose_file_path))
-        }
+        format!("fed-{}", Self::hash_path(compose_file_path))
     }
 
     /// Build base compose command with file and project

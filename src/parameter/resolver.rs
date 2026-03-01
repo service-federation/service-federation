@@ -48,8 +48,8 @@ pub enum PortResolutionReason {
         conflict_pid: Option<u32>,
         conflict_process: Option<String>,
     },
-    /// Port was restored from session cache
-    SessionCached,
+    /// Port was restored from cache
+    Cached,
     /// No default available, allocated a random port
     Random,
 }
@@ -70,7 +70,7 @@ impl std::fmt::Display for PortResolutionReason {
                     _ => write!(f, " with unknown process"),
                 }
             }
-            Self::SessionCached => write!(f, "restored from session cache"),
+            Self::Cached => write!(f, "restored from cache"),
             Self::Random => write!(f, "randomly allocated"),
         }
     }
@@ -97,7 +97,7 @@ pub struct PortResolution {
 ///
 /// Port parameters are allocated with the following priority:
 /// 1. Explicit `value:` field (validated but not allocated)
-/// 2. Session-cached port (if running in a session)
+/// 2. Persisted port from previous run (if available)
 /// 3. Preferred port from `default:` (if available)
 /// 4. Random available port (fallback)
 ///
@@ -136,7 +136,7 @@ pub struct Resolver {
     /// Ports owned by already-running managed services.
     /// These are trusted without bind-checking during resolution because we manage the processes.
     managed_ports: HashSet<u16>,
-    /// Unified port store — either session-backed, SQLite-backed, or no-op (isolated mode).
+    /// Unified port store — either SQLite-backed or no-op (isolated mode).
     /// The resolver doesn't need to know which backend is active.
     port_store: Box<dyn crate::port::PortStore>,
     /// When true, ignore configured default ports and allocate fresh random ports.
@@ -179,10 +179,9 @@ impl Resolver {
 
     /// Set the port store backend.
     ///
-    /// The resolver uses this for all port lookups and saves instead of
-    /// directly accessing sessions or SQLite. Pass [`crate::port::NoopPortStore`] for
-    /// isolated mode, [`crate::port::SessionPortStore`] when a session is active, or
-    /// [`crate::port::SqlitePortStore`] when using persisted ports without a session.
+    /// The resolver uses this for all port lookups and saves. Pass
+    /// [`crate::port::NoopPortStore`] for isolated mode or
+    /// [`crate::port::SqlitePortStore`] for persisted ports.
     pub fn set_port_store(&mut self, store: Box<dyn crate::port::PortStore>) {
         self.port_store = store;
     }
@@ -402,7 +401,7 @@ impl Resolver {
                 self.resolved_parameters.insert(name.clone(), value.clone());
             } else if param.is_port_type() {
                 // Port resolution via unified PortStore.
-                // The store may be session-backed, SQLite-backed, or no-op (isolated).
+                // The store may be SQLite-backed or no-op (isolated).
                 // One lookup path, one save path — no dual-cache priority chain.
                 let (port, reason) = if let Some(cached_port) = self.port_store.get_port(name) {
                     // Port store has a cached value — validate it's still usable
@@ -725,14 +724,14 @@ impl Resolver {
                 param_name
             );
             self.port_allocator.mark_allocated(cached_port);
-            Ok((cached_port, PortResolutionReason::SessionCached))
+            Ok((cached_port, PortResolutionReason::Cached))
         } else if self.port_allocator.try_allocate_port(cached_port).is_ok() {
             tracing::debug!(
                 "Reusing cached port {} for '{}' (port is free)",
                 cached_port,
                 param_name
             );
-            Ok((cached_port, PortResolutionReason::SessionCached))
+            Ok((cached_port, PortResolutionReason::Cached))
         } else {
             tracing::warn!(
                 "Cached port {} for '{}' is no longer available, resolving conflict...",

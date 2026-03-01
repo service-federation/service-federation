@@ -67,16 +67,7 @@ impl<'a> HealthCheckRunner<'a> {
                             // Process/Gradle services: run healthcheck on host
                             if service.image.is_some() {
                                 // Docker service - use docker exec
-                                let session_id = if let Some(ref iso_id) =
-                                    self.orchestrator.isolation_id
-                                {
-                                    Some(iso_id.clone())
-                                } else if let Ok(Some(session)) = crate::session::Session::current()
-                                {
-                                    Some(session.id().to_string())
-                                } else {
-                                    None
-                                };
+                                let session_id = self.orchestrator.isolation_id.clone();
                                 let container_name = crate::service::docker_container_name(
                                     name,
                                     session_id.as_deref(),

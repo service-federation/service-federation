@@ -147,16 +147,11 @@ fed start --isolate     # Sidestep conflicts
 fed start --replace     # Kill conflicting processes
 ```
 
-**Stuck sessions?**
-```bash
-fed session cleanup
-```
-
 ## Documentation
 
 - [Configuration Reference](docs/configuration.md) — Services, parameters, health checks, templates, profiles, packages, resource limits, restart policies
 - [Scripts](docs/scripts.md) — Scripts, isolated scripts, argument passing
-- [Isolation](docs/isolation.md) — Directory scoping, worktrees, sessions, Cursor agents
+- [Isolation](docs/isolation.md) — Directory scoping, worktrees, Cursor agents
 - [Command Reference](docs/commands.md) — All commands, flags, and subcommands
 
 ## Contributing

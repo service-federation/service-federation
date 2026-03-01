@@ -123,9 +123,8 @@ pub fn run_init(output: &Path, force: bool, out: &dyn UserOutput) -> anyhow::Res
         "  1. Edit {} to match your services",
         output.display()
     ));
-    out.status("  2. Create a session: fed session start --id my-project");
-    out.status("  3. Add .fed/ to .gitignore");
-    out.status("  4. Run: fed start");
+    out.status("  2. Add .fed/ to .gitignore");
+    out.status("  3. Run: fed start");
 
     Ok(())
 }

@@ -217,32 +217,6 @@ Clear the entire package cache.
 |------|-------------|
 | `-f` / `--force` | Skip confirmation prompt |
 
-## Sessions
-
-### `fed session start`
-
-Start a named session.
-
-| Flag | Description |
-|------|-------------|
-| `--id <NAME>` | Session identifier |
-
-### `fed session end`
-
-End the current session.
-
-### `fed session list`
-
-List all sessions.
-
-### `fed session cleanup`
-
-Clean up orphaned sessions.
-
-| Flag | Description |
-|------|-------------|
-| `-f` / `--force` | Skip confirmation prompt |
-
 ## Workspaces
 
 Alias: `fed ws` for `fed workspace`.

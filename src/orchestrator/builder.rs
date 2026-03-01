@@ -126,7 +126,7 @@ impl OrchestratorBuilder {
 
     /// Enable randomized port allocation.
     ///
-    /// Skips the session port cache and allocates fresh random ports for all
+    /// Skips persisted ports and allocates fresh random ports for all
     /// port-type parameters. Also enables auto-resolve to avoid interactive
     /// conflict prompts.
     pub fn randomize_ports(mut self, randomize: bool) -> Self {
@@ -145,7 +145,7 @@ impl OrchestratorBuilder {
     /// Enable dry-run initialization.
     ///
     /// When enabled, `build()` calls `initialize_dry_run()` and avoids
-    /// persisting resolved ports/session cache updates.
+    /// persisting resolved ports.
     pub fn dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self

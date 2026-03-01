@@ -254,82 +254,6 @@ impl DockerService {
         Some(source.to_string())
     }
 
-    /// Cleanup orphaned containers from ended sessions
-    /// Only removes containers whose session has been explicitly ended (status = Ended).
-    /// Containers with unknown/unloadable session labels (including isolation IDs like `iso-*`)
-    /// are left alone — we can't distinguish "session was deleted" from "label is not a session."
-    pub async fn cleanup_orphaned_containers() -> Result<usize> {
-        use tracing::{debug, info};
-
-        let client = DockerClient::new();
-
-        // Get all managed containers
-        let output = client
-            .ps_formatted(
-                "label=com.service-federation.managed=true",
-                "{{.ID}}\t{{.Label \"com.service-federation.session\"}}",
-                DOCKER_INSPECT_TIMEOUT,
-            )
-            .await?;
-
-        let containers_output = String::from_utf8_lossy(&output.stdout);
-        let mut removed = 0;
-
-        for line in containers_output.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() < 2 {
-                continue;
-            }
-
-            let container_id = parts[0];
-            let session_id = parts[1];
-
-            // Skip containers without session ID (global containers)
-            if session_id.is_empty() {
-                continue;
-            }
-
-            let should_remove = match crate::session::Session::load(session_id) {
-                Ok(sess) => {
-                    // Only remove if session was explicitly ended
-                    sess.status() == crate::session::SessionStatus::Ended
-                }
-                Err(_) => {
-                    // Can't load session — could be an isolation ID (iso-*), a deleted
-                    // session, or something else. Don't remove: we can't be sure it's orphaned.
-                    debug!(
-                        "Session {} not loadable, skipping container {}",
-                        session_id, container_id
-                    );
-                    false
-                }
-            };
-
-            if should_remove {
-                info!(
-                    "Removing orphaned container {} (session {})",
-                    container_id, session_id
-                );
-                match client.rm_force(container_id, DOCKER_REMOVE_TIMEOUT).await {
-                    Ok(()) => removed += 1,
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to remove orphaned container {}: {}",
-                            container_id,
-                            e
-                        );
-                    }
-                }
-            }
-        }
-
-        if removed > 0 {
-            info!("Cleaned up {} orphaned container(s)", removed);
-        }
-
-        Ok(removed)
-    }
-
     /// Validate volume specification for security.
     ///
     /// Format: `[host-path:]container-path[:options]`
@@ -540,12 +464,6 @@ impl ServiceManager for DockerService {
         args.push("com.service-federation.managed=true".to_string());
         args.push("--label".to_string());
         args.push(format!("com.service-federation.service={}", service_name));
-
-        // Add session label if session ID is available
-        if let Some(ref session_id) = self.session_id {
-            args.push("--label".to_string());
-            args.push(format!("com.service-federation.session={}", session_id));
-        }
 
         args.extend(env_args);
 

@@ -140,17 +140,6 @@ async fn reset_ports(
     tracker.initialize().await?;
     tracker.clear_port_resolutions().await?;
 
-    // Also clear session port cache — if randomized ports were propagated to the
-    // session during a `fed start`, they survive a SQLite-only reset because the
-    // session cache takes priority over persisted_ports in the resolver.
-    if let Ok(Some(mut session)) =
-        service_federation::session::Session::current_for_workdir(Some(work_dir))
-    {
-        if let Err(e) = session.clear_ports() {
-            tracing::warn!("Failed to clear session port cache: {}", e);
-        }
-    }
-
     out.success("Port allocations cleared. Next `fed start` will use default ports.\n");
 
     Ok(())
