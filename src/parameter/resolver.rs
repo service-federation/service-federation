@@ -370,6 +370,21 @@ impl Resolver {
             )));
         }
 
+        // Prepend generated_secrets_file to env_file so it's loaded by apply_env_file_to_parameters
+        // (lowest priority — user's .env files can override generated values).
+        // Only prepend if the file exists — it may not on the very first run before generation.
+        if let Some(gsf) = config.generated_secrets_file.as_ref() {
+            let gsf_path = super::expand_tilde(Path::new(gsf));
+            let gsf_abs = if gsf_path.is_absolute() {
+                gsf_path
+            } else {
+                work_dir.join(gsf_path)
+            };
+            if gsf_abs.exists() && !config.env_file.contains(gsf) {
+                config.env_file.insert(0, gsf.clone());
+            }
+        }
+
         // Nothing to generate? We're done.
         if analysis.needs_generation.is_empty() {
             return Ok(());
@@ -413,7 +428,7 @@ impl Resolver {
 
         super::secret::write_env_file(&analysis.env_path, &generated)?;
 
-        // Prepend generated_secrets_file to env_file so it's loaded first (lowest priority)
+        // Ensure generated_secrets_file is in env_file now that the file exists
         if !config.env_file.contains(gsf) {
             config.env_file.insert(0, gsf.clone());
         }
@@ -2423,5 +2438,109 @@ mod tests {
 
         // generated_secrets_file should be prepended to env_file
         assert_eq!(config.env_file[0], ".env.secrets");
+    }
+
+    #[test]
+    fn existing_secrets_file_loaded_on_subsequent_run() {
+        use crate::config::{Config, Parameter};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        git2::Repository::init(temp_dir.path()).unwrap();
+        std::fs::write(temp_dir.path().join(".gitignore"), ".env.secrets\n").unwrap();
+
+        // Simulate a previous run that already generated the secrets file
+        std::fs::write(
+            temp_dir.path().join(".env.secrets"),
+            "SESSION_KEY=previously_generated_value\n",
+        )
+        .unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+        config.generated_secrets_file = Some(".env.secrets".to_string());
+        config.parameters.insert(
+            "SESSION_KEY".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                ..Default::default()
+            },
+        );
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        assert_eq!(
+            resolved.get("SESSION_KEY").unwrap(),
+            "previously_generated_value",
+            "Should load secret from existing .env.secrets on subsequent runs"
+        );
+    }
+
+    #[test]
+    fn absolute_env_file_path_loaded() {
+        use crate::config::{Config, Parameter};
+        use tempfile::TempDir;
+
+        let work_dir = TempDir::new().unwrap();
+        let secrets_dir = TempDir::new().unwrap();
+        let secrets_path = secrets_dir.path().join("secrets.env");
+        std::fs::write(&secrets_path, "API_TOKEN=from_absolute_path\n").unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(work_dir.path());
+
+        let mut config = Config::default();
+        config.env_file = vec![secrets_path.to_string_lossy().to_string()];
+        config.parameters.insert(
+            "API_TOKEN".to_string(),
+            Parameter {
+                ..Default::default()
+            },
+        );
+
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let resolved = resolver.get_resolved_parameters();
+        assert_eq!(
+            resolved.get("API_TOKEN").unwrap(),
+            "from_absolute_path",
+            "Absolute env_file paths should be loaded directly, not joined with work_dir"
+        );
+    }
+
+    #[test]
+    fn tilde_env_file_path_expanded() {
+        use crate::config::{Config, Parameter};
+        use tempfile::TempDir;
+
+        let home = dirs::home_dir().expect("test requires home dir");
+        let test_dir = home.join(".fed-test-tmp");
+        std::fs::create_dir_all(&test_dir).unwrap();
+        let env_file = test_dir.join("test.env");
+        std::fs::write(&env_file, "TILDE_VAR=it_works\n").unwrap();
+
+        let work_dir = TempDir::new().unwrap();
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(work_dir.path());
+
+        let mut config = Config::default();
+        config.env_file = vec!["~/.fed-test-tmp/test.env".to_string()];
+        config.parameters.insert(
+            "TILDE_VAR".to_string(),
+            Parameter {
+                ..Default::default()
+            },
+        );
+
+        let result = resolver.resolve_parameters(&mut config);
+        // Clean up before asserting
+        let _ = std::fs::remove_dir_all(&test_dir);
+
+        result.unwrap();
+        let resolved = resolver.get_resolved_parameters();
+        assert_eq!(resolved.get("TILDE_VAR").unwrap(), "it_works");
     }
 }
