@@ -2,7 +2,7 @@ use crate::output::UserOutput;
 use std::path::Path;
 
 const TEMPLATE: &str = r#"# Service Federation Configuration
-# Documentation: https://github.com/adrianhelvik/service-federation
+# Documentation: https://github.com/service-federation/fed
 
 parameters:
   # Port parameters with preferred defaults
