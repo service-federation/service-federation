@@ -1544,8 +1544,10 @@ mod tests {
 
     #[test]
     fn generated_secret_with_generated_secrets_file_is_valid() {
-        let mut config = Config::default();
-        config.generated_secrets_file = Some(".env.secrets".to_string());
+        let mut config = Config {
+            generated_secrets_file: Some(".env.secrets".to_string()),
+            ..Default::default()
+        };
         config.parameters.insert(
             "SESSION_KEY".to_string(),
             Parameter {
