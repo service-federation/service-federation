@@ -381,9 +381,9 @@ services:
     clean: rm -rf node_modules dist       # Runs with `fed clean`
 ```
 
-**`install`** runs once per session before the service starts. Use it for dependency installation (e.g., `npm ci`). Re-run with `fed install`.
+**`install`** runs once before the service starts (skipped on subsequent `fed start` until `fed clean` or `fed install`). Use it for dependency installation (e.g., `npm ci`). Re-run with `fed install`.
 
-**`migrate`** runs once per session after the service's dependencies are healthy but before the service itself starts. Use it for database migrations, schema setup, or anything that needs a running dependency. The service's full resolved environment is available. Dependents wait for `migrate` to complete before they start.
+**`migrate`** runs once after the service's dependencies are healthy but before the service itself starts (skipped on subsequent `fed start` until `fed clean`). Use it for database migrations, schema setup, or anything that needs a running dependency. The service's full resolved environment is available. Dependents wait for `migrate` to complete before they start.
 
 **`build`** runs with `fed build`. **`clean`** runs with `fed clean`.
 
@@ -476,17 +476,5 @@ fed run integration           # Runs in complete isolation
 ```
 
 `isolated: true` allocates fresh random ports, scopes Docker volumes, and cleans up after completion.
-
-## Sessions
-
-For cases where you want explicit named isolation rather than relying on directory scoping:
-
-```bash
-fed session start --id my-project
-fed start                            # Ports remembered under this session
-fed session end
-```
-
-Cross-directory session: `export FED_SESSION=my-project`. Add `.fed/` to `.gitignore`.
 
 See also [Isolation](./isolation.md) for how directory scoping works.

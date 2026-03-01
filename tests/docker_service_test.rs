@@ -38,7 +38,7 @@ fn create_test_service(name: &str, image: &str) -> DockerService {
         config,
         HashMap::new(),
         "/tmp".to_string(),
-        None, // No session for test
+        None, // No isolation ID
     )
 }
 
@@ -58,7 +58,7 @@ fn create_test_service_with_env(
         config,
         env,
         "/tmp".to_string(),
-        None, // No session for test
+        None, // No isolation ID
     )
 }
 
@@ -207,7 +207,7 @@ async fn test_docker_service_logs_retrieval() {
         config,
         HashMap::new(),
         "/tmp".to_string(),
-        None, // No session for test
+        None, // No isolation ID
     );
 
     service.start().await.expect("Start should succeed");
@@ -258,7 +258,7 @@ async fn test_docker_service_invalid_volume() {
         config,
         HashMap::new(),
         "/tmp".to_string(),
-        None, // No session for test
+        None, // No isolation ID
     );
 
     // Should fail validation before even trying to start container
@@ -284,7 +284,7 @@ async fn test_docker_service_invalid_port() {
         config,
         HashMap::new(),
         "/tmp".to_string(),
-        None, // No session for test
+        None, // No isolation ID
     );
 
     // Should fail validation

@@ -916,7 +916,7 @@ scripts:
         .await
         .expect("Failed to initialize");
 
-    // Don't start backend in main session - verify it's Stopped
+    // Don't start backend in main orchestrator - verify it's Stopped
     let status_before = orchestrator.get_status().await;
     if let Some(backend_status) = status_before.get("backend") {
         assert_eq!(
@@ -982,7 +982,7 @@ scripts:
         .await
         .expect("Failed to initialize");
 
-    // Start backend in main session
+    // Start backend in main orchestrator
     orchestrator
         .start("backend")
         .await
@@ -994,7 +994,7 @@ scripts:
         "Backend should be running before script"
     );
 
-    // Run isolated script - should not affect main session's backend
+    // Run isolated script - should not affect main orchestrator's backend
     let status = orchestrator
         .run_script_interactive("test", &[])
         .await

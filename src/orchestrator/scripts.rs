@@ -161,7 +161,7 @@ impl<'a> ScriptRunner<'a> {
         }
     }
 
-    /// Run a script in shared context (reuses session ports and services).
+    /// Run a script in shared context (reuses current ports and services).
     async fn run_script_shared(
         &self,
         script_name: &str,

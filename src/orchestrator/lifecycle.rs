@@ -67,7 +67,7 @@ impl<'a> ServiceLifecycleCommands<'a> {
     /// Returns an error if:
     /// - Service not found in configuration
     /// - Install command fails
-    /// - Session context is unavailable
+    /// - Marker directory is inaccessible
     pub async fn run_install(&self, service_name: &str) -> Result<()> {
         // Clear install state first
         let ctx = crate::markers::LifecycleMarkers::new(self.work_dir.to_path_buf());
@@ -79,8 +79,8 @@ impl<'a> ServiceLifecycleCommands<'a> {
 
     /// Run install command for a service if needed.
     ///
-    /// This checks if the service has already been installed in the current session
-    /// or globally (depending on mode). If already installed, it skips the install step.
+    /// This checks if the service has already been installed (via marker files).
+    /// If already installed, it skips the install step.
     ///
     /// The install command runs in the service's configured working directory with
     /// its environment variables. Special handling is included for npm's ENOTEMPTY
@@ -196,8 +196,8 @@ impl<'a> ServiceLifecycleCommands<'a> {
 
     /// Run migrate command for a service if needed.
     ///
-    /// This checks if the service has already been migrated in the current session
-    /// or globally (depending on mode). If already migrated, it skips the migrate step.
+    /// This checks if the service has already been migrated (via marker files).
+    /// If already migrated, it skips the migrate step.
     ///
     /// The migrate command runs after dependencies are healthy but before the service
     /// starts. Use it for database migrations, schema setup, or anything that needs

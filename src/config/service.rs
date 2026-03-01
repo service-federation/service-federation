@@ -61,7 +61,7 @@ pub struct Service {
     pub install: Option<String>,
 
     /// Command to run after dependencies are healthy but before the service starts.
-    /// Runs once per session (like install). Use for database migrations, schema setup, etc.
+    /// Runs once (like install). Use for database migrations, schema setup, etc.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub migrate: Option<String>,
 

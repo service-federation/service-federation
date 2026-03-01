@@ -13,7 +13,7 @@ pub struct LockFile {
     /// Working directory when services were started
     pub work_dir: String,
 
-    /// When this orchestration session started
+    /// When this orchestration run started
     pub started_at: DateTime<Utc>,
 
     /// All running services with their state

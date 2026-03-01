@@ -26,7 +26,7 @@ pub struct Script {
 
     /// When true, run the script in complete isolation:
     /// - Allocate fresh random ports for all port-type parameters
-    /// - Scope Docker volumes by session (myvolume → fed-{session}-myvolume)
+    /// - Scope Docker volumes by isolation ID (myvolume → fed-{id}-myvolume)
     /// - Start dependencies in an isolated context
     /// - Clean up all resources after the script completes
     #[serde(default)]

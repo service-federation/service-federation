@@ -36,7 +36,7 @@ fed start --isolate      # Enable isolation + start (one command)
 
 - **Ports**: All port-type parameters get randomized values instead of defaults
 - **Docker containers**: Containers get a unique isolation ID in their names, preventing collisions
-- **Docker volumes**: Scoped to the isolation session
+- **Docker volumes**: Scoped to the isolation ID
 
 ## Port Management
 

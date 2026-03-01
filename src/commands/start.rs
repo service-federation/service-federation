@@ -54,11 +54,11 @@ pub async fn run_start(
     // If --replace is set, first stop any fed-managed services gracefully,
     // then kill any remaining external processes occupying required ports
     if replace {
-        // First, gracefully stop services from previous sessions
-        let stopped_services = stop_previous_session_services(orchestrator, out).await;
+        // First, gracefully stop stale services from a previous run
+        let stopped_services = stop_stale_services(orchestrator, out).await;
         if stopped_services > 0 {
             out.status(&format!(
-                "Stopped {} service(s) from previous session\n",
+                "Stopped {} service(s) from previous run\n",
                 stopped_services
             ));
             // Give a moment for ports to be fully released
@@ -887,16 +887,13 @@ fn mask_sensitive_value(key: &str, value: &str) -> String {
     value.to_string()
 }
 
-/// Stop services from a previous fed session gracefully.
+/// Stop stale services from a previous fed run gracefully.
 ///
 /// This is called by `--replace` to cleanly stop fed-managed services
 /// before killing any remaining external processes.
 ///
 /// Returns the number of services stopped.
-async fn stop_previous_session_services(
-    orchestrator: &Orchestrator,
-    out: &dyn UserOutput,
-) -> usize {
+async fn stop_stale_services(orchestrator: &Orchestrator, out: &dyn UserOutput) -> usize {
     use service_federation::state::SqliteStateTracker;
 
     // Clone the database connection while briefly holding the read lock.

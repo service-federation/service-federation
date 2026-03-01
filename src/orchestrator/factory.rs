@@ -630,7 +630,7 @@ services:
         // Parent: no isolation_id → uses work_dir hash
         let parent_name = crate::service::docker_container_name("postgres", None, work_dir);
 
-        // Child: with isolation_id → uses isolation_id as session
+        // Child: with isolation_id → uses isolation_id for scoping
         let child_name =
             crate::service::docker_container_name("postgres", Some("iso-deadbeef"), work_dir);
 

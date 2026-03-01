@@ -9,10 +9,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Generate a Docker container name scoped by session or work directory.
+/// Generate a Docker container name scoped by isolation ID or work directory.
 ///
-/// - With session: `fed-{sanitized_session}-{sanitized_service}` (session is already unique)
-/// - Without session: `fed-{work_dir_hash}-{sanitized_service}` (8-hex-char hash of work_dir)
+/// - With isolation ID: `fed-{sanitized_id}-{sanitized_service}` (ID is already unique)
+/// - Without isolation ID: `fed-{work_dir_hash}-{sanitized_service}` (8-hex-char hash of work_dir)
 ///
 /// Max total length is ~69 chars (`fed-` + 32-char component + `-` + 32-char component),
 /// well within Docker's 128-char container name limit.
@@ -187,11 +187,11 @@ impl DockerService {
         port_str.parse().ok()
     }
 
-    /// Scope a volume specification with a session ID.
+    /// Scope a volume specification with an isolation ID.
     ///
-    /// Transforms named volumes to include the session prefix for isolation:
-    /// - `myvolume:/data` → `fed-{session}-myvolume:/data`
-    /// - `myvolume:/data:ro` → `fed-{session}-myvolume:/data:ro`
+    /// Transforms named volumes to include a scope prefix for isolation:
+    /// - `myvolume:/data` → `fed-{scope}-myvolume:/data`
+    /// - `myvolume:/data:ro` → `fed-{scope}-myvolume:/data:ro`
     ///
     /// Bind mounts are returned unchanged:
     /// - `./data:/data` → `./data:/data`
@@ -412,7 +412,7 @@ impl ServiceManager for DockerService {
         let mut args = vec!["run".to_string(), "-d".to_string()];
 
         // Add deterministic container name for tracking and orphan prevention
-        // Format: fed-<service-name> or fed-<session-id>-<service-name> (if in session)
+        // Format: fed-<work_dir_hash>-<service-name> or fed-<isolation-id>-<service-name>
         let (service_name, env_args) = {
             let base = self.base.read();
             let mut env_args = Vec::new();
@@ -512,14 +512,14 @@ impl ServiceManager for DockerService {
             }
         }
 
-        // Add volumes with validation and session scoping
+        // Add volumes with validation and isolation scoping
         for volume in &self.config.volumes {
             Self::validate_volume_spec(volume).map_err(|e| match e {
                 Error::Config(msg) => Error::Config(format!("Service '{}': {}", self.name, msg)),
                 other => other,
             })?;
             args.push("-v".to_string());
-            // Scope named volumes for isolation (session ID or work_dir hash)
+            // Scope named volumes for isolation (isolation ID or work_dir hash)
             let scoped_volume = if let Some(ref sid) = self.session_id {
                 Self::scope_volume_with_session(volume, sid)
             } else {
@@ -1183,7 +1183,7 @@ mod tests {
             config,
             HashMap::new(),
             "/tmp".to_string(),
-            None, // No session for test
+            None, // No isolation ID
         );
 
         assert_eq!(service.name(), "test-service");
@@ -1203,7 +1203,7 @@ mod tests {
             config,
             HashMap::new(),
             "/tmp".to_string(),
-            None, // No session for test
+            None, // No isolation ID
         );
 
         assert_eq!(service.status(), Status::Stopped);
@@ -1359,16 +1359,16 @@ mod tests {
     }
 
     #[test]
-    fn test_container_name_without_session() {
-        // Without session, should include work_dir hash
+    fn test_container_name_without_isolation_id() {
+        // Without isolation ID, should include work_dir hash
         let name = docker_container_name("my-service", None, Path::new("/tmp/project"));
         let hash = hash_work_dir(Path::new("/tmp/project"));
         assert_eq!(name, format!("fed-{}-my-service", hash));
     }
 
     #[test]
-    fn test_container_name_with_session() {
-        // With session, should use session ID instead of work_dir hash
+    fn test_container_name_with_isolation_id() {
+        // With isolation ID, should use it instead of work_dir hash
         let name = docker_container_name("my-service", Some("abc123"), Path::new("/tmp/project"));
         assert_eq!(name, "fed-abc123-my-service");
     }
@@ -1385,11 +1385,14 @@ mod tests {
     }
 
     #[test]
-    fn test_container_name_session_overrides_work_dir() {
-        // Same session ID but different work dirs should produce the same name
+    fn test_container_name_isolation_id_overrides_work_dir() {
+        // Same isolation ID but different work dirs should produce the same name
         let name_a = docker_container_name("svc", Some("sess1"), Path::new("/projects/alpha"));
         let name_b = docker_container_name("svc", Some("sess1"), Path::new("/projects/beta"));
-        assert_eq!(name_a, name_b, "Session should override work_dir scoping");
+        assert_eq!(
+            name_a, name_b,
+            "Isolation ID should override work_dir scoping"
+        );
     }
 
     // ========================================================================

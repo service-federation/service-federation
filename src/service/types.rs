@@ -254,7 +254,7 @@ impl StateTransition {
 pub enum OutputMode {
     /// Capture output to log files on disk.
     ///
-    /// - Stdout/stderr redirected to session log file
+    /// - Stdout/stderr redirected to log file
     /// - Logs persisted across restarts
     /// - Used for detached background processes (`fed start`)
     File,

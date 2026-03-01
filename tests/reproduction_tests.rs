@@ -888,7 +888,7 @@ services:
 /// ACTUAL BUG REPRODUCTION: "Service not found" paradox with stale lock files
 ///
 /// This test reproduces the bug where:
-/// 1. Lock file exists from a previous session with container IDs
+/// 1. Lock file exists from a previous run with container IDs
 /// 2. Containers are no longer running
 /// 3. Orchestrator initializes and loads stale lock file
 /// 4. Monitoring loop runs health checks on stale services
@@ -911,7 +911,7 @@ async fn ACTUAL_BUG_service_not_found_paradox_with_stale_lock_file() {
     // Create a stale lock file with PIDs that don't exist (dead processes)
     // Using correct LockFile format from src/state/types.rs
     let stale_lock = json!({
-        "fed_pid": 12345,  // Stale PID from previous session
+        "fed_pid": 12345,  // Stale PID from previous run
         "work_dir": work_dir.to_string_lossy(),
         "started_at": "2025-01-01T00:00:00Z",
         "services": {

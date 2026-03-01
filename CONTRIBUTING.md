@@ -93,7 +93,7 @@ The codebase is organized as follows:
 - `src/config/` - Configuration parsing and validation
 - `src/service/` - Service managers (Docker, Process, Gradle, etc.)
 - `src/orchestrator/` - Service orchestration and lifecycle management
-- `src/session/` - Session management for port stability
+- `src/markers.rs` - Install/migrate lifecycle markers
 - `src/state/` - State persistence (SQLite-based)
 - `src/tui/` - Terminal UI implementation
 - `src/commands/` - CLI command implementations
