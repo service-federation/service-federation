@@ -82,6 +82,34 @@ fed test:integration     # Tests get their own stack, cleaned up after
 
 `isolated: true` gives the script fresh ports, scoped Docker containers and volumes, and automatic cleanup when it finishes. See [docs/scripts.md](docs/scripts.md) for details.
 
+## Secrets
+
+No more `POSTGRES_PASSWORD: password` in your config. Secret parameters are generated on first `fed start` and kept out of git:
+
+```yaml
+generated_secrets_file: .env.secrets  # must be in .gitignore
+
+parameters:
+  DB_PASSWORD:
+    type: secret
+  SESSION_KEY:
+    type: secret
+```
+
+`fed start` generates random values, writes them to `.env.secrets`, and uses them everywhere `{{DB_PASSWORD}}` and `{{SESSION_KEY}}` appear. Values are stable across restarts — generated once, reused forever.
+
+For secrets you manage yourself (API keys, OAuth credentials), use `source: manual`:
+
+```yaml
+parameters:
+  STRIPE_SECRET_KEY:
+    type: secret
+    source: manual
+    description: "From https://dashboard.stripe.com/apikeys"
+```
+
+`fed start` will tell you exactly what's missing and where to put it. See [docs/configuration.md](docs/configuration.md) for details.
+
 ## Worktree & Cursor Isolation
 
 Git worktrees are first-class. Each worktree gets its own ports, containers, and volumes:
@@ -118,7 +146,7 @@ Global flags: `-v`, `-c <config>`, `-e <env>`, `-p <profile>`, `--offline`. Full
 
 ## Configuration
 
-Services can be processes, Docker images, Compose services, or Gradle tasks. Config supports parameters with port allocation, `.env` files, templates, profiles, cross-project packages, lifecycle hooks (`install`, `migrate`, `build`, `clean`), and startup messages.
+Services can be processes, Docker images, Compose services, or Gradle tasks. Config supports parameters with port allocation and secret generation, `.env` files, templates, profiles, cross-project packages, lifecycle hooks (`install`, `migrate`, `build`, `clean`), and startup messages.
 
 Full reference: [docs/configuration.md](docs/configuration.md).
 

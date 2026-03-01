@@ -208,6 +208,61 @@ parameters:
 
 Both keys are accepted at the top level. `variables` takes precedence if both are present. `parameters` is the original key and remains supported.
 
+### Secrets
+
+Parameters with `type: secret` are auto-generated on first `fed start` and stored in a file you gitignore:
+
+```yaml
+generated_secrets_file: .env.secrets
+
+parameters:
+  DB_PASSWORD:
+    type: secret
+  SESSION_KEY:
+    type: secret
+
+services:
+  database:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: '{{DB_PASSWORD}}'
+```
+
+On `fed start`, if `.env.secrets` doesn't contain a value for `DB_PASSWORD` or `SESSION_KEY`, fed generates 32-character random alphanumeric strings and writes them to `.env.secrets`. Values are never overwritten once generated — they're stable across restarts.
+
+The `generated_secrets_file` **must be in `.gitignore`**. Fed checks this and refuses to generate if it isn't:
+
+```
+# .gitignore
+.env.secrets
+```
+
+In a terminal, fed asks for confirmation before generating. In CI or non-interactive contexts, it generates silently.
+
+#### Manual secrets
+
+For secrets you provide yourself (API keys, OAuth credentials), add `source: manual`:
+
+```yaml
+parameters:
+  STRIPE_SECRET_KEY:
+    type: secret
+    source: manual
+    description: "From https://dashboard.stripe.com/apikeys"
+```
+
+Fed will not generate a value for manual secrets. Instead, it fails at startup with a message listing what's missing and where to add it (your `env_file` entries). The `description` field is shown in this error message.
+
+Manual secrets don't require `generated_secrets_file` — you can use them standalone when you only need to enforce that certain values are provided.
+
+#### Constraints
+
+Secret parameters cannot have `default`, environment-specific values (`development`, `staging`, `production`), or `either` constraints. Secrets are provided externally, not baked into config.
+
+#### Resolution priority
+
+`generated_secrets_file` is prepended to the `env_file` list at runtime, giving it the lowest priority. This means your `.env` or `.env.local` files can override generated values when needed.
+
 ## Dependencies & Health Checks
 
 Services declare dependencies with `depends_on`. A service waits for its dependencies to become healthy before starting.
