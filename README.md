@@ -59,7 +59,7 @@ That's the whole workflow. `git clone`, add a config, `fed start`, the project i
 
 ## Why fed
 
-- **One config, one command** — Docker containers, native processes, Gradle tasks, and Compose services all live in one `service-federation.yaml`. `fed start` handles dependency ordering and health checks.
+- **One config, one command** — Docker containers, native processes, and Compose services all live in one `service-federation.yaml`. `fed start` handles dependency ordering and health checks.
 - **Directory-scoped isolation** — All state (ports, containers, volumes) is scoped by working directory. Two directories are two independent stacks. Git worktrees give you parallel environments for free.
 - **No Docker Compose sprawl** — Port parameters, templating, profiles, and cross-project packages replace the pile of override files and `.env` juggling.
 
