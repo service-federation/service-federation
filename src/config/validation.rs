@@ -1591,8 +1591,10 @@ mod tests {
 
     #[test]
     fn secret_with_either_is_rejected() {
-        let mut config = Config::default();
-        config.generated_secrets_file = Some(".env.secrets".to_string());
+        let mut config = Config {
+            generated_secrets_file: Some(".env.secrets".to_string()),
+            ..Default::default()
+        };
         config.parameters.insert(
             "DB_SECRET".to_string(),
             Parameter {

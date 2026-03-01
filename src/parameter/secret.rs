@@ -165,8 +165,7 @@ pub fn write_env_file(path: &Path, generated_values: &[(String, String)]) -> Res
         .collect();
 
     if new_keys.is_empty() {
-        file.unlock()
-            .map_err(|e| Error::Filesystem(format!("Cannot unlock '{}': {}", path.display(), e)))?;
+        // Dropping the file releases the exclusive lock
         return Ok(());
     }
 
@@ -184,9 +183,7 @@ pub fn write_env_file(path: &Path, generated_values: &[(String, String)]) -> Res
             .map_err(|e| Error::Filesystem(format!("Write error: {}", e)))?;
     }
 
-    file.unlock()
-        .map_err(|e| Error::Filesystem(format!("Cannot unlock '{}': {}", path.display(), e)))?;
-
+    // Lock released on drop
     Ok(())
 }
 
