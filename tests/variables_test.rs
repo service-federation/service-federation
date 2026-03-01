@@ -1,6 +1,6 @@
-use serde_yaml::Value;
 use fed::config::{Config, Environment, Parameter};
 use fed::parameter::Resolver;
+use serde_yaml::Value;
 
 #[test]
 fn test_environment_specific_values() {

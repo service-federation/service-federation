@@ -322,8 +322,7 @@ async fn run() -> anyhow::Result<()> {
     // If --isolate flag is used (and not dry-run), persist isolation mode before building orchestrator
     if isolate && !dry_run {
         let work_dir_for_isolation = resolve_work_dir(cli.workdir.clone(), &config_path)?;
-        let mut tracker =
-            fed::state::StateTracker::new(work_dir_for_isolation).await?;
+        let mut tracker = fed::state::StateTracker::new(work_dir_for_isolation).await?;
         tracker.initialize().await?;
         let (already_isolated, _) = tracker.get_isolation_mode().await;
         if !already_isolated {

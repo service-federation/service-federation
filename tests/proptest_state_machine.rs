@@ -1,3 +1,6 @@
+use fed::config::ServiceType;
+use fed::service::Status;
+use fed::state::{ServiceState, StateTracker};
 /// Property-based tests for state machine transitions
 ///
 /// These tests use proptest to generate random sequences of service operations
@@ -6,9 +9,6 @@
 /// - PID is always cleared when status is "Stopped"
 /// - No services leak (state tracker matches reality)
 use proptest::prelude::*;
-use fed::config::ServiceType;
-use fed::service::Status;
-use fed::state::{ServiceState, StateTracker};
 use tempfile::TempDir;
 
 /// Helper to create a temp directory for tests

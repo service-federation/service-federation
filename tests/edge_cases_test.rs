@@ -537,9 +537,7 @@ fn test_validation_service_depends_on_itself() {
 
     let service = Service {
         process: Some("echo test".to_string()),
-        depends_on: vec![fed::config::DependsOn::Simple(
-            "self".to_string(),
-        )],
+        depends_on: vec![fed::config::DependsOn::Simple("self".to_string())],
         ..Default::default()
     };
 
@@ -556,9 +554,7 @@ fn test_validation_nonexistent_dependency() {
 
     let service = Service {
         process: Some("echo test".to_string()),
-        depends_on: vec![fed::config::DependsOn::Simple(
-            "nonexistent".to_string(),
-        )],
+        depends_on: vec![fed::config::DependsOn::Simple("nonexistent".to_string())],
         ..Default::default()
     };
 
@@ -593,33 +589,25 @@ fn test_validation_complex_circular_dependency() {
     // Create: A -> B -> C -> D -> B (cycle at B)
     let service_a = Service {
         process: Some("echo a".to_string()),
-        depends_on: vec![fed::config::DependsOn::Simple(
-            "b".to_string(),
-        )],
+        depends_on: vec![fed::config::DependsOn::Simple("b".to_string())],
         ..Default::default()
     };
 
     let service_b = Service {
         process: Some("echo b".to_string()),
-        depends_on: vec![fed::config::DependsOn::Simple(
-            "c".to_string(),
-        )],
+        depends_on: vec![fed::config::DependsOn::Simple("c".to_string())],
         ..Default::default()
     };
 
     let service_c = Service {
         process: Some("echo c".to_string()),
-        depends_on: vec![fed::config::DependsOn::Simple(
-            "d".to_string(),
-        )],
+        depends_on: vec![fed::config::DependsOn::Simple("d".to_string())],
         ..Default::default()
     };
 
     let service_d = Service {
         process: Some("echo d".to_string()),
-        depends_on: vec![fed::config::DependsOn::Simple(
-            "b".to_string(),
-        )],
+        depends_on: vec![fed::config::DependsOn::Simple("b".to_string())],
         ..Default::default()
     };
 

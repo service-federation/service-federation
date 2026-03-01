@@ -58,10 +58,7 @@ async fn test_service_merging_example() {
     assert!(database.healthcheck.is_some());
 
     // Restart policy from package
-    assert!(matches!(
-        database.restart,
-        Some(fed::RestartPolicy::Always)
-    ));
+    assert!(matches!(database.restart, Some(fed::RestartPolicy::Always)));
 
     // Extends field should be cleared after merging
     assert!(database.extends.is_none());

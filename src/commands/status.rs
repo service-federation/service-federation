@@ -49,9 +49,7 @@ pub async fn run_status(
         } else {
             for (name, stat) in status {
                 let status_icon = match stat {
-                    fed::Status::Running | fed::Status::Healthy => {
-                        "+"
-                    }
+                    fed::Status::Running | fed::Status::Healthy => "+",
                     fed::Status::Stopped => "o",
                     fed::Status::Starting => ".",
                     fed::Status::Failing => "x",

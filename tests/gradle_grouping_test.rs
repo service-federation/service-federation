@@ -101,9 +101,7 @@ async fn test_gradle_services_with_dependencies_are_grouped() {
 
     // Add dependency: service2 depends on service1
     config.services.get_mut("service2").unwrap().depends_on =
-        vec![fed::config::DependsOn::Simple(
-            "service1".to_string(),
-        )];
+        vec![fed::config::DependsOn::Simple("service1".to_string())];
     config.entrypoint = Some("service2".to_string());
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -239,9 +237,7 @@ async fn test_complex_dependency_chain_grouping() {
 
     let mut service2 = Service::default();
     service2.gradle_task = Some(":service2:bootRun".to_string());
-    service2.depends_on = vec![fed::config::DependsOn::Simple(
-        "service1".to_string(),
-    )];
+    service2.depends_on = vec![fed::config::DependsOn::Simple("service1".to_string())];
 
     let mut service3 = Service::default();
     service3.gradle_task = Some(":service3:bootRun".to_string());
@@ -249,9 +245,7 @@ async fn test_complex_dependency_chain_grouping() {
 
     let mut service4 = Service::default();
     service4.gradle_task = Some(":service4:bootRun".to_string());
-    service4.depends_on = vec![fed::config::DependsOn::Simple(
-        "service2".to_string(),
-    )];
+    service4.depends_on = vec![fed::config::DependsOn::Simple("service2".to_string())];
     // Same CWD as service2
 
     config.services.insert("service1".to_string(), service1);

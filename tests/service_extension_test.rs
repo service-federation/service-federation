@@ -826,10 +826,7 @@ services:
     }
 
     // Restart from base (not overridden)
-    assert!(matches!(
-        service.restart,
-        Some(fed::RestartPolicy::Always)
-    ));
+    assert!(matches!(service.restart, Some(fed::RestartPolicy::Always)));
 
     // Extends cleared
     assert!(service.extends.is_none());

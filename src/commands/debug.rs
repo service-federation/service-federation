@@ -1,8 +1,8 @@
 use crate::output::UserOutput;
-use serde::Serialize;
 use fed::config::Config;
 use fed::error::Error;
 use fed::state::SqliteStateTracker;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 

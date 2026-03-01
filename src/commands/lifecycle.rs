@@ -12,10 +12,7 @@ pub enum StopResult {
 ///
 /// This encapsulates the common pattern shared by `stop_remaining_state_services`
 /// and `run_stop_from_state`: given a `ServiceState`, stop whatever is running.
-pub async fn stop_service_by_state(
-    name: &str,
-    state: &fed::state::ServiceState,
-) -> StopResult {
+pub async fn stop_service_by_state(name: &str, state: &fed::state::ServiceState) -> StopResult {
     if let Some(container_id) = state.container_id.as_deref() {
         if graceful_docker_stop(container_id).await {
             StopResult::Stopped
