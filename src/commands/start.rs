@@ -111,6 +111,53 @@ pub async fn run_start(
     }
     out.blank();
 
+    // Pre-pull Docker images in parallel before starting services
+    {
+        let dep_graph = orchestrator.get_dependency_graph();
+        let mut all_services: Vec<String> = Vec::new();
+        for service in &services_to_start {
+            for dep in dep_graph.get_dependencies(service) {
+                if !all_services.contains(&dep) {
+                    all_services.push(dep);
+                }
+            }
+            if !all_services.contains(service) {
+                all_services.push(service.clone());
+            }
+        }
+
+        let pull_results = orchestrator.pre_pull_images(&all_services).await;
+        if !pull_results.is_empty() {
+            let label = if pull_results.len() == 1 {
+                "image"
+            } else {
+                "images"
+            };
+            out.status(&format!(
+                "Pulling {} docker {}...",
+                pull_results.len(),
+                label
+            ));
+
+            let mut had_errors = false;
+            for result in &pull_results {
+                match &result.outcome {
+                    Ok(()) => out.success(&format!("  \u{2713} {}", result.image)),
+                    Err(e) => {
+                        out.error(&format!("  \u{2717} {} ({})", result.image, e));
+                        had_errors = true;
+                    }
+                }
+            }
+
+            if had_errors {
+                orchestrator.cleanup().await;
+                return Err(anyhow::anyhow!("Failed to pull docker image(s)"));
+            }
+            out.blank();
+        }
+    }
+
     // Set up Ctrl+C handler during startup to allow aborting
     let startup_abort = Arc::new(AtomicBool::new(false));
     let startup_abort_clone = startup_abort.clone();

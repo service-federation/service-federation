@@ -1535,6 +1535,85 @@ impl Orchestrator {
         }
         tracing::debug!("Cleanup: complete");
     }
+
+    /// Pre-pull Docker images needed by the given services.
+    ///
+    /// Checks which images are missing locally and pulls them in parallel.
+    /// Returns results only for images that needed pulling (already-local images are skipped).
+    pub async fn pre_pull_images(&self, services: &[String]) -> Vec<ImagePullResult> {
+        use crate::docker::DockerClient;
+
+        // Collect unique images from Docker-type services
+        let mut images: Vec<String> = Vec::new();
+        for name in services {
+            if let Some(svc) = self.config.services.get(name) {
+                if let Some(ref image) = svc.image {
+                    if !images.contains(image) {
+                        images.push(image.clone());
+                    }
+                }
+            }
+        }
+
+        if images.is_empty() {
+            return Vec::new();
+        }
+
+        let client = DockerClient::new();
+
+        // Check which images exist locally (parallel)
+        let exist_checks: Vec<_> = images
+            .iter()
+            .map(|img| {
+                let client = client.clone();
+                let img = img.clone();
+                async move {
+                    let exists = client.image_exists(&img).await;
+                    (img, exists)
+                }
+            })
+            .collect();
+        let exist_results = futures::future::join_all(exist_checks).await;
+
+        // Filter to only missing images
+        let missing: Vec<String> = exist_results
+            .into_iter()
+            .filter(|(_, exists)| !exists)
+            .map(|(img, _)| img)
+            .collect();
+
+        if missing.is_empty() {
+            return Vec::new();
+        }
+
+        // Pull missing images in parallel
+        let pull_timeout = Duration::from_secs(300); // 5 minutes, matches DOCKER_PULL_TIMEOUT
+        let pull_futures: Vec<_> = missing
+            .iter()
+            .map(|img| {
+                let client = client.clone();
+                let img = img.clone();
+                async move {
+                    let outcome = match client.pull(&img, pull_timeout).await {
+                        Ok(()) => Ok(()),
+                        Err(e) => Err(e.to_string()),
+                    };
+                    ImagePullResult {
+                        image: img,
+                        outcome,
+                    }
+                }
+            })
+            .collect();
+
+        futures::future::join_all(pull_futures).await
+    }
+}
+
+/// Result of a Docker image pull attempt.
+pub struct ImagePullResult {
+    pub image: String,
+    pub outcome: std::result::Result<(), String>,
 }
 
 /// Check if a PID is alive (signal 0 check).
