@@ -45,6 +45,10 @@ pub struct Parameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
+    /// Whether this parameter is optional (missing value resolves to empty string instead of error).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional: Option<bool>,
+
     #[serde(skip)]
     pub value: Option<String>,
 }
@@ -63,6 +67,11 @@ impl Parameter {
     /// Check if this parameter is a manual secret (requires user-provided value).
     pub fn is_manual_secret(&self) -> bool {
         self.is_secret_type() && self.source.as_deref() == Some("manual")
+    }
+
+    /// Check if this parameter is marked as optional.
+    pub fn is_optional(&self) -> bool {
+        self.optional.unwrap_or(false)
     }
 
     /// Get the value for a specific environment.
@@ -110,6 +119,7 @@ mod tests {
             production: None,
             source: None,
             description: None,
+            optional: None,
             value: None,
         }
     }
@@ -126,6 +136,7 @@ mod tests {
             production: None,
             source: None,
             description: None,
+            optional: None,
             value: None,
         }
     }
@@ -386,5 +397,49 @@ type: secret
         assert!(param.is_secret_type());
         assert!(!param.is_manual_secret());
         assert!(param.source.is_none());
+    }
+
+    // ========================================================================
+    // is_optional tests
+    // ========================================================================
+
+    #[test]
+    fn is_optional_true_when_set() {
+        let param = Parameter {
+            optional: Some(true),
+            ..param_empty()
+        };
+        assert!(param.is_optional());
+    }
+
+    #[test]
+    fn is_optional_false_when_explicitly_false() {
+        let param = Parameter {
+            optional: Some(false),
+            ..param_empty()
+        };
+        assert!(!param.is_optional());
+    }
+
+    #[test]
+    fn is_optional_false_when_none() {
+        assert!(!param_empty().is_optional());
+    }
+
+    #[test]
+    fn deserialize_optional_manual_secret() {
+        let yaml = r#"
+type: secret
+source: manual
+optional: true
+description: "From https://dashboard.stripe.com/apikeys"
+"#;
+        let param: Parameter = serde_yaml::from_str(yaml).unwrap();
+        assert!(param.is_manual_secret());
+        assert!(param.is_optional());
+        assert_eq!(
+            param.description.as_deref(),
+            Some("From https://dashboard.stripe.com/apikeys")
+        );
     }
 }

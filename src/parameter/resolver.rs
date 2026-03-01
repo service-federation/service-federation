@@ -333,6 +333,17 @@ impl Resolver {
             None => return Ok(()), // No secret parameters at all
         };
 
+        // Set optional manual secrets to empty string so they resolve without error
+        for (name, param) in config.get_effective_parameters_mut() {
+            if param.is_manual_secret()
+                && param.is_optional()
+                && param.value.is_none()
+                && !analysis.existing_values.contains_key(name.as_str())
+            {
+                param.value = Some(String::new());
+            }
+        }
+
         // Fail on missing manual secrets — user must provide these
         if !analysis.missing_manual.is_empty() {
             let details: Vec<String> = analysis
@@ -1085,6 +1096,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1131,6 +1143,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1167,6 +1180,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1202,6 +1216,7 @@ mod tests {
                 either: vec![],
                 source: None,
                 description: None,
+                optional: None,
                 value: None,
             },
         );
@@ -1217,6 +1232,7 @@ mod tests {
                 either: vec![],
                 source: None,
                 description: None,
+                optional: None,
                 value: None,
             },
         );
@@ -1249,6 +1265,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1291,6 +1308,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1304,6 +1322,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1340,6 +1359,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
         param.value = Some("8080".to_string());
@@ -1370,6 +1390,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
         param.value = Some("invalid".to_string());
@@ -1402,6 +1423,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
         param.value = Some("0".to_string());
@@ -1434,6 +1456,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
         param.value = Some("99999".to_string());
@@ -1466,6 +1489,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
         param.value = Some("invalid".to_string());
@@ -1496,6 +1520,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1509,6 +1534,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1542,6 +1568,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1555,6 +1582,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1568,6 +1596,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1602,6 +1631,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1615,6 +1645,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1628,6 +1659,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1661,6 +1693,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1690,6 +1723,7 @@ mod tests {
             either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1719,6 +1753,7 @@ mod tests {
             either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1749,6 +1784,7 @@ mod tests {
             either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
         param.value = Some("prod".to_string());
@@ -1779,6 +1815,7 @@ mod tests {
             either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
         param.value = Some("test".to_string());
@@ -1810,6 +1847,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1824,6 +1862,7 @@ mod tests {
             either: vec!["dev".to_string(), "staging".to_string(), "prod".to_string()],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1906,6 +1945,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
         param.value = Some("; rm -rf /".to_string());
@@ -1959,6 +1999,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -1998,6 +2039,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: Some("explicit_value".to_string()), // Explicit value takes precedence
         };
 
@@ -2062,6 +2104,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -2139,6 +2182,7 @@ mod tests {
             either: vec![],
             source: None,
             description: None,
+            optional: None,
             value: None,
         };
 
@@ -2247,6 +2291,59 @@ mod tests {
             "Error should include description: {}",
             msg
         );
+    }
+
+    #[test]
+    fn optional_manual_secret_resolves_to_empty_string() {
+        use crate::config::{Config, Parameter};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+        config.parameters.insert(
+            "STRIPE_KEY".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                source: Some("manual".to_string()),
+                optional: Some(true),
+                description: Some("Stripe API key".to_string()),
+                ..Default::default()
+            },
+        );
+
+        // Should succeed, not error
+        resolver.resolve_parameters(&mut config).unwrap();
+
+        let param = config.parameters.get("STRIPE_KEY").unwrap();
+        assert_eq!(param.value.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn non_optional_manual_secret_still_errors() {
+        use crate::config::{Config, Parameter};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        let mut resolver = Resolver::new();
+        resolver.set_work_dir(temp_dir.path());
+
+        let mut config = Config::default();
+        config.parameters.insert(
+            "REQUIRED_SECRET".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                source: Some("manual".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let err = resolver.resolve_parameters(&mut config).unwrap_err();
+        assert!(err.to_string().contains("REQUIRED_SECRET"));
     }
 
     #[test]

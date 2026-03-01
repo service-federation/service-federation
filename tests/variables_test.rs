@@ -18,6 +18,7 @@ fn test_environment_specific_values() {
         production: Some(Value::String("prod-value".to_string())),
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -45,6 +46,7 @@ fn test_environment_fallback_to_default() {
         production: Some(Value::String("prod-value".to_string())),
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -72,6 +74,7 @@ fn test_development_alias() {
         production: None,
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -99,6 +102,7 @@ fn test_development_precedence() {
         production: None,
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -126,6 +130,7 @@ fn test_variables_take_precedence_over_parameters() {
         production: None,
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -139,6 +144,7 @@ fn test_variables_take_precedence_over_parameters() {
         production: Some(Value::String("var-prod-value".to_string())),
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -170,6 +176,7 @@ fn test_backward_compatibility_with_parameters() {
         production: None,
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -202,6 +209,7 @@ fn test_port_type_with_environment() {
         production: Some(Value::Number(available_port.into())),
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -232,6 +240,7 @@ fn test_template_resolution_with_environment() {
         production: Some(Value::String("prod-db".to_string())),
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -246,6 +255,7 @@ fn test_template_resolution_with_environment() {
         production: None,
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -275,6 +285,7 @@ fn test_complex_multi_environment_config() {
         production: Some(Value::String("false".to_string())),
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -289,6 +300,7 @@ fn test_complex_multi_environment_config() {
         production: Some(Value::Number(5.into())),
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -303,6 +315,7 @@ fn test_complex_multi_environment_config() {
         production: Some(Value::String("prod-secret-from-vault".to_string())),
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
 
@@ -342,6 +355,7 @@ fn test_get_effective_parameters() {
         production: None,
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
     config.parameters.insert("PARAM1".to_string(), param1);
@@ -357,6 +371,7 @@ fn test_get_effective_parameters() {
         production: None,
         source: None,
         description: None,
+        optional: None,
         value: None,
     };
     config.variables.insert("VAR1".to_string(), var1);

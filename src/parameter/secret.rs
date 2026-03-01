@@ -95,7 +95,9 @@ pub fn analyze_secrets(
         }
 
         if param.is_manual_secret() {
-            missing_manual.push(((*name).clone(), param.description.clone()));
+            if !param.is_optional() {
+                missing_manual.push(((*name).clone(), param.description.clone()));
+            }
         } else {
             needs_generation.push((*name).clone());
         }
@@ -375,6 +377,37 @@ mod tests {
             analysis.needs_generation.is_empty(),
             "Should not need to generate an already-present secret"
         );
+    }
+
+    #[test]
+    fn analyze_skips_optional_manual_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut config = Config::default();
+        config.parameters.insert(
+            "OPTIONAL_KEY".to_string(),
+            crate::config::Parameter {
+                param_type: Some("secret".to_string()),
+                source: Some("manual".to_string()),
+                optional: Some(true),
+                ..Default::default()
+            },
+        );
+        config.parameters.insert(
+            "REQUIRED_KEY".to_string(),
+            crate::config::Parameter {
+                param_type: Some("secret".to_string()),
+                source: Some("manual".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let secrets_file = dir.path().join(".env.secrets");
+        let analysis = analyze_secrets(&config, dir.path(), Some(&secrets_file))
+            .unwrap()
+            .unwrap();
+        assert_eq!(analysis.missing_manual.len(), 1);
+        assert_eq!(analysis.missing_manual[0].0, "REQUIRED_KEY");
     }
 
     #[test]

@@ -245,13 +245,21 @@ For secrets you provide yourself (API keys, OAuth credentials), add `source: man
 
 ```yaml
 parameters:
+  GITHUB_CLIENT_SECRET:
+    type: secret
+    source: manual
+    description: "GitHub OAuth client secret"
+
   STRIPE_SECRET_KEY:
     type: secret
     source: manual
+    optional: true
     description: "From https://dashboard.stripe.com/apikeys"
 ```
 
 Fed will not generate a value for manual secrets. Instead, it fails at startup with a message listing what's missing and where to add it (your `env_file` entries). The `description` field is shown in this error message.
+
+Add `optional: true` for secrets that not every team member needs (e.g., a Stripe key only some developers have). Optional manual secrets resolve to an empty string when not provided, instead of failing at startup.
 
 Manual secrets don't require `generated_secrets_file` — you can use them standalone when you only need to enforce that certain values are provided.
 
