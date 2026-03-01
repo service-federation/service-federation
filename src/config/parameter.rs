@@ -371,7 +371,10 @@ description: "GitHub OAuth client secret"
         let param: Parameter = serde_yaml::from_str(yaml).unwrap();
         assert!(param.is_secret_type());
         assert!(param.is_manual_secret());
-        assert_eq!(param.description.as_deref(), Some("GitHub OAuth client secret"));
+        assert_eq!(
+            param.description.as_deref(),
+            Some("GitHub OAuth client secret")
+        );
     }
 
     #[test]
