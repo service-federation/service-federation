@@ -255,11 +255,9 @@ impl DockerService {
     }
 
     /// Cleanup orphaned containers from ended sessions
-    /// Removes containers with com.service-federation.managed label that belong to sessions
-    /// which have been explicitly ended (status = Ended) or whose session directory no longer exists.
-    ///
-    /// We do NOT use shell PID liveness to determine orphan status because the parent process
-    /// may be ephemeral (e.g. `bash -c "fed start"` exits immediately while containers keep running).
+    /// Only removes containers whose session has been explicitly ended (status = Ended).
+    /// Containers with unknown/unloadable session labels (including isolation IDs like `iso-*`)
+    /// are left alone — we can't distinguish "session was deleted" from "label is not a session."
     pub async fn cleanup_orphaned_containers() -> Result<usize> {
         use tracing::{debug, info};
 
@@ -297,12 +295,13 @@ impl DockerService {
                     sess.status() == crate::session::SessionStatus::Ended
                 }
                 Err(_) => {
-                    // Session directory is gone — container is truly orphaned
+                    // Can't load session — could be an isolation ID (iso-*), a deleted
+                    // session, or something else. Don't remove: we can't be sure it's orphaned.
                     debug!(
-                        "Session {} not found, removing container {}",
+                        "Session {} not loadable, skipping container {}",
                         session_id, container_id
                     );
-                    true
+                    false
                 }
             };
 

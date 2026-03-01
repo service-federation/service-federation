@@ -1,6 +1,6 @@
 [package]
 name = "service-federation"
-version = "3.0.2"
+version = "3.0.3"
 edition = "2021"
 authors = ["Adrian Helvik"]
 description = "Service federation orchestrator for managing complex service dependencies"
