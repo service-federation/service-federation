@@ -12,7 +12,7 @@ brew install service-federation/tap/fed
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/service-federation/fed/releases/latest/download/fed-installer.sh | sh
 
 # From source
-cargo install fed
+cargo install --git https://github.com/service-federation/fed
 ```
 
 Create `service-federation.yaml`:

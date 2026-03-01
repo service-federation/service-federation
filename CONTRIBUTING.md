@@ -13,8 +13,8 @@ Thank you for your interest in contributing to Service Federation! This document
 ### Building from Source
 
 ```bash
-git clone https://github.com/adrianhelvik/service-federation.git
-cd service-federation
+git clone https://github.com/service-federation/fed.git
+cd fed
 cargo build
 ```
 
@@ -36,7 +36,7 @@ cargo test test_name
 ### Reporting Bugs
 
 Before creating a bug report:
-1. Check the [existing issues](https://github.com/adrianhelvik/service-federation/issues) to avoid duplicates
+1. Check the [existing issues](https://github.com/service-federation/fed/issues) to avoid duplicates
 2. Include steps to reproduce the issue
 3. Include your environment details (OS, Rust version, etc.)
 
