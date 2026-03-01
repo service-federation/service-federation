@@ -41,7 +41,7 @@ pub struct OrchestratorBuilder {
     replace_mode: bool,
     dry_run: bool,
     readonly: bool,
-    is_tty: bool,
+    is_interactive: bool,
     profiles: Vec<String>,
     startup_timeout: Option<Duration>,
     stop_timeout: Option<Duration>,
@@ -59,7 +59,7 @@ impl OrchestratorBuilder {
             replace_mode: false,
             dry_run: false,
             readonly: false,
-            is_tty: false,
+            is_interactive: false,
             profiles: Vec::new(),
             startup_timeout: None,
             stop_timeout: None,
@@ -154,8 +154,8 @@ impl OrchestratorBuilder {
     }
 
     /// Set whether stdin is a TTY (for interactive prompts like secret generation).
-    pub fn is_tty(mut self, is_tty: bool) -> Self {
-        self.is_tty = is_tty;
+    pub fn is_interactive(mut self, is_interactive: bool) -> Self {
+        self.is_interactive = is_interactive;
         self
     }
 
@@ -215,8 +215,8 @@ impl OrchestratorBuilder {
         if self.replace_mode {
             orchestrator.set_replace_mode(true);
         }
-        if self.is_tty {
-            orchestrator.set_is_tty(true);
+        if self.is_interactive {
+            orchestrator.set_is_interactive(true);
         }
 
         if let Some(timeout) = self.startup_timeout {

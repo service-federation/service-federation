@@ -169,6 +169,14 @@ impl Config {
                 )));
             }
 
+            // Secrets must not have either constraints
+            if !param.either.is_empty() {
+                return Err(Error::Validation(format!(
+                    "Secret parameter '{}' must not have 'either' constraints — secret values are generated or provided externally",
+                    name
+                )));
+            }
+
             // Only known source values are allowed
             if let Some(ref source) = param.source {
                 if source != "manual" {
@@ -1499,7 +1507,9 @@ mod tests {
             },
         );
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("must not have environment-specific"));
+        assert!(err
+            .to_string()
+            .contains("must not have environment-specific"));
     }
 
     #[test]
@@ -1558,7 +1568,11 @@ mod tests {
         );
         let err = config.validate().unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("generated_secrets_file"), "Error should mention generated_secrets_file: {}", msg);
+        assert!(
+            msg.contains("generated_secrets_file"),
+            "Error should mention generated_secrets_file: {}",
+            msg
+        );
     }
 
     #[test]
@@ -1573,5 +1587,26 @@ mod tests {
             },
         );
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn secret_with_either_is_rejected() {
+        let mut config = Config::default();
+        config.generated_secrets_file = Some(".env.secrets".to_string());
+        config.parameters.insert(
+            "DB_SECRET".to_string(),
+            Parameter {
+                param_type: Some("secret".to_string()),
+                either: vec!["a".to_string(), "b".to_string()],
+                ..Default::default()
+            },
+        );
+        let err = config.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("either"),
+            "Error should mention 'either': {}",
+            msg
+        );
     }
 }

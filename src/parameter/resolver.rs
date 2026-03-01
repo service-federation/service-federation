@@ -142,7 +142,7 @@ pub struct Resolver {
     /// When true, ignore configured default ports and allocate fresh random ports.
     force_random_ports: bool,
     /// Whether stdin is a TTY (for interactive secret generation prompts).
-    is_tty: bool,
+    is_interactive: bool,
 }
 
 impl Resolver {
@@ -159,7 +159,7 @@ impl Resolver {
             managed_ports: HashSet::new(),
             port_store: Box::new(crate::port::NoopPortStore),
             force_random_ports: false,
-            is_tty: false,
+            is_interactive: false,
         }
     }
 
@@ -177,7 +177,7 @@ impl Resolver {
             managed_ports: HashSet::new(),
             port_store: Box::new(crate::port::NoopPortStore),
             force_random_ports: false,
-            is_tty: false,
+            is_interactive: false,
         }
     }
 
@@ -210,8 +210,8 @@ impl Resolver {
     }
 
     /// Set whether stdin is a TTY (for interactive secret generation prompts).
-    pub fn set_is_tty(&mut self, is_tty: bool) {
-        self.is_tty = is_tty;
+    pub fn set_is_interactive(&mut self, is_interactive: bool) {
+        self.is_interactive = is_interactive;
     }
 
     /// Register ports owned by already-running managed services.
@@ -319,14 +319,16 @@ impl Resolver {
             None => return Ok(()), // No work dir → skip (unit tests, etc.)
         };
 
-        // Compute secrets file path from config. If not configured, only manual secrets
-        // can exist (validation enforces this), so use a sentinel that won't be written to.
-        let secrets_file_path = match config.generated_secrets_file {
-            Some(ref gsf) => work_dir.join(gsf),
-            None => work_dir.join(".generated-secrets-sentinel"),
-        };
+        let secrets_file_path = config
+            .generated_secrets_file
+            .as_ref()
+            .map(|gsf| work_dir.join(gsf));
 
-        let analysis = match super::secret::analyze_secrets(config, &work_dir, &secrets_file_path)? {
+        let analysis = match super::secret::analyze_secrets(
+            config,
+            &work_dir,
+            secrets_file_path.as_deref(),
+        )? {
             Some(a) => a,
             None => return Ok(()), // No secret parameters at all
         };
@@ -371,7 +373,7 @@ impl Resolver {
         }
 
         // Interactive confirmation when running in a TTY
-        if self.is_tty {
+        if self.is_interactive {
             eprint!(
                 "Secret parameters need values. Generate and write to {}? [Y/n] ",
                 analysis.env_path.display()
@@ -384,10 +386,7 @@ impl Resolver {
                 }
             }
         } else {
-            tracing::info!(
-                "Generating secret values → {}",
-                analysis.env_path.display()
-            );
+            tracing::info!("Generating secret values → {}", analysis.env_path.display());
         }
 
         // Generate values
@@ -2238,8 +2237,16 @@ mod tests {
 
         let err = resolver.resolve_parameters(&mut config).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("GITHUB_SECRET"), "Error should name the param: {}", msg);
-        assert!(msg.contains("GitHub OAuth client secret"), "Error should include description: {}", msg);
+        assert!(
+            msg.contains("GITHUB_SECRET"),
+            "Error should name the param: {}",
+            msg
+        );
+        assert!(
+            msg.contains("GitHub OAuth client secret"),
+            "Error should include description: {}",
+            msg
+        );
     }
 
     #[test]
@@ -2266,7 +2273,11 @@ mod tests {
 
         let err = resolver.resolve_parameters(&mut config).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains(".gitignore"), "Should mention .gitignore: {}", msg);
+        assert!(
+            msg.contains(".gitignore"),
+            "Should mention .gitignore: {}",
+            msg
+        );
     }
 
     #[test]

@@ -91,6 +91,7 @@ async fn run() -> anyhow::Result<()> {
     // Initialize tracing and output
     let is_tui = matches!(cli.command, Commands::Tui { .. });
     let is_tty = std::io::stderr().is_terminal();
+    let is_interactive = std::io::stdin().is_terminal();
     init_tracing(is_tui, cli.verbose, is_tty)?;
     let out = output::CliOutput::new(is_tty);
 
@@ -342,7 +343,7 @@ async fn run() -> anyhow::Result<()> {
         .dry_run(dry_run)
         .auto_resolve_conflicts(auto_resolve)
         .readonly(readonly)
-        .is_tty(is_tty)
+        .is_interactive(is_interactive)
         .build()
         .await?;
 
